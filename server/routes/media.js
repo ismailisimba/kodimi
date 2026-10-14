@@ -15,9 +15,10 @@ function isVaultAuthorized(req) {
 
 // Public/Auth protected media listing
 router.get('/', requireAuth, (req, res) => {
-  const { type, genre, search, limit, offset, adult } = req.query;
+  const { type, genre, search, limit, offset, adult, is_adult } = req.query;
+  const showAdult = adult === 'true' || is_adult === 'true';
 
-  if (adult === 'true') {
+  if (showAdult) {
     if (!isVaultAuthorized(req)) {
       return res.status(403).json({ error: 'Vault PIN required to access private media', vaultRequired: true });
     }
@@ -140,6 +141,24 @@ router.post('/:id/retag', requireAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+router.post('/:id/vault-toggle', requireAuth, async (req, res) => {
+  const item = mediaDB.getById(req.params.id);
+  if (!item) {
+    return res.status(404).json({ error: 'Media not found' });
+  }
+
+  const { is_adult } = req.body;
+  const newAdultState = typeof is_adult === 'boolean' ? is_adult : !item.is_adult;
+
+  const updated = await mediaDB.upsert({
+    ...item,
+    is_adult: newAdultState,
+  });
+
+  console.log(`[Vault Toggle] Moved "${item.title}" to ${newAdultState ? 'Private Vault' : 'Public Library'}`);
+  res.json({ success: true, item: updated, is_adult: newAdultState });
 });
 
 router.delete('/:id', requireAuth, (req, res) => {

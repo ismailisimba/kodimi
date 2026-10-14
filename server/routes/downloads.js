@@ -6,6 +6,8 @@ import {
   startTorrentFromBuffer,
   registerDirectUpload,
   completeDirectUpload,
+  pauseDownload,
+  resumeDownload,
   cancelDownload,
   downloadEvents,
 } from '../services/downloader.js';
@@ -109,11 +111,27 @@ router.post('/upload-torrent', requireAuth, async (req, res) => {
   }
 });
 
-router.delete('/:id', requireAuth, (req, res) => {
+router.post('/:id/pause', requireAuth, (req, res) => {
   const { id } = req.params;
-  const cancelled = cancelDownload(id);
-  downloadsDB.delete(id);
-  res.json({ success: true, cancelled });
+  const paused = pauseDownload(id);
+  res.json({ success: true, paused });
+});
+
+router.post('/:id/resume', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const job = await resumeDownload(id);
+    res.json({ success: true, download: job });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  cancelDownload(id, false);
+  await downloadsDB.deleteAsync(id);
+  res.json({ success: true });
 });
 
 /**

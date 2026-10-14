@@ -53,6 +53,7 @@ export async function startDownload(sourceUrl, customName = '') {
     source_type: sourceType,
     source_url: typeof sourceUrl === 'string' ? sourceUrl : 'buffer',
     status: 'downloading',
+    status_text: 'Starting download...',
     progress: 0,
     speed: 0,
     downloaded_bytes: 0,
@@ -90,6 +91,7 @@ export async function startTorrentFromBuffer(buffer, originalFilename = '') {
     source_type: 'torrent',
     source_url: originalFilename,
     status: 'downloading',
+    status_text: 'Loading .torrent metadata...',
     progress: 0,
     speed: 0,
     downloaded_bytes: 0,
@@ -118,6 +120,7 @@ export function registerDirectUpload(filename, size = 0) {
     source_type: 'upload',
     source_url: 'direct-upload',
     status: 'uploading',
+    status_text: 'Uploading to Cloud Storage...',
     progress: 0,
     speed: 0,
     downloaded_bytes: 0,
@@ -149,6 +152,7 @@ export async function completeDirectUpload(id, filename, size = 0) {
   }
 
   job.status = 'completed';
+  job.status_text = 'Saved to Cloud Storage & Indexed';
   job.progress = 100;
   job.speed = 0;
   job.downloaded_bytes = size;
@@ -180,13 +184,29 @@ async function processTorrentDownload(id, torrentSource, customName) {
   try {
     const client = await getWebTorrentClient();
 
-    client.add(torrentSource, async (torrent) => {
-      console.log(`[Torrent] Metadata loaded for: "${torrent.name}" (total ${torrent.files.length} file(s))`);
+    updateDownload(id, {
+      status: 'downloading',
+      status_text: 'Connecting to swarm and DHT...',
+      peers: 0,
+    });
 
-      const job = activeJobs.get(id);
-      if (job) {
-        job.torrent = torrent;
-      }
+    const torrent = client.add(torrentSource);
+    const job = activeJobs.get(id);
+    if (job) {
+      job.torrent = torrent;
+    }
+
+    // Immediate wire listener for active peer feedback
+    torrent.on('wire', () => {
+      const peers = torrent.numPeers || 0;
+      updateDownload(id, {
+        peers,
+        status_text: `Connected to ${peers} peer(s), discovering files...`,
+      });
+    });
+
+    torrent.on('ready', async () => {
+      console.log(`[Torrent] Metadata ready for: "${torrent.name}" (total ${torrent.files.length} file(s))`);
 
       // Filter for all valid media files
       const videoFiles = torrent.files.filter((f) => {
@@ -213,6 +233,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
         name: isMultiFile ? `${torrent.name} (${targetFiles.length} files)` : (customName || targetFiles[0].name),
         total_bytes: totalBytes,
         gcs_path: isMultiFile ? `${torrent.name}/` : targetFiles[0].name,
+        status_text: `Ready to download ${targetFiles.length} file(s)...`,
       });
 
       let totalDownloadedPrev = 0;
@@ -223,10 +244,10 @@ async function processTorrentDownload(id, torrentSource, customName) {
       for (let i = 0; i < targetFiles.length; i++) {
         const currentFile = targetFiles[i];
 
-        // Ensure job has not been cancelled
+        // Ensure job has not been cancelled or paused
         const currentJob = activeJobs.get(id);
-        if (!currentJob || currentJob.status === 'failed') {
-          console.log(`[Torrent] Job ${id} was cancelled, stopping multi-file download.`);
+        if (!currentJob || currentJob.status === 'failed' || currentJob.status === 'paused') {
+          console.log(`[Torrent] Job ${id} was stopped, halting download.`);
           break;
         }
 
@@ -236,11 +257,26 @@ async function processTorrentDownload(id, torrentSource, customName) {
         const gcsPath = cleanFilename;
         const fileBytes = currentFile.length;
 
+        // Check if file already exists in GCS for smart resumption
+        const alreadyExists = await fileExists(cleanFilename);
+        if (alreadyExists) {
+          console.log(`[Torrent Resumption] File ${i + 1}/${targetFiles.length} already in GCS: ${cleanFilename}, skipping.`);
+          totalDownloadedPrev += fileBytes;
+          const prog = totalBytes > 0 ? (totalDownloadedPrev / totalBytes) * 100 : 0;
+          updateDownload(id, {
+            downloaded_bytes: totalDownloadedPrev,
+            progress: Math.min(100, Math.round(prog * 10) / 10),
+            status_text: `Skipped existing [${i + 1}/${targetFiles.length}]: ${cleanFilename}`,
+          });
+          continue;
+        }
+
         updateDownload(id, {
           name: isMultiFile
             ? `[${i + 1}/${targetFiles.length}] ${cleanFilename} (${torrent.name})`
             : cleanFilename,
           gcs_path: gcsPath,
+          status_text: `Downloading [${i + 1}/${targetFiles.length}]: ${cleanFilename}`,
         });
 
         console.log(`[Torrent] Starting file ${i + 1}/${targetFiles.length}: "${cleanFilename}" (${(fileBytes / (1024 * 1024)).toFixed(1)} MB)`);
@@ -271,6 +307,9 @@ async function processTorrentDownload(id, torrentSource, customName) {
                   progress: Math.min(100, Math.round(progress * 10) / 10),
                   speed: Math.round(speed),
                   peers: torrent.numPeers || 0,
+                  status_text: isMultiFile
+                    ? `Streaming file [${i + 1}/${targetFiles.length}] to GCS...`
+                    : 'Streaming to GCS...',
                 });
 
                 lastProgressTime = now;
@@ -312,7 +351,6 @@ async function processTorrentDownload(id, torrentSource, customName) {
           });
         } catch (streamErr) {
           console.error(`[Torrent] Failed while processing ${cleanFilename}:`, streamErr.message);
-          // If a single file fails, fail the overall job
           failDownload(id, `File download failed: ${streamErr.message}`);
           torrent.destroy();
           return;
@@ -321,11 +359,15 @@ async function processTorrentDownload(id, torrentSource, customName) {
 
       // Check final state
       const finalJob = activeJobs.get(id);
-      if (finalJob && finalJob.status !== 'failed') {
+      if (finalJob && finalJob.status !== 'failed' && finalJob.status !== 'paused') {
         console.log(`[Torrent] Successfully completed all ${targetFiles.length} file(s) for: ${torrent.name}`);
         completeDownload(id, (customName || torrent.name), totalBytes);
       }
       torrent.destroy();
+    });
+
+    torrent.on('error', (err) => {
+      failDownload(id, `Torrent error: ${err.message}`);
     });
   } catch (err) {
     failDownload(id, err.message);
@@ -355,6 +397,7 @@ async function processDirectDownload(id, url, customName) {
       name: filename,
       total_bytes: totalBytes,
       gcs_path: gcsPath,
+      status_text: 'Downloading stream...',
     });
 
     const response = await axios({
@@ -383,6 +426,7 @@ async function processDirectDownload(id, url, customName) {
           downloaded_bytes: downloadedBytes,
           progress: Math.min(100, Math.round(progress * 10) / 10),
           speed: Math.round(speed),
+          status_text: 'Streaming to GCS...',
         });
 
         lastTime = now;
@@ -423,6 +467,7 @@ async function completeDownload(id, gcsPath, totalBytes) {
   if (!job) return;
 
   job.status = 'completed';
+  job.status_text = 'Completed & Saved to GCS';
   job.progress = 100;
   job.speed = 0;
   job.downloaded_bytes = totalBytes;
@@ -448,6 +493,7 @@ function failDownload(id, errorMsg) {
   if (job) {
     job.status = 'failed';
     job.error = errorMsg;
+    job.status_text = `Failed: ${errorMsg}`;
     downloadsDB.upsert(job);
     broadcastProgress(job);
     activeJobs.delete(id);
@@ -459,7 +505,60 @@ function broadcastProgress(data) {
   downloadEvents.emit('progress', data);
 }
 
-export function cancelDownload(id) {
+export function pauseDownload(id) {
+  const job = activeJobs.get(id);
+  if (job) {
+    if (job.torrent) {
+      try { job.torrent.destroy(); } catch (_) {}
+    }
+    if (job.currentReadStream) {
+      try { job.currentReadStream.destroy(); } catch (_) {}
+    }
+    if (job.currentWriteStream) {
+      try { job.currentWriteStream.end(); } catch (_) {}
+    }
+    job.status = 'paused';
+    job.status_text = 'Paused by user';
+    job.speed = 0;
+    downloadsDB.upsert(job);
+    broadcastProgress(job);
+    activeJobs.delete(id);
+    return true;
+  }
+  const dbJob = downloadsDB.getById(id);
+  if (dbJob) {
+    dbJob.status = 'paused';
+    dbJob.status_text = 'Paused by user';
+    dbJob.speed = 0;
+    downloadsDB.upsert(dbJob);
+    broadcastProgress(dbJob);
+    return true;
+  }
+  return false;
+}
+
+export async function resumeDownload(id) {
+  const job = downloadsDB.getById(id);
+  if (!job) throw new Error('Download job not found');
+  if (activeJobs.has(id)) return activeJobs.get(id);
+
+  job.status = 'downloading';
+  job.status_text = 'Resuming download...';
+  job.error = null;
+  downloadsDB.upsert(job);
+  activeJobs.set(id, { ...job });
+  broadcastProgress(job);
+
+  if (job.source_type === 'magnet' || job.source_type === 'torrent') {
+    processTorrentDownload(id, job.source_url, job.name);
+  } else if (job.source_type === 'direct') {
+    processDirectDownload(id, job.source_url, job.name);
+  }
+
+  return job;
+}
+
+export function cancelDownload(id, shouldUpsert = true) {
   const job = activeJobs.get(id);
   if (job) {
     if (job.torrent) {
@@ -473,8 +572,11 @@ export function cancelDownload(id) {
     }
     job.status = 'failed';
     job.error = 'Cancelled by user';
-    downloadsDB.upsert(job);
-    broadcastProgress(job);
+    job.status_text = 'Cancelled by user';
+    if (shouldUpsert) {
+      downloadsDB.upsert(job);
+      broadcastProgress(job);
+    }
     activeJobs.delete(id);
     return true;
   }
@@ -486,6 +588,8 @@ export default {
   startTorrentFromBuffer,
   registerDirectUpload,
   completeDirectUpload,
+  pauseDownload,
+  resumeDownload,
   cancelDownload,
   downloadEvents,
 };

@@ -117,6 +117,14 @@ export const api = {
     }),
 
   cancelDownload: (id) => request(`/downloads/${id}`, { method: 'DELETE' }),
+  deleteDownload: (id) => request(`/downloads/${id}`, { method: 'DELETE' }),
+  pauseDownload: (id) => request(`/downloads/${id}/pause`, { method: 'POST' }),
+  resumeDownload: (id) => request(`/downloads/${id}/resume`, { method: 'POST' }),
+  toggleVault: (id, isAdult) =>
+    request(`/media/${id}/vault-toggle`, {
+      method: 'POST',
+      body: JSON.stringify({ is_adult: isAdult }),
+    }),
 
   requestUploadUrl: (filename, size, contentType = 'application/octet-stream') =>
     request('/downloads/request-upload', {

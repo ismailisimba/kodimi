@@ -85,28 +85,49 @@ export async function streamOriginalRemux(gcsPath, startTimeSeconds = 0, req, re
     .inputOptions([
       '-probesize 1000000',
       '-analyzeduration 1000000',
-      '-fflags +nobuffer+fastseek',
+      '-fflags +nobuffer',
     ]);
 
   if (startTimeSeconds > 0) {
     command.seekInput(startTimeSeconds);
   }
 
+  const isSeeking = startTimeSeconds > 0;
+  const remuxOutputOptions = [
+    '-map 0:v:0',
+    '-map 0:a:0?',
+  ];
+
+  if (isSeeking) {
+    remuxOutputOptions.push(
+      '-c:v libx264',
+      '-preset ultrafast',
+      '-tune zerolatency',
+      '-crf 18',
+      '-pix_fmt yuv420p',
+      '-g 48',
+      '-keyint_min 24',
+      '-sc_threshold 0'
+    );
+  } else {
+    remuxOutputOptions.push('-c:v copy');
+  }
+
+  remuxOutputOptions.push(
+    '-c:a aac',
+    '-b:a 192k',
+    '-ar 48000',
+    '-ac 2',
+    '-threads 0',
+    '-avoid_negative_ts make_zero',
+    '-max_muxing_queue_size 1024',
+    '-movflags frag_keyframe+empty_moov+default_base_moof',
+    '-flush_packets 1'
+  );
+
   command
     .format('mp4')
-    .outputOptions([
-      '-map 0:v:0',    // Video stream 0 only
-      '-map 0:a:0?',   // Primary audio stream only
-      '-c:v copy',     // Bit-for-bit video copy (0 CPU encoding loss)
-      '-c:a aac',      // Universal AAC stereo audio
-      '-b:a 192k',
-      '-ar 48000',
-      '-ac 2',
-      '-threads 0',
-      '-preset ultrafast',
-      '-movflags frag_keyframe+empty_moov+default_base_moof',
-      '-flush_packets 1',
-    ]);
+    .outputOptions(remuxOutputOptions);
 
   command.on('start', (cmdline) => {
     console.log(`[Remux Original Stream Started]: ${cmdline.substring(0, 100)}...`);
@@ -148,7 +169,7 @@ export async function streamTranscodedVideo(gcsPath, quality, startTimeSeconds =
     .inputOptions([
       '-probesize 1000000',
       '-analyzeduration 1000000',
-      '-fflags +nobuffer+fastseek',
+      '-fflags +nobuffer',
     ]);
 
   if (startTimeSeconds > 0) {
@@ -174,6 +195,8 @@ export async function streamTranscodedVideo(gcsPath, quality, startTimeSeconds =
       '-keyint_min 24',
       '-sc_threshold 0',
       '-pix_fmt yuv420p',
+      '-avoid_negative_ts make_zero',
+      '-max_muxing_queue_size 1024',
       '-movflags frag_keyframe+empty_moov+default_base_moof',
       '-flush_packets 1',
     ]);

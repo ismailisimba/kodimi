@@ -22,9 +22,18 @@ export function heuristicParseFilename(filename) {
   const base = filename.replace(/\.[^/.]+$/, ''); // remove extension
   let clean = base.replace(/[\._]/g, ' ');
 
-  // Detect adult content tags
-  const isAdult = /\[?(blacked|brazzers|tushy|fakehub|woodman|teenslikeitbig)\]?/i.test(filename) ||
-                  /\b(anal|hardcore)\b/i.test(clean);
+  // Detect adult content tags & keywords (err on side of caution)
+  const ADULT_PATTERNS = [
+    'fuck', 'facefuck', 'porn', 'xxx', 'creampie', 'blowjob', 'pussy', 'cock', 'dickdrainer',
+    'analcollege', 'puretaboo', 'swallowed', 'realwifestories', 'fakehostel', 'diabolic',
+    'brazzers', 'bangbros', 'naughtyamerica', 'realitykings', 'mofos', 'evilangel', 'blacked',
+    'tushy', 'vixen', 'hentai', 'milf', 'slut', 'threesome', 'gangbang',
+    'dildo', 'masturbat', 'swap fuck', 'daughter swap', 'wife swap', 'horny housewives',
+    'sex addicts', 'ahasss', 'fakehub', 'woodman', 'teenslikeitbig',
+    'symmetrical', 'avi love', 'harley jade', 'pigtail facefuck'
+  ];
+  const isAdultRegex = new RegExp(`\\b(${ADULT_PATTERNS.join('|')})\\b|fuck|porn|xxx|creampie|blowjob|dickdrainer|puretaboo|swallowed|realwifestories|fakehostel|diabolic|ahasss|symmetrical`, 'i');
+  const isAdult = isAdultRegex.test(filename) || isAdultRegex.test(clean);
 
   // Detect Season & Episode (e.g. S01E02 or 1x02)
   const seMatch = clean.match(/\bS(\d{1,2})E(\d{1,2})\b/i) || clean.match(/\b(\d{1,2})x(\d{1,2})\b/i);

@@ -347,6 +347,11 @@ export const downloadsDB = {
     downloadCache.delete(id);
     DownloadModel.deleteOne({ id }).catch((err) => console.error('[Download Delete Error]:', err.message));
   },
+
+  deleteAsync: async (id) => {
+    downloadCache.delete(id);
+    await DownloadModel.deleteOne({ id }).catch((err) => console.error('[Download Delete Error]:', err.message));
+  },
 };
 
 function safeJsonParse(str, fallback) {

@@ -93,6 +93,9 @@ class KodimiApp {
     this.detailPlayBtn = document.getElementById('detail-play-btn');
     this.detailRetagBtn = document.getElementById('detail-retag-btn');
     this.detailDeleteBtn = document.getElementById('detail-delete-btn');
+    this.detailVaultBtn = document.getElementById('detail-vault-btn');
+    this.detailVaultIcon = document.getElementById('detail-vault-icon');
+    this.detailVaultText = document.getElementById('detail-vault-text');
   }
 
   initPlayer() {
@@ -245,6 +248,29 @@ class KodimiApp {
     this.detailRetagBtn.addEventListener('click', () => this.handleRetagMedia());
     this.detailDeleteBtn.addEventListener('click', () => this.handleDeleteMedia());
 
+    if (this.detailVaultBtn) {
+      this.detailVaultBtn.addEventListener('click', async () => {
+        if (!this.activeMedia) return;
+        const targetAdult = !this.activeMedia.is_adult;
+        try {
+          this.detailVaultBtn.disabled = true;
+          const res = await api.toggleVault(this.activeMedia.id, targetAdult);
+          if (res && res.item) {
+            this.activeMedia = res.item;
+            this.openDetailModal(res.item);
+          }
+          await this.loadData();
+          if (vaultState.isUnlocked()) {
+            await this.loadVaultData();
+          }
+        } catch (err) {
+          alert(`Failed to move item: ${err.message}`);
+        } finally {
+          this.detailVaultBtn.disabled = false;
+        }
+      });
+    }
+
     // Delegate Click Events for Play & Info buttons on Cards & Carousels
     document.addEventListener('click', (e) => {
       const playBtn = e.target.closest('.quick-play-btn, #hero-play-btn');
@@ -287,11 +313,28 @@ class KodimiApp {
         }
       }
 
-      // Download Cancel Button
-      const cancelBtn = e.target.closest('.dl-cancel-btn');
-      if (cancelBtn) {
-        const dlId = cancelBtn.dataset.id;
-        api.cancelDownload(dlId).then(() => this.loadDownloads());
+      // Download Actions (Pause, Resume, Delete/Cancel)
+      const pauseBtn = e.target.closest('.dl-pause-btn');
+      if (pauseBtn) {
+        const dlId = pauseBtn.dataset.id;
+        api.pauseDownload(dlId).then(() => this.loadDownloads());
+        return;
+      }
+
+      const resumeBtn = e.target.closest('.dl-resume-btn');
+      if (resumeBtn) {
+        const dlId = resumeBtn.dataset.id;
+        api.resumeDownload(dlId).then(() => this.loadDownloads());
+        return;
+      }
+
+      const deleteBtn = e.target.closest('.dl-delete-btn, .dl-cancel-btn');
+      if (deleteBtn) {
+        const dlId = deleteBtn.dataset.id;
+        const itemEl = document.getElementById(`dl-${dlId}`);
+        if (itemEl) itemEl.remove();
+        api.deleteDownload(dlId).then(() => this.loadDownloads());
+        return;
       }
     });
 
@@ -585,6 +628,15 @@ class KodimiApp {
         <span class="material-symbols-outlined fill">play_arrow</span>
         <span>Play</span>
       `;
+    // Set Vault Button state
+    if (this.detailVaultBtn && this.detailVaultIcon && this.detailVaultText) {
+      if (item.is_adult) {
+        this.detailVaultIcon.textContent = 'lock_open';
+        this.detailVaultText.textContent = 'Move to Public';
+      } else {
+        this.detailVaultIcon.textContent = 'lock';
+        this.detailVaultText.textContent = 'Move to Vault';
+      }
     }
 
     this.detailModal.classList.add('open');

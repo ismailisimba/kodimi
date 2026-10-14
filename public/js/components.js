@@ -133,28 +133,68 @@ export function renderDownloadItem(dl) {
   const isCompleted = dl.status === 'completed';
   const isFailed = dl.status === 'failed';
   const isDownloading = dl.status === 'downloading';
+  const isPaused = dl.status === 'paused';
 
   const speedStr = formatSpeed(dl.speed);
   const sizeStr = dl.total_bytes > 0
     ? `${formatBytes(dl.downloaded_bytes)} / ${formatBytes(dl.total_bytes)}`
     : '';
 
+  let actionButtonsHtml = '';
+  if (isDownloading) {
+    actionButtonsHtml = `
+      <button class="icon-btn dl-pause-btn" data-id="${dl.id}" title="Pause" style="width: 28px; height: 28px;">
+        <span class="material-symbols-outlined" style="font-size: 18px;">pause</span>
+      </button>
+      <button class="icon-btn dl-delete-btn" data-id="${dl.id}" title="Delete" style="width: 28px; height: 28px; color: #ffb4ab;">
+        <span class="material-symbols-outlined" style="font-size: 18px;">delete</span>
+      </button>
+    `;
+  } else if (isPaused || isFailed) {
+    actionButtonsHtml = `
+      <button class="icon-btn dl-resume-btn" data-id="${dl.id}" title="Resume" style="width: 28px; height: 28px; color: var(--md-sys-color-primary);">
+        <span class="material-symbols-outlined" style="font-size: 18px;">play_arrow</span>
+      </button>
+      <button class="icon-btn dl-delete-btn" data-id="${dl.id}" title="Delete" style="width: 28px; height: 28px; color: #ffb4ab;">
+        <span class="material-symbols-outlined" style="font-size: 18px;">delete</span>
+      </button>
+    `;
+  } else {
+    actionButtonsHtml = `
+      <button class="icon-btn dl-delete-btn" data-id="${dl.id}" title="Delete from list" style="width: 28px; height: 28px; color: #ffb4ab;">
+        <span class="material-symbols-outlined" style="font-size: 18px;">delete</span>
+      </button>
+    `;
+  }
+
+  const statusDisplay = dl.status_text
+    ? escapeHtml(dl.status_text)
+    : isCompleted
+    ? '<span style="color: #4caf50;">✓ Saved to GCS</span>'
+    : isDownloading
+    ? '<span style="color: var(--md-sys-color-primary);">Streaming to GCS...</span>'
+    : isPaused
+    ? '<span style="color: #ffb74d;">⏸ Paused</span>'
+    : isFailed
+    ? `<span style="color: #f44336;">${escapeHtml(dl.error || 'Failed')}</span>`
+    : '';
+
   return `
     <div class="download-item" id="dl-${dl.id}" style="background-color: var(--md-sys-color-surface-container-high); border-radius: var(--md-shape-corner-m); padding: 12px 16px; margin-bottom: 8px; border: 1px solid var(--md-sys-color-outline-variant);">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-        <div style="display: flex; align-items: center; gap: 8px; max-width: 85%;">
+        <div style="display: flex; align-items: center; gap: 8px; max-width: 75%;">
           <span class="chip" style="font-size: 10px; padding: 2px 6px;">${dl.source_type}</span>
           <span style="font-size: 13px; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
             ${escapeHtml(dl.name)}
           </span>
         </div>
-        <button class="icon-btn dl-cancel-btn" data-id="${dl.id}" title="Remove" style="width: 28px; height: 28px;">
-          <span class="material-symbols-outlined" style="font-size: 18px;">delete</span>
-        </button>
+        <div style="display: flex; align-items: center; gap: 4px;">
+          ${actionButtonsHtml}
+        </div>
       </div>
 
       <div style="width: 100%; height: 6px; background-color: var(--md-sys-color-surface-container-highest); border-radius: 9999px; overflow: hidden; margin-bottom: 8px;">
-        <div style="height: 100%; width: ${dl.progress || 0}%; background-color: ${isCompleted ? '#4caf50' : isFailed ? '#f44336' : 'var(--md-sys-color-primary)'}; transition: width 0.3s ease;"></div>
+        <div style="height: 100%; width: ${dl.progress || 0}%; background-color: ${isCompleted ? '#4caf50' : isFailed ? '#f44336' : isPaused ? '#ffb74d' : 'var(--md-sys-color-primary)'}; transition: width 0.3s ease;"></div>
       </div>
 
       <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--md-sys-color-on-surface-variant);">
@@ -164,10 +204,8 @@ export function renderDownloadItem(dl) {
           ${sizeStr ? `<span>${sizeStr}</span>` : ''}
           ${dl.peers > 0 ? `<span>Peers: ${dl.peers}</span>` : ''}
         </div>
-        <div>
-          ${isCompleted ? '<span style="color: #4caf50;">✓ Saved to GCS</span>' : ''}
-          ${isDownloading ? '<span style="color: var(--md-sys-color-primary);">Streaming to GCS...</span>' : ''}
-          ${isFailed ? `<span style="color: #f44336;">${escapeHtml(dl.error || 'Failed')}</span>` : ''}
+        <div style="text-align: right; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          ${statusDisplay}
         </div>
       </div>
     </div>

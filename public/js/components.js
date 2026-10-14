@@ -5,9 +5,12 @@
 export function renderHeroBanner(item) {
   if (!item) return '';
 
-  let backdrop = item.backdrop_url || item.poster_url || `/api/media/${item.id}/thumbnail`;
+  const pin = sessionStorage.getItem('kodimi_vault_pin');
+  const pinParam = (item.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
+  const heroThumb = `/api/media/${item.id}/thumbnail?variant=69${pinParam}`;
+  let backdrop = item.backdrop_url || item.poster_url || heroThumb;
   if (backdrop.includes('placehold.co')) {
-    backdrop = `/api/media/${item.id}/thumbnail`;
+    backdrop = heroThumb;
   }
   const badges = [];
 
@@ -31,7 +34,7 @@ export function renderHeroBanner(item) {
 
   return `
     <div class="hero-backdrop">
-      <img src="${backdrop}" alt="${escapeHtml(item.title)}" loading="eager" onerror="this.onerror=null; this.src='/api/media/${item.id}/thumbnail';" />
+      <img src="${backdrop}" alt="${escapeHtml(item.title)}" loading="eager" onerror="this.onerror=null; this.src='${heroThumb}';" />
       <div class="hero-gradient-overlay"></div>
     </div>
     <div class="hero-content">
@@ -55,8 +58,10 @@ export function renderHeroBanner(item) {
 export function renderMediaCard(item) {
   let poster = item.poster_url;
   const pin = sessionStorage.getItem('kodimi_vault_pin');
-  const pinParam = (item.is_adult && pin) ? `?pin=${encodeURIComponent(pin)}` : '';
-  const thumbUrl = `/api/media/${item.id}/thumbnail${pinParam}`;
+  const pinParam = (item.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
+  // Intersect randomly between 42% and 69% shots for cinematic variety
+  const variant = Math.random() < 0.5 ? '42' : '69';
+  const thumbUrl = `/api/media/${item.id}/thumbnail?variant=${variant}${pinParam}`;
   if (!poster || poster.includes('placehold.co') || item.is_adult) {
     poster = thumbUrl;
   }

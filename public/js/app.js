@@ -474,8 +474,8 @@ class KodimiApp {
   openDetailModal(item) {
     this.activeMedia = item;
     const pin = vaultState.getPin();
-    const pinParam = (item.is_adult && pin) ? `?pin=${encodeURIComponent(pin)}` : '';
-    const thumbUrl = `/api/media/${item.id}/thumbnail${pinParam}`;
+    const pinParam = (item.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
+    const thumbUrl = `/api/media/${item.id}/thumbnail?variant=69${pinParam}`;
     let backdrop = item.backdrop_url || item.poster_url || thumbUrl;
     if (backdrop.includes('placehold.co') || item.is_adult) backdrop = thumbUrl;
 

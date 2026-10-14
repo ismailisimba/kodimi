@@ -257,22 +257,45 @@ export async function streamSubtitles(gcsPath, trackIndex = 0, req, res) {
 }
 
 /**
- * Generates and caches a video frame screenshot thumbnail.
- * Highly resilient with fallback to SVG if video cannot be sampled.
+ * Generates and caches cinematic video frame screenshot thumbnails.
+ * Samples at 42% and 69% of the video duration for dramatic, action-filled frames.
  */
-export async function getOrGenerateThumbnail(mediaId, gcsPath) {
-  const cacheFile = path.join(thumbsDir, `${mediaId}.jpg`);
+export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant = 'random') {
+  // Determine variant: '42', '69', or random
+  let variant = requestedVariant;
+  if (!variant || variant === 'random') {
+    variant = Math.random() < 0.5 ? '42' : '69';
+  }
+  if (variant !== '42' && variant !== '69') {
+    variant = '42';
+  }
+
+  const cacheFile = path.join(thumbsDir, `${mediaId}_${variant}.jpg`);
+  const legacyFile = path.join(thumbsDir, `${mediaId}.jpg`);
   const svgFile = path.join(thumbsDir, `${mediaId}.svg`);
 
   if (fs.existsSync(cacheFile)) return cacheFile;
-  if (fs.existsSync(svgFile)) return svgFile;
 
   try {
-    const signedUrl = await getSignedReadUrl(gcsPath, 30);
+    const duration = await getOrProbeDuration(mediaId, gcsPath);
+    let seekTime = 5;
+
+    if (duration > 60) {
+      seekTime = variant === '42' ? Math.round(duration * 0.42) : Math.round(duration * 0.69);
+    } else if (duration > 10) {
+      seekTime = variant === '42' ? Math.round(duration * 0.4) : Math.round(duration * 0.7);
+    }
+
+    const signedUrl = await getSignedReadUrl(gcsPath, 60);
 
     await new Promise((resolve, reject) => {
       ffmpeg(signedUrl)
-        .seekInput(5) // sample at 5s
+        .inputOptions([
+          '-probesize 1000000',
+          '-analyzeduration 1000000',
+          '-fflags +nobuffer+fastseek',
+        ])
+        .seekInput(seekTime)
         .outputOptions([
           '-map 0:v:0',
           '-vframes 1',
@@ -284,9 +307,13 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath) {
         .save(cacheFile)
         .on('end', resolve)
         .on('error', () => {
-          // Retry at 1s for short clips
+          // Retry at 5s fallback
           ffmpeg(signedUrl)
-            .seekInput(1)
+            .inputOptions([
+              '-probesize 1000000',
+              '-analyzeduration 1000000',
+            ])
+            .seekInput(5)
             .outputOptions([
               '-map 0:v:0',
               '-vframes 1',
@@ -302,6 +329,9 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath) {
 
     return cacheFile;
   } catch (err) {
+    if (fs.existsSync(legacyFile)) return legacyFile;
+    if (fs.existsSync(svgFile)) return svgFile;
+
     // Generate clean SVG cover
     const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
       <defs>

@@ -77,7 +77,8 @@ router.get('/:id/thumbnail', async (req, res) => {
   }
 
   try {
-    const thumbPath = await getOrGenerateThumbnail(item.id, item.gcs_path);
+    const variant = req.query.variant || 'random';
+    const thumbPath = await getOrGenerateThumbnail(item.id, item.gcs_path, variant);
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.sendFile(thumbPath);
   } catch (err) {

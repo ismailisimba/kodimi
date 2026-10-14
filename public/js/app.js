@@ -170,7 +170,8 @@ class KodimiApp {
     this.detailPlayBtn.addEventListener('click', () => {
       if (this.activeMedia) {
         this.detailModal.classList.remove('open');
-        this.player.open(this.activeMedia, this.activeMedia.current_time || 0);
+        const startTime = (this.activeMedia.current_time && this.activeMedia.current_time > 10) ? this.activeMedia.current_time : 0;
+        this.player.open(this.activeMedia, startTime);
       }
     });
 
@@ -183,7 +184,8 @@ class KodimiApp {
       if (playBtn) {
         const id = playBtn.dataset.id;
         const item = this.findMediaById(id);
-        if (item) this.player.open(item, item.current_time || 0);
+        const startTime = parseFloat(playBtn.dataset.time || (item && item.current_time) || 0);
+        if (item) this.player.open(item, startTime);
         return;
       }
 
@@ -343,9 +345,13 @@ class KodimiApp {
   }
 
   findMediaById(id) {
-    return this.mediaItems.find((m) => m.id === id) ||
-           this.continueWatching.find((m) => m.id === id) ||
+    const cw = this.continueWatching.find((m) => m.id === id);
+    const media = this.mediaItems.find((m) => m.id === id) ||
            this.privateItems.find((m) => m.id === id);
+    if (cw) {
+      return { ...(media || {}), ...cw, current_time: cw.current_time };
+    }
+    return media || null;
   }
 
   renderView() {
@@ -499,6 +505,21 @@ class KodimiApp {
       this.detailTags.innerHTML = '';
     }
 
+    // Set Resume or Play label
+    const startTime = (item.current_time && item.current_time > 10) ? item.current_time : 0;
+    if (startTime > 10) {
+      const formatted = this.formatTime(startTime);
+      this.detailPlayBtn.innerHTML = `
+        <span class="material-symbols-outlined fill">play_arrow</span>
+        <span>Resume (${formatted})</span>
+      `;
+    } else {
+      this.detailPlayBtn.innerHTML = `
+        <span class="material-symbols-outlined fill">play_arrow</span>
+        <span>Play</span>
+      `;
+    }
+
     this.detailModal.classList.add('open');
   }
 
@@ -640,6 +661,17 @@ class KodimiApp {
       return `${(mb / 1024).toFixed(2)} GB`;
     }
     return `${Math.round(mb)} MB`;
+  }
+
+  formatTime(secs) {
+    if (isNaN(secs) || secs < 0) return '0:00';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    if (h > 0) {
+      return `${h}:${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+    }
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
   }
 }
 

@@ -65,8 +65,11 @@ export function renderMediaCard(item) {
     ? Math.min(100, Math.round((item.current_time / item.playback_duration) * 100))
     : 0;
 
+  const startTime = item.current_time || 0;
+  const isResume = startTime > 10;
+
   return `
-    <div class="media-card" data-id="${item.id}">
+    <div class="media-card" data-id="${item.id}" data-time="${startTime}">
       <img class="card-poster" src="${poster}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="if(this.src.indexOf('/thumbnail') === -1) { this.src='${thumbUrl}'; }" />
       ${item.resolution ? `<span class="card-badge">${item.resolution}</span>` : ''}
       ${progressPct > 0 ? `
@@ -81,7 +84,7 @@ export function renderMediaCard(item) {
           ${item.genres && item.genres[0] ? `<span>• ${item.genres[0]}</span>` : ''}
         </div>
         <div class="card-quick-actions">
-          <button class="quick-play-btn" data-id="${item.id}" title="Play">
+          <button class="quick-play-btn" data-id="${item.id}" data-time="${startTime}" title="${isResume ? 'Resume' : 'Play'}">
             <span class="material-symbols-outlined fill" style="font-size: 18px;">play_arrow</span>
           </button>
           <button class="quick-info-btn" data-id="${item.id}" title="More Info">

@@ -305,6 +305,9 @@
   <div id="player-container" class="player-container player-hidden">
     <video id="player-video" class="player-video" playsinline></video>
 
+    <!-- Synchronized Subtitle Display Overlay -->
+    <div id="player-subtitle-display" class="player-subtitle-display" style="display: none;"></div>
+
     <!-- Buffering / Loading Overlay -->
     <div id="player-loader" class="player-loader" style="display: none;">
       <span class="material-symbols-outlined player-spinner-icon">progress_activity</span>
@@ -326,8 +329,9 @@
 
     <!-- Bottom Controls Overlay -->
     <div id="player-overlay-bottom" class="player-overlay-bottom">
-      <!-- Progress Bar Scrubber -->
+      <!-- Progress Bar Scrubber with Hover Tooltip -->
       <div class="progress-container" id="player-progress-container">
+        <div class="progress-tooltip" id="player-progress-tooltip">0:00</div>
         <div class="progress-buffer" id="player-progress-buffer"></div>
         <div class="progress-fill" id="player-progress-fill">
           <div class="progress-thumb"></div>

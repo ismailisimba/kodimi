@@ -11,6 +11,7 @@ class KodimiPlayer {
     this.playBtn = document.getElementById('player-play-btn');
     this.playIcon = document.getElementById('player-play-icon');
     this.progressContainer = document.getElementById('player-progress-container');
+    this.progressTooltip = document.getElementById('player-progress-tooltip');
     this.progressBuffer = document.getElementById('player-progress-buffer');
     this.progressFill = document.getElementById('player-progress-fill');
     this.timeDisplay = document.getElementById('player-time-display');
@@ -26,6 +27,7 @@ class KodimiPlayer {
     this.subtitlesIcon = document.getElementById('player-subtitles-icon');
     this.subtitlesMenu = document.getElementById('player-subtitles-menu');
     this.subtitlesOptions = document.getElementById('player-subtitles-options');
+    this.subtitleDisplay = document.getElementById('player-subtitle-display');
     this.loader = document.getElementById('player-loader');
     this.loaderText = document.querySelector('.player-loader-text');
     this.backBtn = document.getElementById('player-back-btn');
@@ -42,6 +44,7 @@ class KodimiPlayer {
     this.subtitlesEnabled = false;
     this.availableSubtitles = [];
     this.activeSubtitleTrack = -1;
+    this.subtitleCues = [];
     this.controlsTimeout = null;
     this.progressInterval = null;
 
@@ -77,6 +80,18 @@ class KodimiPlayer {
 
     // Progress Bar Scrubber
     this.progressContainer.addEventListener('click', (e) => this.seek(e));
+
+    this.progressContainer.addEventListener('mousemove', (e) => {
+      const rect = this.progressContainer.getBoundingClientRect();
+      const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const dur = this.getEffectiveDuration();
+      const hoverTime = pos * dur;
+
+      if (this.progressTooltip) {
+        this.progressTooltip.textContent = this.formatTime(hoverTime);
+        this.progressTooltip.style.left = `${pos * 100}%`;
+      }
+    });
 
     // Volume
     this.volumeSlider.addEventListener('input', (e) => this.setVolume(parseFloat(e.target.value)));
@@ -370,30 +385,30 @@ class KodimiPlayer {
     }
   }
 
-  setSubtitleTrack(trackIndex) {
+  async setSubtitleTrack(trackIndex) {
     this.activeSubtitleTrack = trackIndex;
     this.clearSubtitleTracks();
 
     if (trackIndex === -1) {
       this.subtitlesEnabled = false;
       this.updateSubtitlesIcon(false);
+      this.updateSubtitleDisplay('');
     } else {
       this.subtitlesEnabled = true;
       this.updateSubtitlesIcon(true);
 
-      const track = document.createElement('track');
-      track.id = 'kodimi-sub-track';
-      track.kind = 'subtitles';
-      track.label = 'Subtitles';
-      track.src = api.getSubtitleUrl(this.currentMedia.id, trackIndex);
-      track.default = true;
-
-      this.video.appendChild(track);
-      track.addEventListener('load', () => {
-        if (this.video.textTracks && this.video.textTracks[0]) {
-          this.video.textTracks[0].mode = 'showing';
+      try {
+        const subUrl = api.getSubtitleUrl(this.currentMedia.id, trackIndex);
+        const res = await fetch(subUrl);
+        if (res.ok) {
+          const vttText = await res.text();
+          this.subtitleCues = this.parseWebVTT(vttText);
+          console.log(`[Subtitles] Loaded and synchronized ${this.subtitleCues.length} cues for track ${trackIndex}`);
+          this.updateSubtitles();
         }
-      });
+      } catch (err) {
+        console.warn('Failed to fetch/parse subtitle track:', err);
+      }
     }
 
     // Update active checkmarks in menu
@@ -414,6 +429,65 @@ class KodimiPlayer {
     }
   }
 
+  parseWebVTT(vttText) {
+    const cues = [];
+    const lines = vttText.split(/\r?\n/);
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i].trim();
+      const timeMatch = line.match(/(?:(\d{1,2}):)?(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})\.(\d{3})/);
+      if (timeMatch) {
+        const parseSec = (h, m, s, ms) => {
+          const hours = h ? parseInt(h, 10) : 0;
+          const mins = parseInt(m, 10);
+          const secs = parseInt(s, 10);
+          const millis = parseInt(ms, 10);
+          return hours * 3600 + mins * 60 + secs + millis / 1000;
+        };
+        const start = parseSec(timeMatch[1], timeMatch[2], timeMatch[3], timeMatch[4]);
+        const end = parseSec(timeMatch[5], timeMatch[6], timeMatch[7], timeMatch[8]);
+
+        let text = '';
+        i++;
+        while (i < lines.length && lines[i].trim() !== '') {
+          text += (text ? '\n' : '') + lines[i].trim();
+          i++;
+        }
+        if (text) {
+          cues.push({ start, end, text });
+        }
+      } else {
+        i++;
+      }
+    }
+    return cues;
+  }
+
+  updateSubtitles() {
+    if (!this.subtitlesEnabled || this.subtitleCues.length === 0) {
+      this.updateSubtitleDisplay('');
+      return;
+    }
+
+    const cur = this.getEffectiveCurrentTime();
+    const activeCue = this.subtitleCues.find((c) => cur >= c.start && cur <= c.end);
+    if (activeCue) {
+      this.updateSubtitleDisplay(activeCue.text);
+    } else {
+      this.updateSubtitleDisplay('');
+    }
+  }
+
+  updateSubtitleDisplay(text) {
+    if (!this.subtitleDisplay) return;
+    if (text) {
+      this.subtitleDisplay.textContent = text;
+      this.subtitleDisplay.style.display = 'block';
+    } else {
+      this.subtitleDisplay.style.display = 'none';
+    }
+  }
+
   toggleSubtitles() {
     if (!this.currentMedia || this.availableSubtitles.length === 0) return;
     if (this.activeSubtitleTrack === -1) {
@@ -426,11 +500,8 @@ class KodimiPlayer {
   clearSubtitleTracks() {
     const existing = document.getElementById('kodimi-sub-track');
     if (existing) existing.remove();
-    if (this.video.textTracks) {
-      for (let i = 0; i < this.video.textTracks.length; i++) {
-        this.video.textTracks[i].mode = 'disabled';
-      }
-    }
+    this.subtitleCues = [];
+    this.updateSubtitleDisplay('');
   }
 
   updateSubtitlesIcon(active) {
@@ -489,6 +560,9 @@ class KodimiPlayer {
         this.progressBuffer.style.width = `${bufPct}%`;
       } catch (_) {}
     }
+
+    // Synchronize subtitles with effective current playback time
+    this.updateSubtitles();
   }
 
   onMetadataLoaded() {

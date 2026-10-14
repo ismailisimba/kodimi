@@ -1,0 +1,28 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-journal
+tmp/
+temp/
+tests/
+scripts/private/
+private/
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+
+# Test files and local media artifacts
+test_*
+*.jpg
+*.png
+*.mkv
+*.mp4
+
+# Service account credentials
+*.json
+!package.json
+!package-lock.json

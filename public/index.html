@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kodimi - Personal Streaming Platform</title>
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23e50914'><path d='M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm6 4v10l8-5-8-5z'/></svg>" />
+  
+  <!-- Google Fonts: Roboto & Material Symbols -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+  
+  <!-- Custom Material Design Stylesheet -->
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+  <!-- Top App Bar -->
+  <header class="top-app-bar" id="top-app-bar">
+    <div style="display: flex; align-items: center;">
+      <div class="brand-container" id="brand-home">
+        <span class="brand-logo">KODIMI</span>
+        <span class="brand-badge">Stream</span>
+      </div>
+
+      <nav class="nav-links">
+        <button class="nav-item active" data-filter="all">
+          <span class="material-symbols-outlined" style="font-size: 18px;">home</span>
+          <span>Home</span>
+        </button>
+        <button class="nav-item" data-filter="movie">
+          <span class="material-symbols-outlined" style="font-size: 18px;">movie</span>
+          <span>Movies</span>
+        </button>
+        <button class="nav-item" data-filter="series">
+          <span class="material-symbols-outlined" style="font-size: 18px;">tv</span>
+          <span>TV Shows</span>
+        </button>
+        <button class="nav-item" data-filter="continue">
+          <span class="material-symbols-outlined" style="font-size: 18px;">history</span>
+          <span>Continue Watching</span>
+        </button>
+        <button class="nav-item" data-filter="vault" id="nav-vault-btn">
+          <span class="material-symbols-outlined" style="font-size: 18px;">lock</span>
+          <span>Private</span>
+        </button>
+      </nav>
+    </div>
+
+    <div class="app-bar-actions">
+      <!-- Search Input -->
+      <div class="search-box">
+        <span class="material-symbols-outlined">search</span>
+        <input type="text" id="search-input" class="search-input" placeholder="Search titles, tags, genres..." />
+      </div>
+
+      <!-- Sync GCS Bucket Button -->
+      <button class="icon-btn" id="sync-btn" title="Scan & Sync GCS Bucket">
+        <span class="material-symbols-outlined" id="sync-icon">sync</span>
+      </button>
+
+      <!-- Logout Button -->
+      <button class="icon-btn" id="logout-btn" title="Sign Out">
+        <span class="material-symbols-outlined">logout</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main View Area -->
+  <main id="main-content" style="padding-bottom: 96px;">
+    <!-- Loading State -->
+    <div id="loading-indicator" style="display: none; height: 60vh; align-items: center; justify-content: center; flex-direction: column; gap: 16px;">
+      <span class="material-symbols-outlined" style="font-size: 40px; color: var(--md-sys-color-primary); animation: spin 1s infinite linear;">progress_activity</span>
+      <p style="font-size: 14px; color: var(--md-sys-color-outline);">Loading your personal library...</p>
+    </div>
+
+    <!-- Hero Billboard Section -->
+    <div id="hero-section" class="hero-banner" style="display: none;"></div>
+
+    <!-- Carousels Container -->
+    <div id="carousels-container" style="display: none;"></div>
+
+    <!-- Grid View Container (Search / Categorized) -->
+    <div id="grid-container" style="display: none; padding-top: 84px;">
+      <div style="padding: 0 48px; margin-bottom: 8px;">
+        <h1 id="grid-title" style="font-size: 24px; font-weight: 700;">All Titles</h1>
+      </div>
+      <div id="grid-content" class="media-grid"></div>
+    </div>
+
+    <!-- Empty State -->
+    <div id="empty-state" style="display: none; text-align: center; padding: 100px 20px;">
+      <span class="material-symbols-outlined" style="font-size: 64px; color: var(--md-sys-color-outline); margin-bottom: 16px;">search_off</span>
+      <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 8px;">No titles found</h2>
+      <p style="font-size: 14px; color: var(--md-sys-color-outline); max-width: 400px; margin: 0 auto;">
+        Try searching for something else, or click the sync button in the top bar to scan your GCS bucket.
+      </p>
+    </div>
+  </main>
+
+  <!-- Floating Action Button (FAB) for Ingest/Download -->
+  <button class="fab" id="fab-ingest" title="Ingest Magnet or Video Link">
+    <span class="material-symbols-outlined">download</span>
+    <span>Ingest Media</span>
+    <span class="badge" id="download-badge" style="display: none;">0</span>
+  </button>
+
+  <!-- Download & Ingestion Modal Dialog -->
+  <div class="modal-backdrop" id="download-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="material-symbols-outlined" style="color: var(--md-sys-color-primary);">cloud_download</span>
+          <span>Ingest & Save to GCS</span>
+        </div>
+        <button class="icon-btn" id="download-modal-close">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <form id="download-form" style="margin-bottom: 24px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <label style="font-size: 12px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);">
+              Magnet URI / Direct Video URL / Torrent Link:
+            </label>
+            <div style="display: flex; gap: 8px;">
+              <input
+                type="text"
+                id="download-url-input"
+                required
+                placeholder="magnet:?xt=urn:btih:... or https://.../video.mp4"
+                style="flex: 1; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 10px 14px; color: white; font-size: 13px;"
+              />
+              <button type="submit" class="btn-filled" style="padding: 10px 20px;">
+                <span class="material-symbols-outlined">download</span>
+                <span>Ingest</span>
+              </button>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <input
+              type="text"
+              id="download-name-input"
+              placeholder="Optional Custom Name (e.g. Inception.2010.mp4)"
+              style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 8px 14px; color: white; font-size: 12px;"
+            />
+          </div>
+        </form>
+
+        <h3 style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--md-sys-color-outline); letter-spacing: 0.5px; margin-bottom: 12px;">
+          Active Ingestion Queue
+        </h3>
+        <div id="download-queue-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Media Details Modal Dialog -->
+  <div class="modal-backdrop" id="detail-modal">
+    <div class="modal-card" style="max-width: 760px;">
+      <!-- Banner Header -->
+      <div style="position: relative; width: 100%; height: 260px; background-color: var(--md-sys-color-surface-container-highest);">
+        <img id="detail-backdrop" src="" alt="" style="width: 100%; height: 100%; object-fit: cover; filter: brightness(0.65);" />
+        <div style="position: absolute; inset: 0; background: linear-gradient(0deg, var(--md-sys-color-surface-container) 0%, transparent 60%);"></div>
+
+        <button class="icon-btn" id="detail-modal-close" style="position: absolute; top: 16px; right: 16px; background-color: rgba(0,0,0,0.6);">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+
+        <div style="position: absolute; bottom: 20px; left: 24px; display: flex; align-items: center; gap: 12px;">
+          <button class="btn-filled" id="detail-play-btn">
+            <span class="material-symbols-outlined fill">play_arrow</span>
+            <span>Play Now</span>
+          </button>
+          <button class="btn-tonal" id="detail-retag-btn">
+            <span class="material-symbols-outlined">auto_awesome</span>
+            <span>Re-tag with AI</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Details Content -->
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 16px;">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <div>
+            <h2 id="detail-title" style="font-size: 24px; font-weight: 900; margin-bottom: 4px;"></h2>
+            <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--md-sys-color-on-surface-variant);">
+              <span id="detail-year" style="font-weight: 600;"></span>
+              <span id="detail-res" class="chip chip-outline" style="font-size: 10px; padding: 1px 6px;"></span>
+              <span id="detail-codec" style="text-transform: uppercase;"></span>
+              <span id="detail-size"></span>
+            </div>
+          </div>
+          <button class="icon-btn" id="detail-delete-btn" title="Remove from catalog" style="color: #ffb4ab;">
+            <span class="material-symbols-outlined">delete</span>
+          </button>
+        </div>
+
+        <p id="detail-plot" style="font-size: 14px; line-height: 1.6; color: var(--md-sys-color-on-surface-variant);"></p>
+
+        <div>
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--md-sys-color-outline); margin-bottom: 6px;">Genres</div>
+          <div id="detail-genres" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+        </div>
+
+        <div>
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--md-sys-color-outline); margin-bottom: 6px;">AI Generated Tags</div>
+          <div id="detail-tags" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+        </div>
+
+        <div style="padding-top: 12px; border-top: 1px solid var(--md-sys-color-outline-variant); font-size: 12px; font-family: monospace; color: var(--md-sys-color-outline); display: flex; align-items: center; gap: 6px;">
+          <span class="material-symbols-outlined" style="font-size: 16px;">storage</span>
+          <span id="detail-gcs-path" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Login Modal Dialog -->
+  <div class="modal-backdrop" id="login-modal">
+    <div class="modal-card" style="max-width: 420px; text-align: center;">
+      <div style="padding: 32px 24px 16px 24px;">
+        <h1 style="font-size: 32px; font-weight: 900; letter-spacing: 2px; color: var(--md-sys-color-primary); margin-bottom: 6px;">
+          KODIMI
+        </h1>
+        <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant);">
+          Personal streaming powered by Google Cloud & FFMPEG
+        </p>
+      </div>
+
+      <div style="padding: 0 24px 32px 24px;">
+        <form id="login-form" style="display: flex; flex-direction: column; gap: 16px;">
+          <div style="position: relative; display: flex; align-items: center;">
+            <span class="material-symbols-outlined" style="position: absolute; left: 12px; color: var(--md-sys-color-outline);">lock</span>
+            <input
+              type="password"
+              id="login-password"
+              required
+              placeholder="Master Access Password"
+              style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 12px 14px 12px 42px; color: white; font-size: 14px;"
+            />
+          </div>
+
+          <div id="login-error" style="display: none; font-size: 12px; color: #ffb4ab; background: rgba(255, 180, 171, 0.1); padding: 8px; border-radius: var(--md-shape-corner-s);"></div>
+
+          <button type="submit" class="btn-filled" style="justify-content: center; background-color: var(--md-sys-color-primary); color: white;">
+            <span>Sign In</span>
+            <span class="material-symbols-outlined">arrow_forward</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Private Vault PIN Modal Dialog -->
+  <div class="modal-backdrop" id="vault-modal">
+    <div class="modal-card" style="max-width: 380px; text-align: center;">
+      <div style="padding: 28px 24px 16px 24px;">
+        <div style="width: 52px; height: 52px; border-radius: 50%; background-color: var(--md-sys-color-surface-container-highest); display: flex; align-items: center; justify-content: center; margin: 0 auto 12px auto;">
+          <span class="material-symbols-outlined" style="font-size: 28px; color: var(--md-sys-color-primary);">lock</span>
+        </div>
+        <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Private Vault</h2>
+        <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant);">
+          Enter your 4-digit PIN to access private media
+        </p>
+      </div>
+
+      <div style="padding: 0 24px 28px 24px;">
+        <form id="vault-form" style="display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: center;">
+            <input
+              type="password"
+              id="vault-pin-input"
+              required
+              maxlength="8"
+              inputmode="numeric"
+              placeholder="••••"
+              style="width: 160px; text-align: center; font-size: 26px; letter-spacing: 8px; background-color: var(--md-sys-color-surface-container-high); border: 2px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 8px 12px; color: white;"
+            />
+          </div>
+
+          <div id="vault-error" style="display: none; font-size: 12px; color: #ffb4ab; background: rgba(255, 180, 171, 0.1); padding: 8px; border-radius: var(--md-shape-corner-s);"></div>
+
+          <div style="display: flex; gap: 8px;">
+            <button type="button" id="vault-modal-cancel" class="btn-tonal" style="flex: 1; justify-content: center;">
+              Cancel
+            </button>
+            <button type="submit" class="btn-filled" style="flex: 1; justify-content: center; background-color: var(--md-sys-color-primary); color: white;">
+              <span>Unlock</span>
+              <span class="material-symbols-outlined">lock_open</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fullscreen Material Video Player Container -->
+  <div id="player-container" class="player-container player-hidden">
+    <video id="player-video" class="player-video" playsinline></video>
+
+    <!-- Buffering / Loading Overlay -->
+    <div id="player-loader" class="player-loader" style="display: none;">
+      <span class="material-symbols-outlined player-spinner-icon">progress_activity</span>
+      <span class="player-loader-text">Buffering Stream...</span>
+    </div>
+
+    <!-- Top Overlay -->
+    <div id="player-overlay-top" class="player-overlay-top">
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <button class="icon-btn" id="player-back-btn" title="Back">
+          <span class="material-symbols-outlined" style="font-size: 28px;">arrow_back</span>
+        </button>
+        <div>
+          <h2 id="player-title-display" style="font-size: 18px; font-weight: 700; color: white;"></h2>
+          <span style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">Adaptive Multi-Resolution Stream</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Controls Overlay -->
+    <div id="player-overlay-bottom" class="player-overlay-bottom">
+      <!-- Progress Bar Scrubber -->
+      <div class="progress-container" id="player-progress-container">
+        <div class="progress-fill" id="player-progress-fill">
+          <div class="progress-thumb"></div>
+        </div>
+      </div>
+
+      <!-- Controls Row -->
+      <div class="player-controls-row">
+        <div class="player-controls-left">
+          <button class="icon-btn" id="player-play-btn" title="Play/Pause (Space)">
+            <span class="material-symbols-outlined fill" id="player-play-icon" style="font-size: 30px;">play_arrow</span>
+          </button>
+
+          <button class="icon-btn" id="player-rewind-btn" title="Rewind 10s">
+            <span class="material-symbols-outlined">replay_10</span>
+          </button>
+
+          <button class="icon-btn" id="player-forward-btn" title="Forward 10s">
+            <span class="material-symbols-outlined">forward_10</span>
+          </button>
+
+          <!-- Volume -->
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="icon-btn" id="player-volume-btn" title="Mute/Unmute (M)">
+              <span class="material-symbols-outlined" id="player-volume-icon">volume_up</span>
+            </button>
+            <input type="range" id="player-volume-slider" min="0" max="1" step="0.05" value="1" style="width: 70px; accent-color: var(--md-sys-color-primary);" />
+          </div>
+
+          <div class="time-display" id="player-time-display">0:00 / 0:00</div>
+        </div>
+
+        <div class="player-controls-right">
+          <!-- Subtitles Dropdown -->
+          <div style="position: relative;">
+            <button class="icon-btn" id="player-subtitles-btn" title="Subtitles (C)">
+              <span class="material-symbols-outlined" id="player-subtitles-icon">subtitles</span>
+            </button>
+            <div class="quality-dropdown" id="player-subtitles-menu" style="min-width: 200px; max-height: 280px; overflow-y: auto;">
+              <div style="padding: 6px 16px; font-size: 11px; font-weight: 700; color: var(--md-sys-color-outline); text-transform: uppercase;">
+                Subtitle Tracks
+              </div>
+              <div id="player-subtitles-options">
+                <button class="quality-option active" data-track="-1">
+                  <span>Off</span>
+                  <span class="material-symbols-outlined" style="font-size: 16px;">check</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quality Dropdown Button -->
+          <div style="position: relative;">
+            <button class="btn-tonal" id="player-quality-btn" style="padding: 6px 14px; font-size: 12px;">
+              <span class="material-symbols-outlined" style="font-size: 16px;">tune</span>
+              <span id="player-quality-label">ORIGINAL (AAC)</span>
+            </button>
+
+            <!-- Quality Menu -->
+            <div class="quality-dropdown" id="player-quality-menu">
+              <div style="padding: 6px 16px; font-size: 11px; font-weight: 700; color: var(--md-sys-color-outline); text-transform: uppercase;">
+                Adaptive Resolutions
+              </div>
+              <button class="quality-option active" data-quality="original">
+                <span>Original (Universal AAC)</span>
+                <span class="material-symbols-outlined" style="font-size: 16px;">check</span>
+              </button>
+              <button class="quality-option" data-quality="direct">
+                <span>Original (Direct Raw)</span>
+              </button>
+              <button class="quality-option" data-quality="720p">
+                <span>720p HD</span>
+              </button>
+              <button class="quality-option" data-quality="480p">
+                <span>480p SD</span>
+              </button>
+              <button class="quality-option" data-quality="360p">
+                <span>360p (Mobile)</span>
+              </button>
+              <button class="quality-option" data-quality="240p">
+                <span>240p (Low Bandwidth)</span>
+              </button>
+              <button class="quality-option" data-quality="144p">
+                <span>144p (Data Saver)</span>
+              </button>
+            </div>
+          </div>
+
+          <button class="icon-btn" id="player-fullscreen-btn" title="Fullscreen (F)">
+            <span class="material-symbols-outlined" id="player-fullscreen-icon">fullscreen</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Application Entrypoint Module -->
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

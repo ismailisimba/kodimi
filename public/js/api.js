@@ -92,6 +92,8 @@ export const api = {
 
   getMediaById: (id) => request(`/media/${id}`),
 
+  getMediaDuration: (id) => request(`/media/${id}/duration`),
+
   getGenres: () => request('/media/genres'),
 
   getContinueWatching: () => request('/media/continue-watching'),

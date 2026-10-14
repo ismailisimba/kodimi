@@ -2,7 +2,7 @@ import express from 'express';
 import { mediaDB, playbackDB } from '../db/database.js';
 import { scanAndIndexBucket, getScanStatus } from '../services/scanner.js';
 import { enrichMediaMetadata } from '../services/aiTagger.js';
-import { getOrGenerateThumbnail } from '../services/transcoder.js';
+import { getOrGenerateThumbnail, getOrProbeDuration } from '../services/transcoder.js';
 import { requireAuth } from '../services/auth.js';
 import config from '../config/env.js';
 
@@ -85,6 +85,24 @@ router.get('/:id/thumbnail', async (req, res) => {
   }
 });
 
+router.get('/:id/duration', requireAuth, async (req, res) => {
+  const item = mediaDB.getById(req.params.id);
+  if (!item) {
+    return res.status(404).json({ error: 'Media not found' });
+  }
+
+  if (item.is_adult && !isVaultAuthorized(req)) {
+    return res.status(403).json({ error: 'Vault PIN required' });
+  }
+
+  try {
+    const duration = await getOrProbeDuration(item.id, item.gcs_path);
+    res.json({ duration });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/:id', requireAuth, (req, res) => {
   const item = mediaDB.getById(req.params.id);
   if (!item) {
@@ -93,6 +111,11 @@ router.get('/:id', requireAuth, (req, res) => {
 
   if (item.is_adult && !isVaultAuthorized(req)) {
     return res.status(403).json({ error: 'Vault PIN required to access private media', vaultRequired: true });
+  }
+
+  // Trigger background duration probing if missing
+  if (!item.duration || item.duration <= 0) {
+    getOrProbeDuration(item.id, item.gcs_path).catch(() => {});
   }
 
   const progress = playbackDB.getProgress(item.id);

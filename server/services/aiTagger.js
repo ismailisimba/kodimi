@@ -52,9 +52,17 @@ export function heuristicParseFilename(filename) {
 
   // Extract clean title by taking words before year or season
   let title = clean;
+  let episodeTitle = null;
   if (seMatch) {
     const idx = clean.search(/\bS\d{1,2}E\d{1,2}\b/i);
     if (idx > 0) title = clean.substring(0, idx);
+
+    // Extract whatever comes after the SxxExx tag (e.g. Sayonara)
+    const afterSe = clean.substring(idx + seMatch[0].length).trim();
+    const cleanAfter = afterSe.replace(/\b(2160p|4k|1080p|720p|480p|360p|WEBRip|BluRay|AMZN|NF|WEB-DL|AAC|DD5|10bit|DDP5|x265|x264|hevc|h264|MiNX|GalaxyRG|MeGusta|TGx|PSA|ELiTE|Rapta|NeoNoir).*/i, '').trim();
+    if (cleanAfter.length > 0) {
+      episodeTitle = cleanAfter;
+    }
   } else if (yearMatch) {
     const idx = clean.search(/\b(19\d\d|20\d\d)\b/);
     if (idx > 0) title = clean.substring(0, idx);
@@ -64,14 +72,23 @@ export function heuristicParseFilename(filename) {
   title = title.replace(/\b(WEBRip|BluRay|AMZN|NF|WEB-DL|AAC|DD5|10bit|MiNX|GalaxyRG|MeGusta|TGx|PSA|ELiTE|Rapta)\b.*$/i, '');
   title = title.trim();
 
+  let formattedTitle = title || base;
+  if (type === 'series') {
+    const epLabel = season && episode ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}` : '';
+    if (epLabel) {
+      formattedTitle = episodeTitle ? `${title} ${epLabel}: ${episodeTitle}` : `${title} ${epLabel}`;
+    }
+  }
+
   return {
     id: crypto.createHash('md5').update(filename).digest('hex'),
     filename,
-    title: title || base,
+    title: formattedTitle,
     type,
     series_name: type === 'series' ? title : null,
     season,
     episode,
+    episode_title: episodeTitle,
     year,
     resolution,
     video_codec,
@@ -108,20 +125,37 @@ export async function enrichMediaMetadata(filename, fileSize = 0) {
   try {
     const prompt = `You are an expert movie and TV media cataloger for a personal streaming platform named Kodimi.
 Analyze this video file name: "${filename}".
+Detected Season: ${parsed.season || 'null'}, Episode: ${parsed.episode || 'null'}, Inferred Series: "${parsed.series_name || ''}", Inferred Episode Title: "${parsed.episode_title || ''}".
 
-Return a strictly valid JSON object with the following fields:
+IMPORTANT RULES FOR TV SERIES EPISODES:
+1. If this is a TV series episode (contains SxxExx or season/episode pattern):
+   - Set "type": "series"
+   - Set "series_name": Canonical name of the TV show (e.g. "Slow Horses")
+   - Set "season": Season number (integer, e.g. 6)
+   - Set "episode": Episode number (integer, e.g. 5)
+   - Set "episode_title": The actual title of this specific episode (e.g. "Sayonara")
+   - Set "title": MUST be formatted as: "{series_name} S{XX}E{XX}: {episode_title}" (e.g. "Slow Horses S06E05: Sayonara"). If episode title is unknown, use "{series_name} S{XX}E{XX}".
+   - Set "plot": An accurate 2-3 sentence synopsis/plot overview of THIS SPECIFIC EPISODE (what happens in this episode, not just the generic series premise).
+2. If this is a standalone Movie:
+   - Set "type": "movie"
+   - Set "series_name": null, "season": null, "episode": null, "episode_title": null
+   - Set "title": Canonical movie title
+   - Set "plot": Accurate 2-3 sentence synopsis of the movie.
+
+Return a strictly valid JSON object with fields:
 {
-  "title": "Clean canonical title of the movie or show",
+  "title": string,
   "type": "movie" or "series",
-  "series_name": "Show title if TV series, otherwise null",
-  "season": ${parsed.season || 'integer or null'},
-  "episode": ${parsed.episode || 'integer or null'},
-  "year": ${parsed.year || 'release year integer or null'},
-  "plot": "Engaging, accurate 2-3 sentence synopsis/plot overview suitable for a Netflix browse card",
-  "genres": ["Genre1", "Genre2", "Genre3"],
-  "tags": ["Tag1", "Tag2", "Tag3", "Tag4"],
-  "poster_url": "Direct HTTPS URL to high-resolution official poster artwork or themed movie banner (or empty string)",
-  "backdrop_url": "Direct HTTPS URL to widescreen backdrop (or empty string)"
+  "series_name": string or null,
+  "season": integer or null,
+  "episode": integer or null,
+  "episode_title": string or null,
+  "year": integer or null,
+  "plot": string,
+  "genres": string[],
+  "tags": string[],
+  "poster_url": string,
+  "backdrop_url": string
 }
 
 Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON string.`;
@@ -135,35 +169,39 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
     const cleanJson = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
     const aiData = JSON.parse(cleanJson);
 
-    let finalTitle = aiData.title || parsed.title;
     let seriesName = aiData.series_name || parsed.series_name;
+    let finalTitle = aiData.title || parsed.title;
 
-    if (parsed.type === 'series') {
-      if (!seriesName) seriesName = parsed.title;
-      const epLabel = parsed.season && parsed.episode ? `S${String(parsed.season).padStart(2, '0')}E${String(parsed.episode).padStart(2, '0')}` : '';
-      if (epLabel && !finalTitle.includes(seriesName)) {
-        finalTitle = `${seriesName} ${epLabel}: ${finalTitle}`;
+    if (parsed.type === 'series' || aiData.type === 'series') {
+      const sNum = aiData.season ?? parsed.season;
+      const epNum = aiData.episode ?? parsed.episode;
+      const epTitle = aiData.episode_title || parsed.episode_title;
+      const sName = seriesName || 'TV Series';
+      const epLabel = sNum && epNum ? `S${String(sNum).padStart(2, '0')}E${String(epNum).padStart(2, '0')}` : '';
+
+      if (epLabel) {
+        finalTitle = epTitle ? `${sName} ${epLabel}: ${epTitle}` : `${sName} ${epLabel}`;
       }
     }
 
-      const cleanPoster = (aiData.poster_url && !aiData.poster_url.includes('tmdb.org')) ? aiData.poster_url : null;
-      const cleanBackdrop = (aiData.backdrop_url && !aiData.backdrop_url.includes('tmdb.org')) ? aiData.backdrop_url : null;
+    const cleanPoster = (aiData.poster_url && !aiData.poster_url.includes('tmdb.org')) ? aiData.poster_url : null;
+    const cleanBackdrop = (aiData.backdrop_url && !aiData.backdrop_url.includes('tmdb.org')) ? aiData.backdrop_url : null;
 
-      return {
-        ...parsed,
-        size_bytes: fileSize,
-        title: finalTitle,
-        type: aiData.type || parsed.type,
-        series_name: seriesName,
-        season: aiData.season ?? parsed.season,
-        episode: aiData.episode ?? parsed.episode,
-        year: aiData.year ?? parsed.year,
-        plot: aiData.plot || `Watch ${finalTitle} in high definition on Kodimi.`,
-        genres: Array.isArray(aiData.genres) && aiData.genres.length > 0 ? aiData.genres : ['Entertainment'],
-        tags: Array.isArray(aiData.tags) && aiData.tags.length > 0 ? aiData.tags : ['HD', parsed.resolution],
-        poster_url: cleanPoster,
-        backdrop_url: cleanBackdrop,
-      };
+    return {
+      ...parsed,
+      size_bytes: fileSize,
+      title: finalTitle,
+      type: aiData.type || parsed.type,
+      series_name: seriesName,
+      season: aiData.season ?? parsed.season,
+      episode: aiData.episode ?? parsed.episode,
+      year: aiData.year ?? parsed.year,
+      plot: aiData.plot || `Watch ${finalTitle} in high definition on Kodimi.`,
+      genres: Array.isArray(aiData.genres) && aiData.genres.length > 0 ? aiData.genres : ['Entertainment'],
+      tags: Array.isArray(aiData.tags) && aiData.tags.length > 0 ? aiData.tags : ['HD', parsed.resolution],
+      poster_url: cleanPoster,
+      backdrop_url: cleanBackdrop,
+    };
   } catch (err) {
     console.warn(`[AI] Gemini enrichment failed for "${filename}": ${err.message}. Using fallback.`);
     return generateFallbackMetadata(parsed, fileSize);

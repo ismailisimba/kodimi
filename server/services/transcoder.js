@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createReadStream, getFileMetadata, getSignedReadUrl } from '../config/gcs.js';
+import { mediaDB } from '../db/database.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,11 +14,11 @@ if (!fs.existsSync(thumbsDir)) {
 }
 
 export const RESOLUTION_PROFILES = {
-  '144p': { width: 256, height: 144, videoBitrate: '140k', audioBitrate: '32k' },
-  '240p': { width: 426, height: 240, videoBitrate: '280k', audioBitrate: '48k' },
-  '360p': { width: 640, height: 360, videoBitrate: '500k', audioBitrate: '64k' },
-  '480p': { width: 854, height: 480, videoBitrate: '900k', audioBitrate: '96k' },
-  '720p': { width: 1280, height: 720, videoBitrate: '1800k', audioBitrate: '128k' },
+  '144p': { width: 256, height: 144, videoBitrate: '140k', audioBitrate: '128k' },
+  '240p': { width: 426, height: 240, videoBitrate: '280k', audioBitrate: '128k' },
+  '360p': { width: 640, height: 360, videoBitrate: '500k', audioBitrate: '128k' },
+  '480p': { width: 854, height: 480, videoBitrate: '900k', audioBitrate: '128k' },
+  '720p': { width: 1280, height: 720, videoBitrate: '1800k', audioBitrate: '192k' },
   '1080p': { width: 1920, height: 1080, videoBitrate: '3500k', audioBitrate: '192k' },
 };
 
@@ -81,6 +82,17 @@ export async function streamOriginalRemux(gcsPath, startTimeSeconds = 0, req, re
   });
 
   const command = ffmpeg(signedUrl)
+    .inputOptions([
+      '-probesize 1000000',
+      '-analyzeduration 1000000',
+      '-fflags +nobuffer+fastseek',
+    ]);
+
+  if (startTimeSeconds > 0) {
+    command.seekInput(startTimeSeconds);
+  }
+
+  command
     .format('mp4')
     .outputOptions([
       '-map 0:v:0',    // Video stream 0 only
@@ -88,13 +100,13 @@ export async function streamOriginalRemux(gcsPath, startTimeSeconds = 0, req, re
       '-c:v copy',     // Bit-for-bit video copy (0 CPU encoding loss)
       '-c:a aac',      // Universal AAC stereo audio
       '-b:a 192k',
+      '-ar 48000',
+      '-ac 2',
+      '-threads 0',
       '-preset ultrafast',
       '-movflags frag_keyframe+empty_moov+default_base_moof',
+      '-flush_packets 1',
     ]);
-
-  if (startTimeSeconds > 0) {
-    command.seekInput(startTimeSeconds);
-  }
 
   command.on('start', (cmdline) => {
     console.log(`[Remux Original Stream Started]: ${cmdline.substring(0, 100)}...`);
@@ -133,22 +145,38 @@ export async function streamTranscodedVideo(gcsPath, quality, startTimeSeconds =
   });
 
   const command = ffmpeg(signedUrl)
-    .format('mp4')
-    .videoCodec('libx264')
-    .size(`?x${profile.height}`)
-    .videoBitrate(profile.videoBitrate)
-    .audioCodec('aac')
-    .audioBitrate(profile.audioBitrate)
-    .outputOptions([
-      '-preset ultrafast',
-      '-tune zerolatency',
-      '-movflags frag_keyframe+empty_moov+default_base_moof',
-      '-pix_fmt yuv420p',
+    .inputOptions([
+      '-probesize 1000000',
+      '-analyzeduration 1000000',
+      '-fflags +nobuffer+fastseek',
     ]);
 
   if (startTimeSeconds > 0) {
     command.seekInput(startTimeSeconds);
   }
+
+  command
+    .format('mp4')
+    .outputOptions([
+      '-map 0:v:0',
+      '-map 0:a:0?',
+      '-c:v libx264',
+      `-vf scale=-2:${profile.height}`,
+      `-b:v ${profile.videoBitrate}`,
+      '-c:a aac',
+      `-b:a ${profile.audioBitrate}`,
+      '-ar 48000',
+      '-ac 2',
+      '-threads 0',
+      '-preset ultrafast',
+      '-tune zerolatency',
+      '-g 48',
+      '-keyint_min 24',
+      '-sc_threshold 0',
+      '-pix_fmt yuv420p',
+      '-movflags frag_keyframe+empty_moov+default_base_moof',
+      '-flush_packets 1',
+    ]);
 
   command.on('start', (cmdline) => {
     console.log(`[FFMPEG Transcode Started for ${quality}]: ${cmdline.substring(0, 100)}...`);
@@ -389,6 +417,48 @@ export async function getSubtitleTracks(mediaId, gcsPath) {
   }
 }
 
+/**
+ * Probes and caches media duration in seconds.
+ * Automatically persists to database if missing.
+ */
+export async function getOrProbeDuration(mediaId, gcsPath) {
+  const existing = mediaDB.getById(mediaId);
+  if (existing && existing.duration > 0) {
+    return existing.duration;
+  }
+
+  try {
+    const signedUrl = await getSignedReadUrl(gcsPath, 60);
+    const duration = await new Promise((resolve) => {
+      ffmpeg(signedUrl)
+        .inputOptions([
+          '-probesize 1000000',
+          '-analyzeduration 1000000',
+        ])
+        .ffprobe((err, data) => {
+          if (err || !data || !data.format || !data.format.duration) {
+            return resolve(0);
+          }
+          const dur = Math.round(parseFloat(data.format.duration));
+          resolve(dur > 0 ? dur : 0);
+        });
+    });
+
+    if (duration > 0 && existing) {
+      mediaDB.upsert({
+        ...existing,
+        duration,
+      });
+      console.log(`[Duration Cached]: ${existing.title} -> ${duration}s (${Math.floor(duration / 60)}m ${duration % 60}s)`);
+    }
+
+    return duration;
+  } catch (err) {
+    console.warn(`[Duration Probe Error]: ${err.message}`);
+    return 0;
+  }
+}
+
 export default {
   RESOLUTION_PROFILES,
   streamOriginalDirect,
@@ -397,4 +467,6 @@ export default {
   streamSubtitles,
   getOrGenerateThumbnail,
   getSubtitleTracks,
+  getOrProbeDuration,
 };
+

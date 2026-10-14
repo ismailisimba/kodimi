@@ -11,6 +11,7 @@ class KodimiPlayer {
     this.playBtn = document.getElementById('player-play-btn');
     this.playIcon = document.getElementById('player-play-icon');
     this.progressContainer = document.getElementById('player-progress-container');
+    this.progressBuffer = document.getElementById('player-progress-buffer');
     this.progressFill = document.getElementById('player-progress-fill');
     this.timeDisplay = document.getElementById('player-time-display');
     this.volumeBtn = document.getElementById('player-volume-btn');
@@ -123,11 +124,22 @@ class KodimiPlayer {
     this.selectedQuality = 'original';
     this.qualityLabel.textContent = 'ORIGINAL (AAC)';
     this.titleDisplay.textContent = media.title;
-    this.totalDuration = media.duration || 0;
+    this.totalDuration = (media && media.duration > 0) ? media.duration : 0;
     this.seekTimeOffset = initialTime;
     this.subtitlesEnabled = false;
     this.activeSubtitleTrack = -1;
     this.updateSubtitlesIcon(false);
+
+    // If total duration is unknown, probe it asynchronously
+    if (this.totalDuration <= 0 && media && media.id) {
+      api.getMediaDuration(media.id).then((res) => {
+        if (res && res.duration > 0 && this.currentMedia && this.currentMedia.id === media.id) {
+          this.totalDuration = res.duration;
+          this.currentMedia.duration = res.duration;
+          this.onTimeUpdate();
+        }
+      }).catch(() => {});
+    }
 
     // Remove existing subtitle tracks
     this.clearSubtitleTracks();
@@ -219,11 +231,12 @@ class KodimiPlayer {
   }
 
   getEffectiveDuration() {
+    if (this.totalDuration > 0) {
+      return this.totalDuration;
+    }
     const rawDur = this.video.duration;
-    if (Number.isFinite(rawDur) && rawDur > 0) {
-      if (rawDur > this.totalDuration) {
-        this.totalDuration = rawDur;
-      }
+    if (this.selectedQuality === 'direct' && Number.isFinite(rawDur) && rawDur > 0) {
+      this.totalDuration = rawDur;
       return rawDur;
     }
     return this.totalDuration || 1;
@@ -466,12 +479,25 @@ class KodimiPlayer {
     const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
     this.progressFill.style.width = `${pct}%`;
     this.timeDisplay.textContent = `${this.formatTime(cur)} / ${this.formatTime(dur)}`;
+
+    // Update buffer bar visualization relative to total duration
+    if (this.progressBuffer && this.video.buffered && this.video.buffered.length > 0 && dur > 0) {
+      try {
+        const bufferedEnd = this.video.buffered.end(this.video.buffered.length - 1);
+        const effectiveBuffered = this.selectedQuality === 'direct' ? bufferedEnd : this.seekTimeOffset + bufferedEnd;
+        const bufPct = Math.min(100, Math.max(0, (effectiveBuffered / dur) * 100));
+        this.progressBuffer.style.width = `${bufPct}%`;
+      } catch (_) {}
+    }
   }
 
   onMetadataLoaded() {
-    const rawDur = this.video.duration;
-    if (Number.isFinite(rawDur) && rawDur > 0) {
-      this.totalDuration = rawDur;
+    // Only direct raw byte-range stream exposes the full media container duration natively
+    if (this.selectedQuality === 'direct') {
+      const rawDur = this.video.duration;
+      if (Number.isFinite(rawDur) && rawDur > 0) {
+        this.totalDuration = rawDur;
+      }
     }
     this.onTimeUpdate();
   }

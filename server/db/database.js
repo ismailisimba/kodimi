@@ -231,7 +231,7 @@ export const mediaDB = {
     return null;
   },
 
-  upsert: (item) => {
+  upsert: async (item) => {
     const docData = {
       ...item,
       updated_at: new Date(),
@@ -240,12 +240,16 @@ export const mediaDB = {
     // Update in-memory cache immediately
     mediaCache.set(item.id, docData);
 
-    // Persist to MongoDB asynchronously
-    MediaModel.findOneAndUpdate(
-      { gcs_path: item.gcs_path },
-      { $set: docData },
-      { upsert: true, returnDocument: 'after' }
-    ).catch((err) => console.error('[DB Upsert Error]:', err.message));
+    // Persist to MongoDB
+    try {
+      await MediaModel.findOneAndUpdate(
+        { gcs_path: item.gcs_path },
+        { $set: docData },
+        { upsert: true, returnDocument: 'after' }
+      );
+    } catch (err) {
+      console.error('[DB Upsert Error]:', err.message);
+    }
 
     return docData;
   },

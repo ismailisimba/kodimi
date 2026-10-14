@@ -1,6 +1,7 @@
 import { listFiles } from '../config/gcs.js';
 import { mediaDB } from '../db/database.js';
 import { enrichMediaMetadata } from './aiTagger.js';
+import { getOrProbeDuration } from './transcoder.js';
 
 const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.avi', '.mov', '.webm', '.ts', '.m4v']);
 
@@ -48,21 +49,26 @@ export async function scanAndIndexBucket() {
         console.log(`[Scanner] Indexing new file: ${file.name}`);
         try {
           const metadata = await enrichMediaMetadata(file.name, file.size);
-          mediaDB.upsert({
+          const saved = mediaDB.upsert({
             ...metadata,
             gcs_path: file.name,
           });
           scanStatus.added++;
+          // Probe duration in background for newly added file
+          getOrProbeDuration(saved.id, file.name).catch(() => {});
         } catch (err) {
           console.error(`[Scanner] Failed to index ${file.name}:`, err.message);
         }
       } else {
-        // Update size if missing
+        // Update size or duration if missing
         if (!existing.size_bytes && file.size) {
           mediaDB.upsert({
             ...existing,
             size_bytes: file.size,
           });
+        }
+        if (!existing.duration || existing.duration <= 0) {
+          getOrProbeDuration(existing.id, file.name).catch(() => {});
         }
       }
 

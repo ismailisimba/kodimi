@@ -16,8 +16,8 @@ import { getSignedWriteUrl, fileExists } from '../config/gcs.js';
 
 const router = express.Router();
 
-router.get('/', requireAuth, (req, res) => {
-  const downloads = downloadsDB.getAll();
+router.get('/', requireAuth, async (req, res) => {
+  const downloads = await downloadsDB.getAllAsync();
   res.json({ downloads });
 });
 

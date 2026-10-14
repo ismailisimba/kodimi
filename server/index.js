@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import config from './config/env.js';
 import { mediaDB, initDatabase } from './db/database.js';
 import { scanAndIndexBucket } from './services/scanner.js';
+import { initDownloader } from './services/downloader.js';
 
 import authRoutes from './routes/auth.js';
 import mediaRoutes from './routes/media.js';
@@ -50,6 +51,7 @@ app.use((req, res) => {
 // Initialize Database and Start Server
 async function start() {
   await initDatabase();
+  initDownloader();
 
   app.listen(config.port, '0.0.0.0', () => {
     console.log('==============================================');

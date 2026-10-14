@@ -14,6 +14,26 @@ const VIDEO_EXTENSIONS = new Set([
   '.mkv', '.mp4', '.avi', '.mov', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.mpg', '.mpeg', '.vob', '.m2ts'
 ]);
 
+// Reliable public trackers across UDP, HTTP, and WebSocket
+const PUBLIC_TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.tracker.cl:1337/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://opentracker.i2p.rocks:6969/announce',
+  'udp://tracker.internetwarriors.net:1337/announce',
+  'udp://coppersurfer.tk:6969/announce',
+  'udp://tracker.zer0day.to:1337/announce',
+  'http://tracker.opentrackr.org:1337/announce',
+  'http://tracker.openbittorrent.com:80/announce',
+  'http://nyaa.tracker.wf:7777/announce',
+  'wss://tracker.openwebtorrent.com',
+  'wss://tracker.btorrent.xyz',
+  'wss://tracker.fastcast.nz',
+];
+
 // Active in-memory download jobs
 const activeJobs = new Map();
 
@@ -190,7 +210,9 @@ async function processTorrentDownload(id, torrentSource, customName) {
       peers: 0,
     });
 
-    const torrent = client.add(torrentSource);
+    const torrent = client.add(torrentSource, {
+      announce: PUBLIC_TRACKERS,
+    });
     const job = activeJobs.get(id);
     if (job) {
       job.torrent = torrent;
@@ -204,6 +226,22 @@ async function processTorrentDownload(id, torrentSource, customName) {
         status_text: `Connected to ${peers} peer(s), discovering files...`,
       });
     });
+
+    // Periodic discovery updater while waiting for torrent metadata
+    const discoveryInterval = setInterval(() => {
+      const currentJob = activeJobs.get(id);
+      if (!currentJob || currentJob.status !== 'downloading' || torrent.metadata) {
+        clearInterval(discoveryInterval);
+        return;
+      }
+      const peers = torrent.numPeers || 0;
+      updateDownload(id, {
+        peers,
+        status_text: peers > 0
+          ? `Connected to ${peers} peer(s), retrieving metadata...`
+          : 'Connecting to trackers & searching for peers...',
+      });
+    }, 3500);
 
     torrent.on('ready', async () => {
       console.log(`[Torrent] Metadata ready for: "${torrent.name}" (total ${torrent.files.length} file(s))`);
@@ -229,10 +267,11 @@ async function processTorrentDownload(id, torrentSource, customName) {
 
       console.log(`[Torrent] Downloading ${targetFiles.length} media file(s) for "${torrent.name}", total ${(totalBytes / (1024 * 1024)).toFixed(1)} MB`);
 
+      const effectiveName = (customName && customName !== 'Torrent Ingestion') ? customName : null;
       updateDownload(id, {
-        name: isMultiFile ? `${torrent.name} (${targetFiles.length} files)` : (customName || targetFiles[0].name),
+        name: isMultiFile ? `${torrent.name} (${targetFiles.length} files)` : (effectiveName || targetFiles[0].name),
         total_bytes: totalBytes,
-        gcs_path: isMultiFile ? `${torrent.name}/` : targetFiles[0].name,
+        gcs_path: isMultiFile ? `${torrent.name}/` : (effectiveName ? `${effectiveName}${path.extname(targetFiles[0].name)}` : targetFiles[0].name),
         status_text: `Ready to download ${targetFiles.length} file(s)...`,
       });
 
@@ -251,8 +290,8 @@ async function processTorrentDownload(id, torrentSource, customName) {
           break;
         }
 
-        const cleanFilename = (!isMultiFile && customName)
-          ? `${customName}${path.extname(currentFile.name)}`
+        const cleanFilename = (!isMultiFile && effectiveName)
+          ? `${effectiveName}${path.extname(currentFile.name)}`
           : currentFile.name;
         const gcsPath = cleanFilename;
         const fileBytes = currentFile.length;
@@ -361,7 +400,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
       const finalJob = activeJobs.get(id);
       if (finalJob && finalJob.status !== 'failed' && finalJob.status !== 'paused') {
         console.log(`[Torrent] Successfully completed all ${targetFiles.length} file(s) for: ${torrent.name}`);
-        completeDownload(id, (customName || torrent.name), totalBytes);
+        completeDownload(id, ((customName && customName !== 'Torrent Ingestion') ? customName : torrent.name), totalBytes);
       }
       torrent.destroy();
     });
@@ -502,7 +541,8 @@ function failDownload(id, errorMsg) {
 }
 
 function broadcastProgress(data) {
-  downloadEvents.emit('progress', data);
+  const { torrent, currentReadStream, currentWriteStream, ...cleanData } = data;
+  downloadEvents.emit('progress', cleanData);
 }
 
 export function pauseDownload(id) {
@@ -538,7 +578,10 @@ export function pauseDownload(id) {
 }
 
 export async function resumeDownload(id) {
-  const job = downloadsDB.getById(id);
+  let job = downloadsDB.getById(id);
+  if (!job) {
+    job = await downloadsDB.getByIdAsync(id);
+  }
   if (!job) throw new Error('Download job not found');
   if (activeJobs.has(id)) return activeJobs.get(id);
 
@@ -583,6 +626,19 @@ export function cancelDownload(id, shouldUpsert = true) {
   return false;
 }
 
+export async function initDownloader() {
+  try {
+    const list = await downloadsDB.getAllAsync();
+    const downloading = list.filter((d) => d.status === 'downloading');
+    for (const dl of downloading) {
+      console.log(`[Downloader] Auto-resuming in-flight job on startup: ${dl.name} (${dl.id})`);
+      resumeDownload(dl.id).catch((err) => console.warn(`[Downloader Auto-Resume Error]:`, err.message));
+    }
+  } catch (err) {
+    console.error('[Downloader Init Error]:', err.message);
+  }
+}
+
 export default {
   startDownload,
   startTorrentFromBuffer,
@@ -591,5 +647,6 @@ export default {
   pauseDownload,
   resumeDownload,
   cancelDownload,
+  initDownloader,
   downloadEvents,
 };

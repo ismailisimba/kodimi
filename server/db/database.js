@@ -324,13 +324,39 @@ export const downloadsDB = {
     return list;
   },
 
+  getAllAsync: async () => {
+    try {
+      const docs = await DownloadModel.find({}).sort({ created_at: -1 }).lean();
+      downloadCache.clear();
+      docs.forEach((d) => downloadCache.set(d.id, d));
+      return docs;
+    } catch (_) {
+      return downloadsDB.getAll();
+    }
+  },
+
   getById: (id) => {
     return downloadCache.get(id) || null;
   },
 
+  getByIdAsync: async (id) => {
+    const cached = downloadCache.get(id);
+    if (cached) return cached;
+    try {
+      const doc = await DownloadModel.findOne({ id }).lean();
+      if (doc) {
+        downloadCache.set(id, doc);
+        return doc;
+      }
+    } catch (_) {}
+    return null;
+  },
+
   upsert: (dl) => {
+    // Strip runtime stream & torrent instances that cannot be serialized to MongoDB
+    const { torrent, currentReadStream, currentWriteStream, ...cleanData } = dl;
     const docData = {
-      ...dl,
+      ...cleanData,
       updated_at: new Date(),
     };
 

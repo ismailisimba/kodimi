@@ -56,22 +56,70 @@ async function getWebTorrentClient() {
 }
 
 /**
+ * Automatically repairs and cleans malformed or truncated magnet URIs.
+ */
+export function sanitizeMagnetUri(uri) {
+  if (typeof uri !== 'string' || !uri.startsWith('magnet:?')) return uri;
+
+  try {
+    decodeURIComponent(uri);
+    return uri;
+  } catch (err) {
+    // If malformed due to truncated trailing parameter (like cut-off %2 at the end), trim trailing parameters
+    let cleaned = uri.trim();
+    while (cleaned.includes('&')) {
+      cleaned = cleaned.substring(0, cleaned.lastIndexOf('&'));
+      try {
+        decodeURIComponent(cleaned);
+        console.log('[Downloader] Successfully sanitized malformed magnet URI by trimming broken parameter');
+        return cleaned;
+      } catch (_) {}
+    }
+  }
+
+  // If still malformed, extract infoHash if present
+  const hashMatch = uri.match(/xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})/i);
+  if (hashMatch) {
+    const nameMatch = uri.match(/dn=([^&]+)/i);
+    const cleanName = nameMatch ? nameMatch[1].replace(/[^a-zA-Z0-9._ -]/g, '') : '';
+    console.log(`[Downloader] Extracted infoHash ${hashMatch[1]} from mangled magnet link`);
+    return `magnet:?xt=urn:btih:${hashMatch[1]}${cleanName ? `&dn=${cleanName}` : ''}`;
+  }
+
+  return uri;
+}
+
+/**
  * Initiates a download (magnet, torrent URL, or direct HTTP/HTTPS link).
  */
 export async function startDownload(sourceUrl, customName = '') {
-  const isMagnet = typeof sourceUrl === 'string' && sourceUrl.startsWith('magnet:?');
-  const isTorrent = typeof sourceUrl === 'string' && (sourceUrl.endsWith('.torrent') || sourceUrl.includes('torrent'));
-  const isDirect = typeof sourceUrl === 'string' && !isMagnet && (sourceUrl.startsWith('http://') || sourceUrl.startsWith('https://'));
+  let cleanSourceUrl = typeof sourceUrl === 'string' ? sourceUrl.trim() : sourceUrl;
+  const isMagnet = typeof cleanSourceUrl === 'string' && cleanSourceUrl.startsWith('magnet:?');
+  if (isMagnet) {
+    cleanSourceUrl = sanitizeMagnetUri(cleanSourceUrl);
+  }
+  const isTorrent = typeof cleanSourceUrl === 'string' && (cleanSourceUrl.endsWith('.torrent') || cleanSourceUrl.includes('torrent'));
+  const isDirect = typeof cleanSourceUrl === 'string' && !isMagnet && (cleanSourceUrl.startsWith('http://') || cleanSourceUrl.startsWith('https://'));
+
+  let extractedMagnetName = null;
+  if (isMagnet) {
+    try {
+      const dnMatch = cleanSourceUrl.match(/dn=([^&]+)/i);
+      if (dnMatch) {
+        extractedMagnetName = decodeURIComponent(dnMatch[1].replace(/\+/g, ' '));
+      }
+    } catch (_) {}
+  }
 
   const id = crypto.randomUUID();
   const sourceType = isMagnet ? 'magnet' : isTorrent ? 'torrent' : 'direct';
-  const name = customName || (isMagnet ? 'Torrent Ingestion' : path.basename(new URL(sourceUrl).pathname)) || `media-${Date.now()}`;
+  const name = customName || extractedMagnetName || (isDirect ? path.basename(new URL(cleanSourceUrl).pathname) : null) || `media-${Date.now()}`;
 
   const downloadRecord = {
     id,
     name,
     source_type: sourceType,
-    source_url: typeof sourceUrl === 'string' ? sourceUrl : 'buffer',
+    source_url: typeof cleanSourceUrl === 'string' ? cleanSourceUrl : 'buffer',
     status: 'downloading',
     status_text: 'Starting download...',
     progress: 0,
@@ -88,9 +136,9 @@ export async function startDownload(sourceUrl, customName = '') {
   broadcastProgress(downloadRecord);
 
   if (isMagnet || isTorrent) {
-    processTorrentDownload(id, sourceUrl, customName);
+    processTorrentDownload(id, cleanSourceUrl, customName);
   } else if (isDirect) {
-    processDirectDownload(id, sourceUrl, customName);
+    processDirectDownload(id, cleanSourceUrl, customName);
   } else {
     failDownload(id, 'Unsupported URL format');
   }
@@ -593,7 +641,8 @@ export async function resumeDownload(id) {
   broadcastProgress(job);
 
   if (job.source_type === 'magnet' || job.source_type === 'torrent') {
-    processTorrentDownload(id, job.source_url, job.name);
+    const cleanSource = typeof job.source_url === 'string' ? sanitizeMagnetUri(job.source_url) : job.source_url;
+    processTorrentDownload(id, cleanSource, job.name);
   } else if (job.source_type === 'direct') {
     processDirectDownload(id, job.source_url, job.name);
   }

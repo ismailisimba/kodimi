@@ -628,6 +628,8 @@ class KodimiApp {
         <span class="material-symbols-outlined fill">play_arrow</span>
         <span>Play</span>
       `;
+    }
+
     // Set Vault Button state
     if (this.detailVaultBtn && this.detailVaultIcon && this.detailVaultText) {
       if (item.is_adult) {

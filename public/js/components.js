@@ -187,7 +187,7 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function escapeHtml(str) {
+export function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/[&<>'"]/g, 
     tag => ({

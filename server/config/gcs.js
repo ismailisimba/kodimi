@@ -94,16 +94,26 @@ export async function listFiles(prefix = '') {
   }));
 }
 
-/**
- * Generates a signed read URL for a file in GCS.
- * @param {string} filename
- * @param {number} expiresInMinutes
- */
 export async function getSignedReadUrl(filename, expiresInMinutes = 60) {
   const bucket = getBucket();
   const [url] = await bucket.file(filename).getSignedUrl({
     version: 'v4',
     action: 'read',
+    expires: Date.now() + expiresInMinutes * 60 * 1000,
+  });
+  return url;
+}
+
+/**
+ * Generates a signed write PUT URL for uploading directly to GCS.
+ * @param {string} filename
+ * @param {number} expiresInMinutes
+ */
+export async function getSignedWriteUrl(filename, expiresInMinutes = 120) {
+  const bucket = getBucket();
+  const [url] = await bucket.file(filename).getSignedUrl({
+    version: 'v4',
+    action: 'write',
     expires: Date.now() + expiresInMinutes * 60 * 1000,
   });
   return url;
@@ -118,4 +128,5 @@ export default {
   createWriteStream,
   listFiles,
   getSignedReadUrl,
+  getSignedWriteUrl,
 };

@@ -9,6 +9,7 @@ import {
   renderMediaCard,
   renderCarousel,
   renderDownloadItem,
+  escapeHtml,
 } from './components.js';
 
 class KodimiApp {
@@ -66,6 +67,17 @@ class KodimiApp {
     this.downloadNameInput = document.getElementById('download-name-input');
     this.downloadQueueList = document.getElementById('download-queue-list');
     this.downloadCountBadge = document.getElementById('download-badge');
+
+    // Ingest Modal Tabs & Direct Upload Elements
+    this.tabBtnLink = document.getElementById('tab-btn-link');
+    this.tabBtnUpload = document.getElementById('tab-btn-upload');
+    this.tabContentLink = document.getElementById('tab-content-link');
+    this.tabContentUpload = document.getElementById('tab-content-upload');
+    this.uploadDropzone = document.getElementById('upload-dropzone');
+    this.directFileInput = document.getElementById('direct-file-input');
+    this.browseFilesBtn = document.getElementById('browse-files-btn');
+    this.uploadProgressContainer = document.getElementById('upload-progress-container');
+    this.uploadProgressList = document.getElementById('upload-progress-list');
 
     this.detailModal = document.getElementById('detail-modal');
     this.detailBackdrop = document.getElementById('detail-backdrop');
@@ -142,6 +154,61 @@ class KodimiApp {
     });
 
     this.downloadForm.addEventListener('submit', (e) => this.handleStartDownload(e));
+
+    // Ingest Modal Tabs
+    if (this.tabBtnLink && this.tabBtnUpload) {
+      this.tabBtnLink.addEventListener('click', () => {
+        this.tabBtnLink.classList.add('active');
+        this.tabBtnUpload.classList.remove('active');
+        this.tabContentLink.style.display = 'block';
+        this.tabContentUpload.style.display = 'none';
+      });
+
+      this.tabBtnUpload.addEventListener('click', () => {
+        this.tabBtnUpload.classList.add('active');
+        this.tabBtnLink.classList.remove('active');
+        this.tabContentUpload.style.display = 'block';
+        this.tabContentLink.style.display = 'none';
+      });
+    }
+
+    // Direct Upload Dropzone & File Input
+    if (this.uploadDropzone && this.directFileInput) {
+      if (this.browseFilesBtn) {
+        this.browseFilesBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.directFileInput.click();
+        });
+      }
+
+      this.uploadDropzone.addEventListener('click', () => {
+        this.directFileInput.click();
+      });
+
+      this.uploadDropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        this.uploadDropzone.classList.add('dragover');
+      });
+
+      this.uploadDropzone.addEventListener('dragleave', () => {
+        this.uploadDropzone.classList.remove('dragover');
+      });
+
+      this.uploadDropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        this.uploadDropzone.classList.remove('dragover');
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          this.handleDirectFilesUpload(e.dataTransfer.files);
+        }
+      });
+
+      this.directFileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          this.handleDirectFilesUpload(e.target.files);
+          this.directFileInput.value = '';
+        }
+      });
+    }
 
     // Sync Bucket Button
     this.syncBtn.addEventListener('click', () => this.triggerBucketSync());
@@ -608,6 +675,152 @@ class KodimiApp {
       this.loadDownloads();
     } catch (err) {
       alert(`Download failed: ${err.message}`);
+    }
+  }
+
+  async handleDirectFilesUpload(fileList) {
+    if (!fileList || fileList.length === 0) return;
+
+    for (const file of Array.from(fileList)) {
+      // Check if .torrent file
+      if (file.name.toLowerCase().endsWith('.torrent')) {
+        try {
+          const reader = new FileReader();
+          reader.onload = async () => {
+            try {
+              const dataUrl = reader.result;
+              const base64 = dataUrl.split(',')[1];
+              await api.uploadTorrentFile(file.name, base64);
+              this.loadDownloads();
+              // Switch back to remote link tab to show download queue
+              if (this.tabBtnLink) this.tabBtnLink.click();
+            } catch (err) {
+              alert(`Torrent ingestion failed: ${err.message}`);
+            }
+          };
+          reader.readAsDataURL(file);
+        } catch (torrentErr) {
+          alert(`Failed to read torrent file: ${torrentErr.message}`);
+        }
+        continue;
+      }
+
+      // Direct Video File Upload to GCS
+      const uploadId = 'up-' + Math.random().toString(36).substring(2, 9);
+      const itemEl = document.createElement('div');
+      itemEl.id = uploadId;
+      itemEl.className = 'upload-file-item';
+      itemEl.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+          <div style="display: flex; align-items: center; gap: 8px; max-width: 80%;">
+            <span class="material-symbols-outlined" style="color: var(--md-sys-color-primary); font-size: 20px;">video_file</span>
+            <span style="font-size: 13px; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+              ${escapeHtml(file.name)}
+            </span>
+          </div>
+          <span style="font-size: 11px; color: var(--md-sys-color-on-surface-variant);">${this.formatSize(file.size)}</span>
+        </div>
+        <div style="width: 100%; height: 6px; background-color: var(--md-sys-color-surface-container-highest); border-radius: 9999px; overflow: hidden; margin-bottom: 6px;">
+          <div class="upload-bar" style="height: 100%; width: 0%; background-color: var(--md-sys-color-primary); transition: width 0.2s ease;"></div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--md-sys-color-on-surface-variant);">
+          <span class="upload-percent">0%</span>
+          <span class="upload-status" style="color: var(--md-sys-color-primary);">Requesting upload URL...</span>
+        </div>
+      `;
+
+      if (this.uploadProgressContainer) {
+        this.uploadProgressContainer.style.display = 'block';
+      }
+      if (this.uploadProgressList) {
+        this.uploadProgressList.prepend(itemEl);
+      }
+
+      const barEl = itemEl.querySelector('.upload-bar');
+      const pctEl = itemEl.querySelector('.upload-percent');
+      const statusEl = itemEl.querySelector('.upload-status');
+
+      try {
+        const reqRes = await api.requestUploadUrl(file.name, file.size, file.type || 'application/octet-stream');
+        const uploadUrl = reqRes.uploadUrl;
+        const downloadId = reqRes.downloadId;
+
+        statusEl.textContent = 'Uploading to Cloud Storage...';
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl, true);
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+
+        let lastTime = Date.now();
+        let lastLoaded = 0;
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.min(100, Math.round((e.loaded / e.total) * 100));
+            const now = Date.now();
+            const elapsed = (now - lastTime) / 1000;
+            let speedStr = '';
+            if (elapsed >= 0.8) {
+              const speed = (e.loaded - lastLoaded) / elapsed;
+              speedStr = ` (${this.formatSize(speed)}/s)`;
+              lastTime = now;
+              lastLoaded = e.loaded;
+            }
+            if (barEl) barEl.style.width = pct + '%';
+            if (pctEl) pctEl.textContent = pct + '%';
+            if (statusEl) statusEl.textContent = `Uploading to Cloud Storage...${speedStr}`;
+          }
+        };
+
+        xhr.onload = async () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            if (barEl) {
+              barEl.style.width = '100%';
+              barEl.style.backgroundColor = '#4caf50';
+            }
+            if (pctEl) pctEl.textContent = '100%';
+            if (statusEl) {
+              statusEl.style.color = 'var(--md-sys-color-primary)';
+              statusEl.textContent = 'Auto-tagging with Gemini AI...';
+            }
+
+            try {
+              await api.completeUpload(file.name, file.size, downloadId);
+              if (statusEl) {
+                statusEl.style.color = '#4caf50';
+                statusEl.textContent = '✓ Saved & added to library!';
+              }
+              this.loadData();
+              this.loadDownloads();
+            } catch (compErr) {
+              if (statusEl) {
+                statusEl.style.color = '#f44336';
+                statusEl.textContent = 'Uploaded, but tagging error: ' + compErr.message;
+              }
+              this.loadData();
+            }
+          } else {
+            if (statusEl) {
+              statusEl.style.color = '#f44336';
+              statusEl.textContent = `Upload failed (status ${xhr.status})`;
+            }
+          }
+        };
+
+        xhr.onerror = () => {
+          if (statusEl) {
+            statusEl.style.color = '#f44336';
+            statusEl.textContent = 'Network error during upload';
+          }
+        };
+
+        xhr.send(file);
+      } catch (err) {
+        if (statusEl) {
+          statusEl.style.color = '#f44336';
+          statusEl.textContent = `Upload error: ${err.message}`;
+        }
+      }
     }
   }
 

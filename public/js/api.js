@@ -118,6 +118,24 @@ export const api = {
 
   cancelDownload: (id) => request(`/downloads/${id}`, { method: 'DELETE' }),
 
+  requestUploadUrl: (filename, size, contentType = 'application/octet-stream') =>
+    request('/downloads/request-upload', {
+      method: 'POST',
+      body: JSON.stringify({ filename, size, contentType }),
+    }),
+
+  completeUpload: (filename, size, downloadId) =>
+    request('/downloads/complete-upload', {
+      method: 'POST',
+      body: JSON.stringify({ filename, size, downloadId }),
+    }),
+
+  uploadTorrentFile: (filename, base64Data) =>
+    request('/downloads/upload-torrent', {
+      method: 'POST',
+      body: JSON.stringify({ filename, data: base64Data }),
+    }),
+
   // Playback Progress
   saveProgress: (mediaId, currentTime, duration, completed = 0) =>
     request('/media/playback/progress', {

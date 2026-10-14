@@ -123,35 +123,71 @@
       </div>
 
       <div class="modal-body">
-        <form id="download-form" style="margin-bottom: 24px; display: flex; flex-direction: column; gap: 12px;">
-          <div style="display: flex; flex-direction: column; gap: 4px;">
-            <label style="font-size: 12px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);">
-              Magnet URI / Direct Video URL / Torrent Link:
-            </label>
-            <div style="display: flex; gap: 8px;">
+        <!-- Ingestion Navigation Tabs -->
+        <div class="ingest-tabs">
+          <button type="button" class="ingest-tab-btn active" id="tab-btn-link">
+            <span class="material-symbols-outlined" style="font-size: 18px;">link</span>
+            <span>Remote Link / Magnet</span>
+          </button>
+          <button type="button" class="ingest-tab-btn" id="tab-btn-upload">
+            <span class="material-symbols-outlined" style="font-size: 18px;">upload_file</span>
+            <span>Direct File Upload</span>
+          </button>
+        </div>
+
+        <!-- Tab 1: Remote Link / Magnet Form -->
+        <div id="tab-content-link">
+          <form id="download-form" style="margin-bottom: 24px; display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <label style="font-size: 12px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);">
+                Magnet URI / Direct Video URL / Torrent Link:
+              </label>
+              <div style="display: flex; gap: 8px;">
+                <input
+                  type="text"
+                  id="download-url-input"
+                  required
+                  placeholder="magnet:?xt=urn:btih:... or https://.../video.mp4"
+                  style="flex: 1; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 10px 14px; color: white; font-size: 13px;"
+                />
+                <button type="submit" class="btn-filled" style="padding: 10px 20px;">
+                  <span class="material-symbols-outlined">download</span>
+                  <span>Ingest</span>
+                </button>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 4px;">
               <input
                 type="text"
-                id="download-url-input"
-                required
-                placeholder="magnet:?xt=urn:btih:... or https://.../video.mp4"
-                style="flex: 1; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 10px 14px; color: white; font-size: 13px;"
+                id="download-name-input"
+                placeholder="Optional Custom Name (e.g. Inception.2010.mp4)"
+                style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 8px 14px; color: white; font-size: 12px;"
               />
-              <button type="submit" class="btn-filled" style="padding: 10px 20px;">
-                <span class="material-symbols-outlined">download</span>
-                <span>Ingest</span>
-              </button>
             </div>
+          </form>
+        </div>
+
+        <!-- Tab 2: Direct File Upload -->
+        <div id="tab-content-upload" style="display: none; margin-bottom: 24px;">
+          <div id="upload-dropzone" class="upload-dropzone">
+            <span class="material-symbols-outlined" style="font-size: 44px; color: var(--md-sys-color-primary); margin-bottom: 8px;">cloud_upload</span>
+            <div style="font-size: 14px; font-weight: 600; color: white; margin-bottom: 4px;">
+              Drag and drop media files here, or <span style="color: var(--md-sys-color-primary); text-decoration: underline;" id="browse-files-btn">browse files</span>
+            </div>
+            <div style="font-size: 11px; color: var(--md-sys-color-on-surface-variant);">
+              Upload video files (.mp4, .mkv, .avi, .mov, .webm) or .torrent files directly into Google Cloud Storage
+            </div>
+            <input type="file" id="direct-file-input" multiple accept="video/*,.mkv,.avi,.mov,.webm,.ts,.torrent" style="display: none;" />
           </div>
 
-          <div style="display: flex; flex-direction: column; gap: 4px;">
-            <input
-              type="text"
-              id="download-name-input"
-              placeholder="Optional Custom Name (e.g. Inception.2010.mp4)"
-              style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 8px 14px; color: white; font-size: 12px;"
-            />
+          <div id="upload-progress-container" style="display: none;">
+            <h4 style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--md-sys-color-outline); letter-spacing: 0.5px; margin-bottom: 10px;">
+              Active File Uploads
+            </h4>
+            <div id="upload-progress-list"></div>
           </div>
-        </form>
+        </div>
 
         <h3 style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--md-sys-color-outline); letter-spacing: 0.5px; margin-bottom: 12px;">
           Active Ingestion Queue

@@ -978,3 +978,72 @@ body {
     flex: 0 0 140px;
   }
 }
+
+/* Ingestion Modal Tabs */
+.ingest-tabs {
+  display: flex;
+  gap: 8px;
+  background-color: var(--md-sys-color-surface-container-high);
+  padding: 4px;
+  border-radius: var(--md-shape-corner-m);
+  margin-bottom: 20px;
+}
+
+.ingest-tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: var(--md-shape-corner-s);
+  border: none;
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ingest-tab-btn:hover {
+  color: white;
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.ingest-tab-btn.active {
+  background-color: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-primary);
+  box-shadow: var(--md-sys-elevation-1);
+}
+
+/* Upload Dropzone */
+.upload-dropzone {
+  border: 2px dashed var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-corner-l);
+  padding: 32px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background-color: var(--md-sys-color-surface-container-high);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.upload-dropzone:hover,
+.upload-dropzone.dragover {
+  border-color: var(--md-sys-color-primary);
+  background-color: rgba(208, 188, 255, 0.08);
+  transform: scale(1.01);
+}
+
+.upload-file-item {
+  background-color: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-corner-m);
+  padding: 12px 16px;
+  margin-bottom: 10px;
+}
+

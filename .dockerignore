@@ -1,0 +1,12 @@
+node_modules
+.env
+.env.*
+!.env.example
+data/
+*.log
+tests/
+scripts/private/
+private/
+.git
+.github
+*.md

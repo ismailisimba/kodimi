@@ -355,6 +355,21 @@ async function processTorrentDownload(id, torrentSource, customName) {
             progress: Math.min(100, Math.round(prog * 10) / 10),
             status_text: `Skipped existing [${i + 1}/${targetFiles.length}]: ${cleanFilename}`,
           });
+
+          // Ensure already downloaded file is indexed into media catalog
+          if (!mediaDB.getByGcsPath(cleanFilename)) {
+            try {
+              const metadata = await enrichMediaMetadata(cleanFilename, fileBytes);
+              const saved = mediaDB.upsert({
+                ...metadata,
+                gcs_path: cleanFilename,
+              });
+              getOrProbeDuration(saved.id, cleanFilename).catch(() => {});
+              console.log(`[Catalog] Automatically indexed existing file: ${metadata.title}`);
+            } catch (err) {
+              console.warn(`[Catalog] Failed to auto-index existing file ${cleanFilename}:`, err.message);
+            }
+          }
           continue;
         }
 
@@ -368,77 +383,106 @@ async function processTorrentDownload(id, torrentSource, customName) {
 
         console.log(`[Torrent] Starting file ${i + 1}/${targetFiles.length}: "${cleanFilename}" (${(fileBytes / (1024 * 1024)).toFixed(1)} MB)`);
 
-        try {
-          await new Promise((resolve, reject) => {
-            const writeStream = createWriteStream(gcsPath);
-            const readStream = currentFile.createReadStream();
-            let currentFileDownloaded = 0;
+        const MAX_FILE_RETRIES = 3;
+        let fileSuccess = false;
+        let lastStreamErr = null;
 
-            if (job) {
-              job.currentWriteStream = writeStream;
-              job.currentReadStream = readStream;
+        for (let attempt = 1; attempt <= MAX_FILE_RETRIES; attempt++) {
+          const checkJob = activeJobs.get(id);
+          if (!checkJob || checkJob.status === 'failed' || checkJob.status === 'paused') {
+            console.log(`[Torrent] Job ${id} was stopped, halting download.`);
+            break;
+          }
+
+          try {
+            await new Promise((resolve, reject) => {
+              const writeStream = createWriteStream(gcsPath);
+              const readStream = currentFile.createReadStream();
+              let currentFileDownloaded = 0;
+
+              if (job) {
+                job.currentWriteStream = writeStream;
+                job.currentReadStream = readStream;
+              }
+
+              readStream.on('data', (chunk) => {
+                currentFileDownloaded += chunk.length;
+                const totalSoFar = totalDownloadedPrev + currentFileDownloaded;
+                const now = Date.now();
+                const elapsed = (now - lastProgressTime) / 1000;
+
+                if (elapsed >= 0.8) {
+                  const speed = (totalSoFar - lastProgressBytes) / elapsed;
+                  const progress = totalBytes > 0 ? (totalSoFar / totalBytes) * 100 : 0;
+
+                  updateDownload(id, {
+                    downloaded_bytes: totalSoFar,
+                    progress: Math.min(100, Math.round(progress * 10) / 10),
+                    speed: Math.round(speed),
+                    peers: torrent.numPeers || 0,
+                    status_text: isMultiFile
+                      ? `Streaming file [${i + 1}/${targetFiles.length}] to GCS...`
+                      : 'Streaming to GCS...',
+                  });
+
+                  lastProgressTime = now;
+                  lastProgressBytes = totalSoFar;
+                }
+              });
+
+              readStream.on('error', (err) => {
+                console.error(`[Torrent Read Error for ${cleanFilename}]:`, err.message);
+                try { writeStream.destroy(); } catch (_) {}
+                reject(err);
+              });
+
+              writeStream.on('error', (err) => {
+                console.error(`[GCS Write Error for ${cleanFilename}]:`, err.message);
+                try { readStream.destroy(); } catch (_) {}
+                reject(err);
+              });
+
+              writeStream.on('finish', async () => {
+                totalDownloadedPrev += fileBytes;
+                console.log(`[Torrent] Successfully saved file ${i + 1}/${targetFiles.length} to GCS: ${cleanFilename}`);
+
+                // Immediately enrich and index this completed file into Kodimi media catalog!
+                try {
+                  const metadata = await enrichMediaMetadata(cleanFilename, fileBytes);
+                  const saved = mediaDB.upsert({
+                    ...metadata,
+                    gcs_path: cleanFilename,
+                  });
+                  getOrProbeDuration(saved.id, cleanFilename).catch(() => {});
+                  console.log(`[Catalog] Automatically indexed multi-file item: ${metadata.title}`);
+                } catch (err) {
+                  console.error(`[Catalog] Failed to auto-index ${cleanFilename}:`, err.message);
+                }
+
+                resolve();
+              });
+
+              readStream.pipe(writeStream);
+            });
+
+            fileSuccess = true;
+            break;
+          } catch (streamErr) {
+            lastStreamErr = streamErr;
+            console.warn(`[Torrent] File ${i + 1}/${targetFiles.length} (${cleanFilename}) attempt ${attempt}/${MAX_FILE_RETRIES} failed: ${streamErr.message}`);
+            if (attempt < MAX_FILE_RETRIES) {
+              const backoff = attempt * 4000;
+              updateDownload(id, {
+                status_text: `Transient network glitch. Retrying [${i + 1}/${targetFiles.length}] in ${backoff / 1000}s...`,
+              });
+              await new Promise((r) => setTimeout(r, backoff));
             }
+          }
+        }
 
-            readStream.on('data', (chunk) => {
-              currentFileDownloaded += chunk.length;
-              const totalSoFar = totalDownloadedPrev + currentFileDownloaded;
-              const now = Date.now();
-              const elapsed = (now - lastProgressTime) / 1000;
-
-              if (elapsed >= 0.8) {
-                const speed = (totalSoFar - lastProgressBytes) / elapsed;
-                const progress = totalBytes > 0 ? (totalSoFar / totalBytes) * 100 : 0;
-
-                updateDownload(id, {
-                  downloaded_bytes: totalSoFar,
-                  progress: Math.min(100, Math.round(progress * 10) / 10),
-                  speed: Math.round(speed),
-                  peers: torrent.numPeers || 0,
-                  status_text: isMultiFile
-                    ? `Streaming file [${i + 1}/${targetFiles.length}] to GCS...`
-                    : 'Streaming to GCS...',
-                });
-
-                lastProgressTime = now;
-                lastProgressBytes = totalSoFar;
-              }
-            });
-
-            readStream.on('error', (err) => {
-              console.error(`[Torrent Read Error for ${cleanFilename}]:`, err.message);
-              reject(err);
-            });
-
-            writeStream.on('error', (err) => {
-              console.error(`[GCS Write Error for ${cleanFilename}]:`, err.message);
-              reject(err);
-            });
-
-            writeStream.on('finish', async () => {
-              totalDownloadedPrev += fileBytes;
-              console.log(`[Torrent] Successfully saved file ${i + 1}/${targetFiles.length} to GCS: ${cleanFilename}`);
-
-              // Immediately enrich and index this completed file into Kodimi media catalog!
-              try {
-                const metadata = await enrichMediaMetadata(cleanFilename, fileBytes);
-                const saved = mediaDB.upsert({
-                  ...metadata,
-                  gcs_path: cleanFilename,
-                });
-                getOrProbeDuration(saved.id, cleanFilename).catch(() => {});
-                console.log(`[Catalog] Automatically indexed multi-file item: ${metadata.title}`);
-              } catch (err) {
-                console.error(`[Catalog] Failed to auto-index ${cleanFilename}:`, err.message);
-              }
-
-              resolve();
-            });
-
-            readStream.pipe(writeStream);
-          });
-        } catch (streamErr) {
-          console.error(`[Torrent] Failed while processing ${cleanFilename}:`, streamErr.message);
-          failDownload(id, `File download failed: ${streamErr.message}`);
+        if (!fileSuccess) {
+          console.error(`[Torrent] Failed while processing ${cleanFilename} after ${MAX_FILE_RETRIES} attempts:`, lastStreamErr?.message);
+          failDownload(id, `File download failed: ${lastStreamErr?.message}`);
           torrent.destroy();
           return;
         }
@@ -448,7 +492,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
       const finalJob = activeJobs.get(id);
       if (finalJob && finalJob.status !== 'failed' && finalJob.status !== 'paused') {
         console.log(`[Torrent] Successfully completed all ${targetFiles.length} file(s) for: ${torrent.name}`);
-        completeDownload(id, ((customName && customName !== 'Torrent Ingestion') ? customName : torrent.name), totalBytes);
+        completeDownload(id, ((customName && customName !== 'Torrent Ingestion') ? customName : torrent.name), totalBytes, isMultiFile);
       }
       torrent.destroy();
     });
@@ -549,7 +593,7 @@ function updateDownload(id, partial) {
   broadcastProgress(job);
 }
 
-async function completeDownload(id, gcsPath, totalBytes) {
+async function completeDownload(id, gcsPath, totalBytes, isMultiFile = false) {
   const job = activeJobs.get(id);
   if (!job) return;
 
@@ -562,16 +606,18 @@ async function completeDownload(id, gcsPath, totalBytes) {
   broadcastProgress(job);
   activeJobs.delete(id);
 
-  // Auto-enrich and index into media catalog if single file
-  try {
-    const metadata = await enrichMediaMetadata(gcsPath, totalBytes);
-    mediaDB.upsert({
-      ...metadata,
-      gcs_path: gcsPath,
-    });
-    console.log(`[Catalog] Automatically indexed downloaded media: ${metadata.title}`);
-  } catch (err) {
-    console.log(`[Catalog] Ingestion completed for ${gcsPath}`);
+  // Auto-enrich and index into media catalog only for single files (multi-file items are indexed per file)
+  if (!isMultiFile) {
+    try {
+      const metadata = await enrichMediaMetadata(gcsPath, totalBytes);
+      mediaDB.upsert({
+        ...metadata,
+        gcs_path: gcsPath,
+      });
+      console.log(`[Catalog] Automatically indexed downloaded media: ${metadata.title}`);
+    } catch (err) {
+      console.log(`[Catalog] Ingestion completed for ${gcsPath}`);
+    }
   }
 }
 

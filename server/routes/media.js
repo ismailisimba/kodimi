@@ -53,8 +53,41 @@ router.get('/genres', requireAuth, (req, res) => {
 });
 
 router.get('/continue-watching', requireAuth, (req, res) => {
-  const items = playbackDB.getContinueWatching(15);
+  const allowAdult = isVaultAuthorized(req);
+  const items = playbackDB.getContinueWatching(15, allowAdult);
   res.json({ items });
+});
+
+// Grouped TV Series catalog
+router.get('/series', requireAuth, (req, res) => {
+  const { search, limit, adult, is_adult } = req.query;
+  const showAdult = adult === 'true' || is_adult === 'true';
+
+  if (showAdult && !isVaultAuthorized(req)) {
+    return res.status(403).json({ error: 'Vault PIN required to access private series', vaultRequired: true });
+  }
+
+  const items = mediaDB.getSeriesGrouped({
+    search,
+    limit: limit ? parseInt(limit, 10) : 100,
+    isAdult: showAdult,
+  });
+
+  res.json({ items });
+});
+
+// Get all seasons and episodes for a series
+router.get('/series/:name/seasons', requireAuth, (req, res) => {
+  const { adult, is_adult } = req.query;
+  const showAdult = adult === 'true' || is_adult === 'true';
+
+  if (showAdult && !isVaultAuthorized(req)) {
+    return res.status(403).json({ error: 'Vault PIN required to access private series', vaultRequired: true });
+  }
+
+  const seriesName = decodeURIComponent(req.params.name);
+  const data = mediaDB.getSeriesSeasons(seriesName, showAdult);
+  res.json(data);
 });
 
 router.get('/sync-status', requireAuth, (req, res) => {

@@ -9,6 +9,10 @@ import {
   renderMediaCard,
   renderCarousel,
   renderDownloadItem,
+  renderSeriesCard,
+  renderLiveChannelCard,
+  renderSeriesModalContent,
+  renderScheduleModalContent,
   escapeHtml,
 } from './components.js';
 
@@ -17,6 +21,15 @@ class KodimiApp {
     this.mediaItems = [];
     this.continueWatching = [];
     this.privateItems = [];
+    this.seriesList = [];
+    this.liveChannels = [];
+    this.liveCategories = [];
+    this.liveCountries = [];
+    this.activeLiveCategory = 'all';
+    this.activeLiveCountry = 'all';
+    this.liveSearchTerm = '';
+    this.currentSeriesData = null;
+    this.activeSeason = 1;
     this.activeFilter = 'all';
     this.searchTerm = '';
     this.activeMedia = null;
@@ -49,6 +62,15 @@ class KodimiApp {
     this.emptyState = document.getElementById('empty-state');
     this.loadingIndicator = document.getElementById('loading-indicator');
 
+    // Live TV Container Elements
+    this.livetvContainer = document.getElementById('livetv-container');
+    this.livetvCategoryChips = document.getElementById('livetv-category-chips');
+    this.livetvCountryChips = document.getElementById('livetv-country-chips');
+    this.livetvGrid = document.getElementById('livetv-grid');
+    this.livetvSearchInput = document.getElementById('livetv-search-input');
+    this.livetvEmptyState = document.getElementById('livetv-empty-state');
+    this.livetvTotalBadge = document.getElementById('livetv-total-badge');
+
     // Modals
     this.loginModal = document.getElementById('login-modal');
     this.loginForm = document.getElementById('login-form');
@@ -67,6 +89,16 @@ class KodimiApp {
     this.downloadNameInput = document.getElementById('download-name-input');
     this.downloadQueueList = document.getElementById('download-queue-list');
     this.downloadCountBadge = document.getElementById('download-badge');
+
+    // Series Detail Modal
+    this.seriesModal = document.getElementById('series-modal');
+    this.seriesModalClose = document.getElementById('series-modal-close');
+    this.seriesModalBody = document.getElementById('series-modal-body');
+
+    // Schedule Guide Modal
+    this.scheduleModal = document.getElementById('schedule-modal');
+    this.scheduleModalClose = document.getElementById('schedule-modal-close');
+    this.scheduleModalBody = document.getElementById('schedule-modal-body');
 
     // Ingest Modal Tabs & Direct Upload Elements
     this.tabBtnLink = document.getElementById('tab-btn-link');
@@ -271,8 +303,102 @@ class KodimiApp {
       });
     }
 
-    // Delegate Click Events for Play & Info buttons on Cards & Carousels
+    // Series Modal Close
+    if (this.seriesModalClose) {
+      this.seriesModalClose.addEventListener('click', () => {
+        this.seriesModal.classList.remove('open');
+      });
+    }
+
+    // Schedule Modal Close
+    if (this.scheduleModalClose) {
+      this.scheduleModalClose.addEventListener('click', () => {
+        this.scheduleModal.classList.remove('open');
+      });
+    }
+
+    // Live TV Search Input Listener
+    if (this.livetvSearchInput) {
+      let liveDebounce = null;
+      this.livetvSearchInput.addEventListener('input', (e) => {
+        clearTimeout(liveDebounce);
+        liveDebounce = setTimeout(() => {
+          this.liveSearchTerm = e.target.value.trim().toLowerCase();
+          this.renderLiveTv();
+        }, 200);
+      });
+    }
+
+    // Delegate Click Events for Play & Info buttons on Cards, Carousels, Series & Live TV
     document.addEventListener('click', (e) => {
+      // 1. Series Card / Browse / Info Button
+      const seriesEl = e.target.closest('.series-card, .series-browse-btn, .series-info-btn');
+      if (seriesEl) {
+        const seriesName = seriesEl.dataset.seriesName;
+        if (seriesName) this.openSeriesModal(seriesName);
+        return;
+      }
+
+      // 2. Season Tab Switcher in Series Modal
+      const seasonTab = e.target.closest('.season-tab-btn');
+      if (seasonTab && this.currentSeriesData) {
+        const seasonNum = parseInt(seasonTab.dataset.season, 10);
+        this.activeSeason = seasonNum;
+        this.renderSeriesModal(this.currentSeriesData, seasonNum);
+        return;
+      }
+
+      // 3. Episode Play Button in Series Modal
+      const epPlayBtn = e.target.closest('.episode-play-btn');
+      if (epPlayBtn) {
+        const epId = epPlayBtn.dataset.id;
+        const ep = this.mediaItems.find((m) => m.id === epId) || this.privateItems.find((m) => m.id === epId);
+        const startTime = parseFloat(epPlayBtn.dataset.time || (ep && ep.current_time) || 0);
+        if (this.seriesModal) this.seriesModal.classList.remove('open');
+        if (ep) {
+          this.player.open(ep, startTime);
+        } else {
+          api.getMediaById(epId).then((item) => this.player.open(item, startTime)).catch(() => {});
+        }
+        return;
+      }
+
+      // 4. Live TV Play Button
+      const livePlayBtn = e.target.closest('.live-play-btn');
+      if (livePlayBtn) {
+        const streamUrl = livePlayBtn.dataset.streamUrl;
+        const name = livePlayBtn.dataset.name;
+        const chId = livePlayBtn.dataset.channelId;
+        const ch = this.liveChannels.find((c) => c.id === chId) || { id: chId, name, streamUrl };
+        if (this.scheduleModal) this.scheduleModal.classList.remove('open');
+        this.player.openLive(ch);
+        return;
+      }
+
+      // 5. Live TV Schedule Guide Button
+      const liveScheduleBtn = e.target.closest('.live-schedule-btn');
+      if (liveScheduleBtn) {
+        const chId = liveScheduleBtn.dataset.channelId;
+        this.openScheduleModal(chId);
+        return;
+      }
+
+      // 6. Live TV Category & Country Filter Chips
+      const catChip = e.target.closest('.live-cat-chip');
+      if (catChip) {
+        this.activeLiveCategory = catChip.dataset.category;
+        this.renderLiveTv();
+        return;
+      }
+
+      const countryChip = e.target.closest('.live-country-chip');
+      if (countryChip) {
+        this.activeLiveCountry = countryChip.dataset.country;
+        this.renderLiveTv();
+        return;
+      }
+
+      // 7. Regular Media Play & Info Buttons
       const playBtn = e.target.closest('.quick-play-btn, #hero-play-btn');
       if (playBtn) {
         const id = playBtn.dataset.id;
@@ -290,9 +416,9 @@ class KodimiApp {
         return;
       }
 
-      // Card click opens detail
+      // 8. Regular Media Card click opens detail
       const card = e.target.closest('.media-card');
-      if (card && !e.target.closest('.quick-play-btn, .quick-info-btn')) {
+      if (card && !e.target.closest('.quick-play-btn, .quick-info-btn, .series-card')) {
         const id = card.dataset.id;
         const item = this.findMediaById(id);
         if (item) this.openDetailModal(item);
@@ -339,7 +465,7 @@ class KodimiApp {
     });
 
     // Close Modals on Backdrop Click
-    [this.downloadModal, this.detailModal, this.vaultModal].forEach((modal) => {
+    [this.downloadModal, this.detailModal, this.vaultModal, this.seriesModal, this.scheduleModal].forEach((modal) => {
       if (!modal) return;
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -439,13 +565,22 @@ class KodimiApp {
   async loadData() {
     this.loadingIndicator.style.display = 'flex';
     try {
-      const [mediaRes, cwRes] = await Promise.all([
+      const isVaultOpen = vaultState.isUnlocked();
+      const [mediaRes, cwRes, seriesRes] = await Promise.all([
         api.getMedia({ limit: 500 }),
         api.getContinueWatching().catch(() => ({ items: [] })),
+        api.getSeries().catch(() => ({ items: [] })),
       ]);
 
-      this.mediaItems = mediaRes.items || [];
-      this.continueWatching = cwRes.items || [];
+      const allMedia = mediaRes.items || [];
+      const allCw = cwRes.items || [];
+      const allSeries = seriesRes.items || [];
+
+      // Filter out adult content from public views unless vault is unlocked
+      this.mediaItems = isVaultOpen ? allMedia : allMedia.filter((m) => !m.is_adult);
+      this.continueWatching = isVaultOpen ? allCw : allCw.filter((m) => !m.is_adult);
+      this.seriesList = isVaultOpen ? allSeries : allSeries.filter((s) => !s.is_adult);
+
       this.renderView();
     } catch (err) {
       console.error('Failed to load media catalog:', err);
@@ -465,6 +600,19 @@ class KodimiApp {
   }
 
   renderView() {
+    // If Live TV is active, show the Live TV container and hide standard views
+    if (this.activeFilter === 'livetv') {
+      this.heroSection.style.display = 'none';
+      this.carouselsContainer.style.display = 'none';
+      this.gridContainer.style.display = 'none';
+      this.emptyState.style.display = 'none';
+      if (this.livetvContainer) this.livetvContainer.style.display = 'block';
+      this.loadLiveTvData();
+      return;
+    }
+
+    if (this.livetvContainer) this.livetvContainer.style.display = 'none';
+
     const isBrowsingHome = this.activeFilter === 'all' && !this.searchTerm;
 
     if (isBrowsingHome) {
@@ -486,11 +634,11 @@ class KodimiApp {
         html += renderCarousel('continue', 'Continue Watching', this.continueWatching);
       }
 
-      html += renderCarousel('recent', 'Recently Added to GCS', this.mediaItems.slice(0, 18));
+      const recentPublic = this.mediaItems.slice(0, 18);
+      html += renderCarousel('recent', 'Recently Added to GCS', recentPublic);
 
-      const series = this.mediaItems.filter((m) => m.type === 'series');
-      if (series.length > 0) {
-        html += renderCarousel('series', 'TV Series & Shows', series);
+      if (this.seriesList.length > 0) {
+        html += renderCarousel('series', 'TV Series & Shows', this.seriesList, renderSeriesCard);
       }
 
       const movies = this.mediaItems.filter((m) => m.type === 'movie');
@@ -514,6 +662,31 @@ class KodimiApp {
       this.heroSection.style.display = 'none';
       this.carouselsContainer.style.display = 'none';
       this.gridContainer.style.display = 'block';
+
+      if (this.activeFilter === 'series') {
+        let filteredSeries = this.seriesList;
+        if (this.searchTerm) {
+          const q = this.searchTerm;
+          filteredSeries = filteredSeries.filter((s) => {
+            const matchTitle = (s.title || s.series_name)?.toLowerCase().includes(q);
+            const matchPlot = s.plot?.toLowerCase().includes(q);
+            const matchGenres = s.genres?.some((g) => g.toLowerCase().includes(q));
+            return matchTitle || matchPlot || matchGenres;
+          });
+          this.gridTitle.textContent = `TV Series matching "${this.searchTerm}" (${filteredSeries.length})`;
+        } else {
+          this.gridTitle.textContent = `TV Series & Shows (${filteredSeries.length})`;
+        }
+
+        if (filteredSeries.length === 0) {
+          this.gridContent.innerHTML = '';
+          this.emptyState.style.display = 'block';
+        } else {
+          this.emptyState.style.display = 'none';
+          this.gridContent.innerHTML = filteredSeries.map(renderSeriesCard).join('');
+        }
+        return;
+      }
 
       let filtered = this.mediaItems;
 
@@ -548,9 +721,6 @@ class KodimiApp {
       } else if (this.activeFilter === 'movie') {
         filtered = filtered.filter((m) => m.type === 'movie');
         this.gridTitle.textContent = `Movies (${filtered.length})`;
-      } else if (this.activeFilter === 'series') {
-        filtered = filtered.filter((m) => m.type === 'series');
-        this.gridTitle.textContent = `TV Shows (${filtered.length})`;
       } else if (this.activeFilter === 'continue') {
         filtered = this.continueWatching;
         this.gridTitle.textContent = `Continue Watching (${filtered.length})`;
@@ -918,6 +1088,146 @@ class KodimiApp {
     } catch (err) {
       this.syncIcon.style.animation = 'none';
       console.error('Bucket sync error:', err);
+    }
+  }
+
+  async loadLiveTvData() {
+    if (this.liveChannels.length > 0) {
+      this.renderLiveTv();
+      return;
+    }
+
+    try {
+      const [catsRes, channelsRes] = await Promise.all([
+        api.getLiveCategories(),
+        api.getLiveChannels(),
+      ]);
+
+      this.liveCategories = catsRes.categories || [];
+      this.liveCountries = catsRes.countries || [];
+      this.liveChannels = channelsRes.channels || channelsRes.items || [];
+      this.renderLiveTv();
+    } catch (err) {
+      console.error('Failed to load Live TV channels:', err);
+      if (this.livetvGrid) {
+        this.livetvGrid.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align: center; padding: 48px 0; color: var(--md-sys-color-outline);">
+            Failed to load live channels. Please try again.
+          </div>
+        `;
+      }
+    }
+  }
+
+  renderLiveTv() {
+    if (!this.livetvGrid) return;
+
+    // Render Categories
+    if (this.livetvCategoryChips) {
+      const allCats = ['all', ...this.liveCategories];
+      this.livetvCategoryChips.innerHTML = allCats.map((cat) => `
+        <button class="filter-chip live-cat-chip ${this.activeLiveCategory === cat ? 'active' : ''}" data-category="${cat}">
+          ${cat === 'all' ? 'All Channels' : cat.charAt(0).toUpperCase() + cat.slice(1)}
+        </button>
+      `).join('');
+    }
+
+    // Render Countries
+    if (this.livetvCountryChips) {
+      const allCountries = [{ code: 'all', name: 'All Regions' }, ...this.liveCountries];
+      this.livetvCountryChips.innerHTML = allCountries.map((c) => `
+        <button class="filter-chip live-country-chip ${this.activeLiveCountry === c.code ? 'active' : ''}" data-country="${c.code}">
+          ${escapeHtml(c.name || c.code)}
+        </button>
+      `).join('');
+    }
+
+    // Filter Channels
+    let filtered = this.liveChannels;
+
+    if (this.activeLiveCategory !== 'all') {
+      filtered = filtered.filter((c) => (c.category || '').toLowerCase() === this.activeLiveCategory.toLowerCase());
+    }
+
+    if (this.activeLiveCountry !== 'all') {
+      filtered = filtered.filter((c) => (c.country || '').toLowerCase() === this.activeLiveCountry.toLowerCase());
+    }
+
+    if (this.liveSearchTerm) {
+      const q = this.liveSearchTerm;
+      filtered = filtered.filter((c) => {
+        const matchName = c.name?.toLowerCase().includes(q);
+        const matchCat = c.category?.toLowerCase().includes(q);
+        const matchProg = c.currentProgram?.title?.toLowerCase().includes(q) || c.currentProgram?.desc?.toLowerCase().includes(q);
+        return matchName || matchCat || matchProg;
+      });
+    }
+
+    if (this.livetvTotalBadge) {
+      this.livetvTotalBadge.textContent = `${filtered.length} Channels`;
+    }
+
+    if (filtered.length === 0) {
+      this.livetvGrid.innerHTML = '';
+      if (this.livetvEmptyState) this.livetvEmptyState.style.display = 'block';
+    } else {
+      if (this.livetvEmptyState) this.livetvEmptyState.style.display = 'none';
+      this.livetvGrid.innerHTML = filtered.map(renderLiveChannelCard).join('');
+    }
+  }
+
+  async openSeriesModal(seriesName) {
+    if (!this.seriesModal || !this.seriesModalBody) return;
+    this.seriesModal.classList.add('open');
+    this.seriesModalBody.innerHTML = `
+      <div style="display: flex; justify-content: center; align-items: center; min-height: 400px;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
+          <div class="spinner"></div>
+          <span style="font-size: 14px; color: var(--md-sys-color-outline);">Loading seasons & episodes...</span>
+        </div>
+      </div>
+    `;
+
+    try {
+      const data = await api.getSeriesSeasons(seriesName);
+      this.currentSeriesData = data;
+      this.activeSeason = data.seasonNumbers?.[0] || 1;
+      this.renderSeriesModal(data, this.activeSeason);
+    } catch (err) {
+      this.seriesModalBody.innerHTML = `
+        <div style="padding: 48px; text-align: center; color: var(--md-sys-color-outline);">
+          Failed to load series details: ${escapeHtml(err.message)}
+        </div>
+      `;
+    }
+  }
+
+  renderSeriesModal(seriesData, seasonNum) {
+    if (!this.seriesModalBody) return;
+    this.seriesModalBody.innerHTML = renderSeriesModalContent(seriesData, seasonNum);
+  }
+
+  async openScheduleModal(channelId) {
+    if (!this.scheduleModal || !this.scheduleModalBody) return;
+    this.scheduleModal.classList.add('open');
+    this.scheduleModalBody.innerHTML = `
+      <div style="display: flex; justify-content: center; align-items: center; min-height: 350px;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
+          <div class="spinner"></div>
+          <span style="font-size: 14px; color: var(--md-sys-color-outline);">Loading 24-hour schedule guide...</span>
+        </div>
+      </div>
+    `;
+
+    try {
+      const data = await api.getChannelSchedule(channelId);
+      this.scheduleModalBody.innerHTML = renderScheduleModalContent(data);
+    } catch (err) {
+      this.scheduleModalBody.innerHTML = `
+        <div style="padding: 48px; text-align: center; color: var(--md-sys-color-outline);">
+          Failed to load TV guide schedule: ${escapeHtml(err.message)}
+        </div>
+      `;
     }
   }
 

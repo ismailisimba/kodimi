@@ -40,6 +40,10 @@
           <span class="material-symbols-outlined" style="font-size: 18px;">tv</span>
           <span>TV Shows</span>
         </button>
+        <button class="nav-item" data-filter="livetv" id="nav-livetv-btn">
+          <span class="material-symbols-outlined" style="font-size: 18px; color: #ff5252;">live_tv</span>
+          <span>Live TV</span>
+        </button>
         <button class="nav-item" data-filter="continue">
           <span class="material-symbols-outlined" style="font-size: 18px;">history</span>
           <span>Continue Watching</span>
@@ -90,6 +94,39 @@
         <h1 id="grid-title" style="font-size: 24px; font-weight: 700;">All Titles</h1>
       </div>
       <div id="grid-content" class="media-grid"></div>
+    </div>
+
+    <!-- Live TV & EPG Guide Container -->
+    <div id="livetv-container" style="display: none; padding-top: 84px;">
+      <div class="livetv-header-banner">
+        <div class="livetv-title-section">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="live-badge-large">🔴 LIVE TV</span>
+            <span id="livetv-total-badge" class="chip chip-outline">100+ Channels</span>
+          </div>
+          <h1 style="font-size: 26px; font-weight: 900; margin: 6px 0 2px 0;">Live Television & EPG Guide</h1>
+          <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin: 0;">
+            Real-time broadcast streams with live schedules, what's currently showing, and 24-hour programming guides.
+          </p>
+        </div>
+
+        <div class="livetv-search-box">
+          <span class="material-symbols-outlined" style="color: var(--md-sys-color-outline);">search</span>
+          <input type="text" id="livetv-search-input" placeholder="Search live channels..." />
+        </div>
+      </div>
+
+      <div class="livetv-filters-container">
+        <div class="livetv-category-chips no-scrollbar" id="livetv-category-chips"></div>
+        <div class="livetv-country-chips no-scrollbar" id="livetv-country-chips"></div>
+      </div>
+
+      <div id="livetv-grid" class="live-channels-grid"></div>
+      <div id="livetv-empty-state" style="display: none; text-align: center; padding: 60px 20px;">
+        <span class="material-symbols-outlined" style="font-size: 48px; color: var(--md-sys-color-outline); margin-bottom: 8px;">tv_off</span>
+        <h3 style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">No Live Channels Found</h3>
+        <p style="font-size: 13px; color: var(--md-sys-color-outline);">Try clearing filters or searching for another channel.</p>
+      </div>
     </div>
 
     <!-- Empty State -->
@@ -259,6 +296,32 @@
           <span id="detail-gcs-path" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Series Detail & Episode Browser Modal -->
+  <div class="modal-backdrop" id="series-modal">
+    <div class="modal-card series-modal-card">
+      <button class="icon-btn modal-close-floating" id="series-modal-close">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+      <div id="series-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- 24-Hour EPG Schedule Guide Modal -->
+  <div class="modal-backdrop" id="schedule-modal">
+    <div class="modal-card schedule-modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="material-symbols-outlined" style="color: #ff5252;">calendar_month</span>
+          <span>Channel Schedule Guide</span>
+        </div>
+        <button class="icon-btn" id="schedule-modal-close">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <div class="modal-body" id="schedule-modal-body"></div>
     </div>
   </div>
 

@@ -1047,3 +1047,594 @@ body {
   margin-bottom: 10px;
 }
 
+/* ==========================================================================
+   Live TV & EPG Schedule Section Styles
+   ========================================================================== */
+
+.livetv-header-banner {
+  padding: 0 48px 20px 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.live-badge {
+  background-color: #ff3b30;
+  color: white;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.live-badge-large {
+  background-color: #ff3b30;
+  color: white;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  letter-spacing: 1px;
+  box-shadow: 0 0 12px rgba(255, 59, 48, 0.5);
+  animation: live-pulse 2s infinite ease-in-out;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.02); }
+}
+
+.livetv-search-box {
+  display: flex;
+  align-items: center;
+  background-color: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 9999px;
+  padding: 8px 18px;
+  gap: 10px;
+  width: 320px;
+  max-width: 100%;
+}
+
+.livetv-search-box input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: white;
+  font-size: 13px;
+  width: 100%;
+}
+
+.livetv-filters-container {
+  padding: 0 48px 20px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.livetv-category-chips,
+.livetv-country-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background-color: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.filter-chip:hover {
+  background-color: var(--md-sys-color-surface-container-high);
+  color: white;
+}
+
+.filter-chip.active {
+  background-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  border-color: var(--md-sys-color-primary);
+  box-shadow: var(--md-sys-elevation-1);
+}
+
+.live-channels-grid {
+  padding: 0 48px 48px 48px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 20px;
+}
+
+.live-channel-card {
+  background-color: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-corner-l);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.live-channel-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: var(--md-sys-elevation-2);
+}
+
+.live-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.live-channel-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.live-channel-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: contain;
+  background-color: rgba(255, 255, 255, 0.05);
+  padding: 4px;
+  flex-shrink: 0;
+}
+
+.live-channel-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: white;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-channel-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.live-epg-now {
+  background-color: var(--md-sys-color-surface-container-high);
+  border-radius: var(--md-shape-corner-m);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.epg-now-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.epg-now-tag {
+  font-weight: 800;
+  color: var(--md-sys-color-primary);
+  letter-spacing: 0.5px;
+}
+
+.epg-time-remain {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 11px;
+}
+
+.epg-now-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: white;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.epg-now-desc {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  margin: 0;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.epg-progress-container {
+  width: 100%;
+  height: 4px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.epg-progress-bar {
+  height: 100%;
+  background-color: #ff3b30;
+  border-radius: 9999px;
+}
+
+.live-epg-next {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.epg-next-tag {
+  font-weight: 700;
+  color: var(--md-sys-color-outline);
+}
+
+.epg-next-title {
+  color: #e0e0e0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.epg-next-time {
+  color: var(--md-sys-color-outline);
+}
+
+/* ==========================================================================
+   24-Hour EPG Schedule Guide Modal
+   ========================================================================== */
+
+.schedule-modal-card {
+  max-width: 720px;
+  width: 90%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.schedule-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.schedule-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: contain;
+  background-color: rgba(255, 255, 255, 0.05);
+  padding: 6px;
+}
+
+.schedule-list {
+  padding: 12px 20px 20px 20px;
+  overflow-y: auto;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.schedule-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px 14px;
+  border-radius: var(--md-shape-corner-m);
+  background-color: var(--md-sys-color-surface-container);
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.schedule-row:hover {
+  background-color: var(--md-sys-color-surface-container-high);
+}
+
+.schedule-row.is-now-playing {
+  background-color: rgba(255, 59, 48, 0.08);
+  border-color: #ff3b30;
+}
+
+.schedule-time {
+  display: flex;
+  flex-direction: column;
+  min-width: 75px;
+}
+
+.schedule-start {
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+}
+
+.schedule-dur {
+  font-size: 11px;
+  color: var(--md-sys-color-outline);
+}
+
+.schedule-details {
+  flex: 1;
+}
+
+.schedule-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: white;
+  margin-bottom: 3px;
+  display: flex;
+  align-items: center;
+}
+
+.schedule-desc {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  line-height: 1.4;
+}
+
+/* ==========================================================================
+   Series Detail & Season Grouping Modal
+   ========================================================================== */
+
+.series-modal-card {
+  max-width: 900px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+  position: relative;
+  padding: 0;
+}
+
+.modal-close-floating {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background-color: rgba(0, 0, 0, 0.7);
+  z-index: 10;
+}
+
+.series-modal-header {
+  position: relative;
+  width: 100%;
+  min-height: 280px;
+}
+
+.series-backdrop-wrapper {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+
+.series-backdrop {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.55);
+}
+
+.series-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(0deg, var(--md-sys-color-surface-container) 0%, rgba(0, 0, 0, 0.3) 100%);
+}
+
+.series-header-content {
+  position: relative;
+  z-index: 2;
+  padding: 32px 32px 20px 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 280px;
+}
+
+.series-title {
+  font-size: 32px;
+  font-weight: 900;
+  color: white;
+  margin: 0 0 8px 0;
+  letter-spacing: -0.5px;
+}
+
+.series-plot {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #e0e0e0;
+  max-width: 700px;
+  margin: 0 0 16px 0;
+}
+
+.series-seasons-section {
+  padding: 20px 32px 32px 32px;
+}
+
+.season-tabs-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  padding-bottom: 12px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+}
+
+.season-tab-btn {
+  padding: 8px 20px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.season-tab-btn:hover {
+  background-color: var(--md-sys-color-surface-container-high);
+  color: white;
+}
+
+.season-tab-btn.active {
+  background-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  box-shadow: var(--md-sys-elevation-1);
+}
+
+.episodes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.series-episode-card {
+  display: flex;
+  gap: 16px;
+  background-color: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-corner-m);
+  padding: 12px;
+  transition: all 0.2s ease;
+}
+
+.series-episode-card:hover {
+  background-color: var(--md-sys-color-surface-container-highest);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.episode-thumb-container {
+  position: relative;
+  width: 160px;
+  height: 90px;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background-color: #121212;
+}
+
+.episode-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.episode-play-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  color: white;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.series-episode-card:hover .episode-play-overlay {
+  opacity: 1;
+}
+
+.episode-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.episode-progress-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.episode-progress-fill {
+  height: 100%;
+  background: var(--md-sys-color-primary);
+}
+
+.episode-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+.episode-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.episode-number {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--md-sys-color-primary);
+}
+
+.episode-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: white;
+}
+
+.episode-dur {
+  font-size: 12px;
+  color: var(--md-sys-color-outline);
+  margin-left: auto;
+}
+
+.episode-plot {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--md-sys-color-on-surface-variant);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+

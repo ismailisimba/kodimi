@@ -12,6 +12,8 @@ import authRoutes from './routes/auth.js';
 import mediaRoutes from './routes/media.js';
 import streamRoutes from './routes/stream.js';
 import downloadsRoutes from './routes/downloads.js';
+import iptvRoutes from './routes/iptv.js';
+import { initIptvService } from './services/iptvService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +31,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/stream', streamRoutes);
 app.use('/api/downloads', downloadsRoutes);
+app.use('/api/iptv', iptvRoutes);
 
 // Health check endpoint for Cloud Run
 app.get('/health', (req, res) => {
@@ -52,6 +55,7 @@ app.use((req, res) => {
 async function start() {
   await initDatabase();
   initDownloader();
+  initIptvService().catch((err) => console.warn('[Live TV Init Error]:', err.message));
 
   app.listen(config.port, '0.0.0.0', () => {
     console.log('==============================================');

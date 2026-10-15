@@ -173,6 +173,29 @@ export const api = {
     return `${API_BASE}/stream/${id}/subtitles?track=${track}&token=${token}${pinParam}`;
   },
 
+  // Series & Seasons
+  getSeries: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/media/series${query ? `?${query}` : ''}`);
+  },
+
+  getSeriesSeasons: (name, params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/media/series/${encodeURIComponent(name)}/seasons${query ? `?${query}` : ''}`);
+  },
+
+  // Live TV & EPG
+  getLiveCategories: () => request('/iptv/categories'),
+
+  getLiveChannels: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/iptv/channels${query ? `?${query}` : ''}`);
+  },
+
+  getChannelSchedule: (id) => request(`/iptv/channels/${encodeURIComponent(id)}/schedule`),
+
+  getLiveProxyUrl: (streamUrl) => `${API_BASE}/iptv/proxy?url=${encodeURIComponent(streamUrl)}`,
+
   // Subtitle Tracks Probe
   getSubtitleTracks: (id) => request(`/stream/${id}/subtitles/tracks`),
 };

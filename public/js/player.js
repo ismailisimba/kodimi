@@ -135,6 +135,7 @@ class KodimiPlayer {
   }
 
   open(media, initialTime = 0) {
+    this.isLive = false;
     this.currentMedia = media;
     this.selectedQuality = 'original';
     this.qualityLabel.textContent = 'ORIGINAL (AAC)';
@@ -173,7 +174,7 @@ class KodimiPlayer {
 
     // Start periodic progress sync
     this.progressInterval = setInterval(() => {
-      if (this.currentMedia) {
+      if (this.currentMedia && !this.isLive) {
         const cur = this.getEffectiveCurrentTime();
         const dur = this.getEffectiveDuration();
         if (dur > 0 && !this.video.paused) {
@@ -181,6 +182,65 @@ class KodimiPlayer {
         }
       }
     }, 5000);
+  }
+
+  openLive(channel) {
+    this.isLive = true;
+    this.currentMedia = {
+      ...channel,
+      is_live: true,
+      title: channel.name,
+    };
+    this.selectedQuality = 'live';
+    this.qualityLabel.textContent = channel.resolution || 'LIVE';
+    this.titleDisplay.innerHTML = `
+      <span class="live-badge" style="margin-right: 8px;">🔴 LIVE</span>
+      <span>${channel.name}</span>
+      ${channel.currentProgram ? `<span style="font-size: 13px; opacity: 0.8; font-weight: 400; margin-left: 8px;">• ${channel.currentProgram.title}</span>` : ''}
+    `;
+    this.totalDuration = 0;
+    this.seekTimeOffset = 0;
+    this.subtitlesEnabled = false;
+    this.activeSubtitleTrack = -1;
+    this.updateSubtitlesIcon(false);
+    this.clearSubtitleTracks();
+
+    if (this.timeDisplay) {
+      this.timeDisplay.innerHTML = `<span style="color: #ff3b30; font-weight: 800;">🔴 LIVE BROADCAST</span>`;
+    }
+    if (this.progressFill) {
+      this.progressFill.style.width = '100%';
+    }
+
+    this.container.classList.remove('player-hidden');
+    document.body.style.overflow = 'hidden';
+
+    this.loadLiveSource(channel.streamUrl);
+    this.onUserActivity();
+  }
+
+  loadLiveSource(streamUrl) {
+    this.video.pause();
+    this.video.volume = this.currentVolume;
+    this.video.muted = this.isMuted;
+
+    this.showLoader(`Connecting to ${this.currentMedia?.name || 'Live Channel'}...`);
+
+    // First try direct stream
+    this.video.src = streamUrl;
+    const playPromise = this.video.play();
+
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        console.warn('[Live TV] Direct stream failed, switching to Kodimi CORS Proxy:', err.message);
+        const proxyUrl = api.getLiveProxyUrl(streamUrl);
+        this.video.src = proxyUrl;
+        this.video.play().catch((proxyErr) => {
+          console.error('[Live TV Proxy Error]:', proxyErr.message);
+          this.showLoader('Live stream unavailable or offline');
+        });
+      });
+    }
   }
 
   loadVideoSource(url, startTime = 0) {
@@ -199,13 +259,15 @@ class KodimiPlayer {
   }
 
   close() {
-    if (this.currentMedia) {
+    if (this.currentMedia && !this.isLive) {
       const cur = this.getEffectiveCurrentTime();
       const dur = this.getEffectiveDuration();
       if (dur > 0) {
         api.saveProgress(this.currentMedia.id, cur, dur, 0);
       }
     }
+
+    this.isLive = false;
 
     if (this.progressInterval) {
       clearInterval(this.progressInterval);
@@ -545,6 +607,13 @@ class KodimiPlayer {
   }
 
   onTimeUpdate() {
+    if (this.isLive) {
+      if (this.timeDisplay) {
+        this.timeDisplay.innerHTML = `<span style="color: #ff3b30; font-weight: 800;">🔴 LIVE</span>`;
+      }
+      return;
+    }
+
     const cur = this.getEffectiveCurrentTime();
     const dur = this.getEffectiveDuration();
     const pct = Math.min(100, Math.max(0, (cur / dur) * 100));

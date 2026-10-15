@@ -268,6 +268,112 @@ export const mediaDB = {
     }
     return Array.from(genreSet).sort();
   },
+
+  getSeriesGrouped: (options = {}) => {
+    const { search, limit = 100, isAdult = false } = options;
+    const seriesMap = new Map();
+
+    for (const item of mediaCache.values()) {
+      if (item.type !== 'series') continue;
+      if (!isAdult && item.is_adult) continue;
+      if (isAdult && !item.is_adult) continue;
+
+      const seriesName = (item.series_name || item.title || 'Unknown').trim();
+      if (!seriesMap.has(seriesName)) {
+        seriesMap.set(seriesName, {
+          id: `series-${encodeURIComponent(seriesName.toLowerCase())}`,
+          title: seriesName,
+          series_name: seriesName,
+          type: 'series',
+          plot: item.plot,
+          year: item.year,
+          genres: item.genres || [],
+          tags: item.tags || [],
+          poster_url: item.poster_url,
+          backdrop_url: item.backdrop_url,
+          resolution: item.resolution,
+          is_adult: Boolean(item.is_adult),
+          created_at: item.created_at,
+          seasons: new Set(),
+          episodes_count: 0,
+          sample_media_id: item.id,
+        });
+      }
+
+      const s = seriesMap.get(seriesName);
+      s.episodes_count += 1;
+      if (item.season) s.seasons.add(item.season);
+      if (item.plot && (!s.plot || s.plot.length < item.plot.length)) {
+        s.plot = item.plot;
+      }
+      if (item.poster_url && !s.poster_url) s.poster_url = item.poster_url;
+      if (item.backdrop_url && !s.backdrop_url) s.backdrop_url = item.backdrop_url;
+      if (new Date(item.created_at) > new Date(s.created_at)) {
+        s.created_at = item.created_at;
+      }
+    }
+
+    let list = Array.from(seriesMap.values()).map((s) => ({
+      ...s,
+      seasons_count: Math.max(1, s.seasons.size),
+      seasons_list: Array.from(s.seasons).sort((a, b) => a - b),
+    }));
+
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter((s) =>
+        s.title.toLowerCase().includes(q) ||
+        s.plot?.toLowerCase().includes(q) ||
+        s.genres?.some((g) => g.toLowerCase().includes(q))
+      );
+    }
+
+    list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    return list.slice(0, limit);
+  },
+
+  getSeriesSeasons: (seriesName, isAdult = false) => {
+    const cleanName = (seriesName || '').trim().toLowerCase();
+    const seasonsMap = {};
+    let matchedSeries = null;
+
+    for (const item of mediaCache.values()) {
+      if (item.type !== 'series') continue;
+      if (!isAdult && item.is_adult) continue;
+      const curName = (item.series_name || item.title || '').trim().toLowerCase();
+      if (curName !== cleanName && !curName.includes(cleanName)) continue;
+
+      if (!matchedSeries) {
+        matchedSeries = {
+          series_name: item.series_name || item.title,
+          title: item.series_name || item.title,
+          plot: item.plot,
+          year: item.year,
+          genres: item.genres,
+          poster_url: item.poster_url,
+          backdrop_url: item.backdrop_url,
+          is_adult: item.is_adult,
+          sample_media_id: item.id,
+        };
+      }
+
+      const sNum = item.season || 1;
+      if (!seasonsMap[sNum]) {
+        seasonsMap[sNum] = [];
+      }
+      seasonsMap[sNum].push(item);
+    }
+
+    for (const sNum in seasonsMap) {
+      seasonsMap[sNum].sort((a, b) => (a.episode || 0) - (b.episode || 0));
+    }
+
+    return {
+      series: matchedSeries,
+      seasons: seasonsMap,
+      seasonNumbers: Object.keys(seasonsMap).map(Number).sort((a, b) => a - b),
+    };
+  },
 };
 
 // Playback Progress DB Methods
@@ -294,12 +400,15 @@ export const playbackDB = {
     ).catch((err) => console.error('[Playback Save Error]:', err.message));
   },
 
-  getContinueWatching: (limit = 15) => {
+  getContinueWatching: (limit = 15, allowAdult = false) => {
     const list = [];
     for (const [mediaId, progress] of playbackCache.entries()) {
       if (!progress.completed && progress.current_time > 10) {
         const media = mediaCache.get(mediaId);
         if (media) {
+          if (media.is_adult && !allowAdult) {
+            continue; // Strictly hide private/adult titles unless vault is open
+          }
           list.push({
             ...media,
             current_time: progress.current_time,

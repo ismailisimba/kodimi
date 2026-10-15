@@ -90,6 +90,30 @@ export function sanitizeMagnetUri(uri) {
 }
 
 /**
+ * Resolves destination clean filename without ever duplicating extensions (e.g. avoiding .mkv.mkv).
+ */
+export function resolveCleanFilename(effectiveName, originalFilename) {
+  if (!effectiveName || effectiveName === 'Torrent Ingestion') {
+    return originalFilename;
+  }
+
+  const origExt = path.extname(originalFilename);
+  const effExt = path.extname(effectiveName);
+
+  // If effectiveName already has a valid video extension, use it directly
+  if (effExt && VIDEO_EXTENSIONS.has(effExt.toLowerCase())) {
+    return effectiveName;
+  }
+
+  // If effectiveName already ends with origExt, return as is
+  if (effExt && effExt.toLowerCase() === origExt.toLowerCase()) {
+    return effectiveName;
+  }
+
+  return `${effectiveName}${origExt}`;
+}
+
+/**
  * Initiates a download (magnet, torrent URL, or direct HTTP/HTTPS link).
  */
 export async function startDownload(sourceUrl, customName = '') {
@@ -316,10 +340,14 @@ async function processTorrentDownload(id, torrentSource, customName) {
       console.log(`[Torrent] Downloading ${targetFiles.length} media file(s) for "${torrent.name}", total ${(totalBytes / (1024 * 1024)).toFixed(1)} MB`);
 
       const effectiveName = (customName && customName !== 'Torrent Ingestion') ? customName : null;
+      const singleTargetName = (!isMultiFile && effectiveName)
+        ? resolveCleanFilename(effectiveName, targetFiles[0].name)
+        : targetFiles[0].name;
+
       updateDownload(id, {
-        name: isMultiFile ? `${torrent.name} (${targetFiles.length} files)` : (effectiveName || targetFiles[0].name),
+        name: isMultiFile ? `${torrent.name} (${targetFiles.length} files)` : singleTargetName,
         total_bytes: totalBytes,
-        gcs_path: isMultiFile ? `${torrent.name}/` : (effectiveName ? `${effectiveName}${path.extname(targetFiles[0].name)}` : targetFiles[0].name),
+        gcs_path: isMultiFile ? `${torrent.name}/` : singleTargetName,
         status_text: `Ready to download ${targetFiles.length} file(s)...`,
       });
 
@@ -339,7 +367,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
         }
 
         const cleanFilename = (!isMultiFile && effectiveName)
-          ? `${effectiveName}${path.extname(currentFile.name)}`
+          ? resolveCleanFilename(effectiveName, currentFile.name)
           : currentFile.name;
         const gcsPath = cleanFilename;
         const fileBytes = currentFile.length;
@@ -492,7 +520,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
       const finalJob = activeJobs.get(id);
       if (finalJob && finalJob.status !== 'failed' && finalJob.status !== 'paused') {
         console.log(`[Torrent] Successfully completed all ${targetFiles.length} file(s) for: ${torrent.name}`);
-        completeDownload(id, ((customName && customName !== 'Torrent Ingestion') ? customName : torrent.name), totalBytes, isMultiFile);
+        completeDownload(id, isMultiFile ? torrent.name : singleTargetName, totalBytes, isMultiFile);
       }
       torrent.destroy();
     });

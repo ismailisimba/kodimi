@@ -26,7 +26,7 @@ const DEFAULT_SVG_THUMB = `<svg xmlns="http://www.w3.org/2000/svg" width="640" h
 function sendFallbackThumbnail(res) {
   if (res.headersSent) return;
   res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.status(200).send(DEFAULT_SVG_THUMB);
 }
 
@@ -140,10 +140,15 @@ router.get('/:id/thumbnail', async (req, res) => {
     }
 
     const ext = path.extname(thumbPath).toLowerCase();
-    const contentType = ext === '.svg' ? 'image/svg+xml' : 'image/jpeg';
+    const isSvg = ext === '.svg';
+    const contentType = isSvg ? 'image/svg+xml' : 'image/jpeg';
 
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    if (isSvg) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    }
     res.sendFile(path.resolve(thumbPath), (err) => {
       if (err && !res.headersSent) {
         sendFallbackThumbnail(res);

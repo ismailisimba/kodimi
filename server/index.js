@@ -14,6 +14,7 @@ import streamRoutes from './routes/stream.js';
 import downloadsRoutes from './routes/downloads.js';
 import iptvRoutes from './routes/iptv.js';
 import { initIptvService } from './services/iptvService.js';
+import { startThumbnailWarmer } from './services/transcoder.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,6 +57,7 @@ async function start() {
   await initDatabase();
   initDownloader();
   initIptvService().catch((err) => console.warn('[Live TV Init Error]:', err.message));
+  startThumbnailWarmer().catch((err) => console.warn('[Thumbnail Warmer Error]:', err.message));
 
   app.listen(config.port, '0.0.0.0', () => {
     console.log('==============================================');

@@ -7,17 +7,18 @@ import crypto from 'crypto';
  */
 
 const CATEGORY_PLAYLISTS = [
-  { id: 'news', name: 'News', icon: 'newspaper', url: 'https://iptv-org.github.io/iptv/categories/news.m3u' },
   { id: 'sports', name: 'Sports', icon: 'sports_soccer', url: 'https://iptv-org.github.io/iptv/categories/sports.m3u' },
+  { id: 'news', name: 'News', icon: 'newspaper', url: 'https://iptv-org.github.io/iptv/categories/news.m3u' },
+  { id: 'entertainment', name: 'Entertainment', icon: 'theater_comedy', url: 'https://iptv-org.github.io/iptv/categories/entertainment.m3u' },
+  { id: 'learning', name: 'Learning & Docs', icon: 'school', url: 'https://iptv-org.github.io/iptv/categories/education.m3u' },
+  { id: 'documentary', name: 'Documentary', icon: 'history_edu', url: 'https://iptv-org.github.io/iptv/categories/documentary.m3u' },
+  { id: 'science', name: 'Science', icon: 'science', url: 'https://iptv-org.github.io/iptv/categories/science.m3u' },
   { id: 'movies', name: 'Movies', icon: 'movie', url: 'https://iptv-org.github.io/iptv/categories/movies.m3u' },
   { id: 'series', name: 'Series', icon: 'tv', url: 'https://iptv-org.github.io/iptv/categories/series.m3u' },
   { id: 'animation', name: 'Animation', icon: 'smart_toy', url: 'https://iptv-org.github.io/iptv/categories/animation.m3u' },
-  { id: 'entertainment', name: 'Entertainment', icon: 'theater_comedy', url: 'https://iptv-org.github.io/iptv/categories/entertainment.m3u' },
   { id: 'music', name: 'Music', icon: 'music_note', url: 'https://iptv-org.github.io/iptv/categories/music.m3u' },
-  { id: 'documentary', name: 'Documentary', icon: 'history_edu', url: 'https://iptv-org.github.io/iptv/categories/documentary.m3u' },
   { id: 'comedy', name: 'Comedy', icon: 'sentiment_very_satisfied', url: 'https://iptv-org.github.io/iptv/categories/comedy.m3u' },
   { id: 'kids', name: 'Kids', icon: 'child_care', url: 'https://iptv-org.github.io/iptv/categories/kids.m3u' },
-  { id: 'science', name: 'Science', icon: 'science', url: 'https://iptv-org.github.io/iptv/categories/science.m3u' },
 ];
 
 const COUNTRY_PLAYLISTS = [
@@ -115,6 +116,22 @@ const GENRE_SCHEDULE_TEMPLATES = {
     { title: 'Future Tech & Robotics', desc: 'Artificial intelligence, quantum computing, and bleeding-edge robotics.', durationMin: 60 },
     { title: 'Secrets of the Human Mind', desc: 'Neuroscience discoveries, psychology experiments, and human biology insights.', durationMin: 60 },
     { title: 'Planetary Science & Oceans', desc: 'Extreme weather, deep ocean trenches, volcanoes, and earth systems.', durationMin: 60 },
+  ],
+  education: [
+    { title: 'Global Science & Discoveries', desc: 'Breakthroughs in astronomy, physics, medicine, and cutting-edge research.', durationMin: 60 },
+    { title: 'Masterclass: History Uncovered', desc: 'Deep dive into pivotal historical events, civilizations, and archive footage.', durationMin: 60 },
+    { title: 'Planet Earth Wonders', desc: 'Exploration of ocean ecosystems, wildlife behavior, and remote wilderness.', durationMin: 60 },
+    { title: 'Curiosity Lab: How Things Work', desc: 'Everyday mechanics, architecture, engineering wonders, and innovations.', durationMin: 45 },
+    { title: 'The World of Mathematics & Code', desc: 'Fascinating puzzles, algorithms, cryptography, and modern computation.', durationMin: 45 },
+    { title: 'World Geography & Cultures', desc: 'Immersive exploration of remote tribes, diverse traditions, and geography.', durationMin: 60 },
+  ],
+  learning: [
+    { title: 'Global Science & Discoveries', desc: 'Breakthroughs in astronomy, physics, medicine, and cutting-edge research.', durationMin: 60 },
+    { title: 'Masterclass: History Uncovered', desc: 'Deep dive into pivotal historical events, civilizations, and archive footage.', durationMin: 60 },
+    { title: 'Planet Earth Wonders', desc: 'Exploration of ocean ecosystems, wildlife behavior, and remote wilderness.', durationMin: 60 },
+    { title: 'Curiosity Lab: How Things Work', desc: 'Everyday mechanics, architecture, engineering wonders, and innovations.', durationMin: 45 },
+    { title: 'The World of Mathematics & Code', desc: 'Fascinating puzzles, algorithms, cryptography, and modern computation.', durationMin: 45 },
+    { title: 'World Geography & Cultures', desc: 'Immersive exploration of remote tribes, diverse traditions, and geography.', durationMin: 60 },
   ],
 };
 
@@ -350,8 +367,49 @@ export async function getChannels(options = {}) {
   let list = channelCache;
 
   if (category && category !== 'all') {
-    const qCat = category.toLowerCase();
-    list = list.filter((c) => c.category.toLowerCase().includes(qCat));
+    const qCat = category.toLowerCase().trim();
+    if (qCat === 'learning' || qCat === 'education' || qCat === 'docs' || qCat.includes('learning')) {
+      list = list.filter((c) => {
+        const cat = (c.category || '').toLowerCase();
+        return cat.includes('learning') || cat.includes('education') || cat.includes('science') || cat.includes('documentary');
+      });
+    } else if (qCat === 'sports' || qCat === 'sport') {
+      list = list.filter((c) => (c.category || '').toLowerCase().includes('sport'));
+    } else if (qCat === 'movies' || qCat === 'movie') {
+      list = list.filter((c) => (c.category || '').toLowerCase().includes('movie'));
+    } else if (qCat === 'series' || qCat === 'tv') {
+      list = list.filter((c) => (c.category || '').toLowerCase().includes('series'));
+    } else {
+      list = list.filter((c) => (c.category || '').toLowerCase().includes(qCat));
+    }
+  } else if (!search && (!country || country === 'all')) {
+    // When viewing "All Channels" without filters, build a balanced, diverse showcase
+    // so the user immediately sees Sports, News, Entertainment, Learning, and Movies!
+    const sports = list.filter((c) => (c.category || '').toLowerCase().includes('sport'));
+    const news = list.filter((c) => (c.category || '').toLowerCase().includes('news'));
+    const entertainment = list.filter((c) => (c.category || '').toLowerCase().includes('entertainment'));
+    const learning = list.filter((c) => {
+      const cat = (c.category || '').toLowerCase();
+      return cat.includes('education') || cat.includes('learning') || cat.includes('science') || cat.includes('documentary');
+    });
+    const moviesSeries = list.filter((c) => {
+      const cat = (c.category || '').toLowerCase();
+      return cat.includes('movie') || cat.includes('series');
+    });
+
+    const interleaved = [];
+    const maxLen = Math.max(sports.length, news.length, entertainment.length, learning.length, moviesSeries.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (sports[i]) interleaved.push(sports[i]);
+      if (news[i]) interleaved.push(news[i]);
+      if (entertainment[i]) interleaved.push(entertainment[i]);
+      if (learning[i]) interleaved.push(learning[i]);
+      if (moviesSeries[i]) interleaved.push(moviesSeries[i]);
+    }
+
+    const includedIds = new Set(interleaved.map((c) => c.id));
+    const remainder = list.filter((c) => !includedIds.has(c.id));
+    list = [...interleaved, ...remainder];
   }
 
   if (country && country !== 'all') {
@@ -404,12 +462,20 @@ export async function getCategories() {
     catCounts.set(cat, (catCounts.get(cat) || 0) + 1);
   });
 
-  const categories = CATEGORY_PLAYLISTS.map((cp) => ({
-    id: cp.id,
-    name: cp.name,
-    icon: cp.icon,
-    count: catCounts.get(cp.name) || 0,
-  }));
+  const categories = CATEGORY_PLAYLISTS.map((cp) => {
+    let count = catCounts.get(cp.name) || 0;
+    if (cp.id === 'learning') {
+      count = (catCounts.get('Learning & Docs') || 0) + (catCounts.get('Education') || 0) + (catCounts.get('Science') || 0) + (catCounts.get('Documentary') || 0);
+    } else if (cp.id === 'sports') {
+      count = catCounts.get('Sports') || catCounts.get('Sport') || 0;
+    }
+    return {
+      id: cp.id,
+      name: cp.name,
+      icon: cp.icon,
+      count,
+    };
+  });
 
   const countries = COUNTRY_PLAYLISTS.map((cp) => ({
     id: cp.id,

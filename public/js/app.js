@@ -324,8 +324,8 @@ class KodimiApp {
         clearTimeout(liveDebounce);
         liveDebounce = setTimeout(() => {
           this.liveSearchTerm = e.target.value.trim().toLowerCase();
-          this.renderLiveTv();
-        }, 200);
+          this.fetchLiveChannels();
+        }, 300);
       });
     }
 
@@ -387,14 +387,14 @@ class KodimiApp {
       const catChip = e.target.closest('.live-cat-chip');
       if (catChip) {
         this.activeLiveCategory = catChip.dataset.category;
-        this.renderLiveTv();
+        this.fetchLiveChannels();
         return;
       }
 
       const countryChip = e.target.closest('.live-country-chip');
       if (countryChip) {
         this.activeLiveCountry = countryChip.dataset.country;
-        this.renderLiveTv();
+        this.fetchLiveChannels();
         return;
       }
 
@@ -1100,7 +1100,7 @@ class KodimiApp {
     try {
       const [catsRes, channelsRes] = await Promise.all([
         api.getLiveCategories(),
-        api.getLiveChannels(),
+        api.getLiveChannels({ limit: 120 }),
       ]);
 
       this.liveCategories = catsRes.categories || [];
@@ -1116,6 +1116,44 @@ class KodimiApp {
           </div>
         `;
       }
+    }
+  }
+
+  async fetchLiveChannels() {
+    if (!this.livetvGrid) return;
+
+    // Immediately toggle chip active states in DOM
+    if (this.livetvCategoryChips) {
+      this.livetvCategoryChips.querySelectorAll('.live-cat-chip').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.category === this.activeLiveCategory.toLowerCase());
+      });
+    }
+    if (this.livetvCountryChips) {
+      this.livetvCountryChips.querySelectorAll('.live-country-chip').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.country === this.activeLiveCountry.toLowerCase());
+      });
+    }
+
+    try {
+      this.livetvGrid.style.opacity = '0.4';
+      const params = { limit: 120 };
+      if (this.activeLiveCategory && this.activeLiveCategory !== 'all') {
+        params.category = this.activeLiveCategory;
+      }
+      if (this.activeLiveCountry && this.activeLiveCountry !== 'all') {
+        params.country = this.activeLiveCountry;
+      }
+      if (this.liveSearchTerm) {
+        params.search = this.liveSearchTerm;
+      }
+
+      const res = await api.getLiveChannels(params);
+      this.liveChannels = res.channels || res.items || [];
+      this.renderLiveTvGrid();
+    } catch (err) {
+      console.error('Failed to fetch filtered live channels:', err);
+    } finally {
+      if (this.livetvGrid) this.livetvGrid.style.opacity = '1';
     }
   }
 
@@ -1159,50 +1197,23 @@ class KodimiApp {
       }).join('');
     }
 
-    // Filter Channels
-    let filtered = this.liveChannels;
+    this.renderLiveTvGrid();
+  }
 
-    if (this.activeLiveCategory !== 'all') {
-      const targetCat = this.activeLiveCategory.toLowerCase();
-      filtered = filtered.filter((c) => {
-        const catStr = (c.category || '').toLowerCase();
-        return catStr === targetCat || catStr.includes(targetCat) || targetCat.includes(catStr);
-      });
-    }
-
-    if (this.activeLiveCountry !== 'all') {
-      const targetCountry = this.activeLiveCountry.toLowerCase();
-      filtered = filtered.filter((c) => {
-        const countryStr = (c.country || '').toLowerCase();
-        if (targetCountry === 'us' && (countryStr.includes('united states') || countryStr.includes('usa') || countryStr.includes('us'))) return true;
-        if (targetCountry === 'uk' && (countryStr.includes('united kingdom') || countryStr.includes('uk') || countryStr.includes('great britain'))) return true;
-        if (targetCountry === 'ca' && (countryStr.includes('canada') || countryStr.includes('ca'))) return true;
-        if (targetCountry === 'au' && (countryStr.includes('australia') || countryStr.includes('au'))) return true;
-        if (targetCountry === 'global' && countryStr.includes('global')) return true;
-        return countryStr.includes(targetCountry) || targetCountry.includes(countryStr);
-      });
-    }
-
-    if (this.liveSearchTerm) {
-      const q = this.liveSearchTerm;
-      filtered = filtered.filter((c) => {
-        const matchName = c.name?.toLowerCase().includes(q);
-        const matchCat = c.category?.toLowerCase().includes(q);
-        const matchProg = c.currentProgram?.title?.toLowerCase().includes(q) || c.currentProgram?.desc?.toLowerCase().includes(q);
-        return matchName || matchCat || matchProg;
-      });
-    }
+  renderLiveTvGrid() {
+    if (!this.livetvGrid) return;
+    const channels = this.liveChannels;
 
     if (this.livetvTotalBadge) {
-      this.livetvTotalBadge.textContent = `${filtered.length} Channels`;
+      this.livetvTotalBadge.textContent = `${channels.length} Channels`;
     }
 
-    if (filtered.length === 0) {
+    if (channels.length === 0) {
       this.livetvGrid.innerHTML = '';
       if (this.livetvEmptyState) this.livetvEmptyState.style.display = 'block';
     } else {
       if (this.livetvEmptyState) this.livetvEmptyState.style.display = 'none';
-      this.livetvGrid.innerHTML = filtered.map(renderLiveChannelCard).join('');
+      this.livetvGrid.innerHTML = channels.map(renderLiveChannelCard).join('');
     }
   }
 

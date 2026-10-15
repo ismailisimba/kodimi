@@ -1124,33 +1124,63 @@ class KodimiApp {
 
     // Render Categories
     if (this.livetvCategoryChips) {
-      const allCats = ['all', ...this.liveCategories];
-      this.livetvCategoryChips.innerHTML = allCats.map((cat) => `
-        <button class="filter-chip live-cat-chip ${this.activeLiveCategory === cat ? 'active' : ''}" data-category="${cat}">
-          ${cat === 'all' ? 'All Channels' : cat.charAt(0).toUpperCase() + cat.slice(1)}
-        </button>
-      `).join('');
+      const allCats = [
+        { id: 'all', name: 'All Channels' },
+        ...this.liveCategories.map((c) => (typeof c === 'string' ? { id: c.toLowerCase(), name: c } : c)),
+      ];
+      this.livetvCategoryChips.innerHTML = allCats.map((cat) => {
+        const catId = (cat.id || cat.name || '').toLowerCase();
+        const catName = cat.name || cat.id || '';
+        const isActive = this.activeLiveCategory.toLowerCase() === catId;
+        return `
+          <button class="filter-chip live-cat-chip ${isActive ? 'active' : ''}" data-category="${escapeHtml(catId)}">
+            ${escapeHtml(catName)}
+          </button>
+        `;
+      }).join('');
     }
 
     // Render Countries
     if (this.livetvCountryChips) {
-      const allCountries = [{ code: 'all', name: 'All Regions' }, ...this.liveCountries];
-      this.livetvCountryChips.innerHTML = allCountries.map((c) => `
-        <button class="filter-chip live-country-chip ${this.activeLiveCountry === c.code ? 'active' : ''}" data-country="${c.code}">
-          ${escapeHtml(c.name || c.code)}
-        </button>
-      `).join('');
+      const allCountries = [
+        { id: 'all', name: 'All Regions' },
+        ...this.liveCountries.map((c) => (typeof c === 'string' ? { id: c.toLowerCase(), name: c } : c)),
+      ];
+      this.livetvCountryChips.innerHTML = allCountries.map((c) => {
+        const cId = (c.id || c.code || c.name || '').toLowerCase();
+        const cName = c.name || c.id || c.code || '';
+        const flag = c.flag ? `${c.flag} ` : '';
+        const isActive = this.activeLiveCountry.toLowerCase() === cId;
+        return `
+          <button class="filter-chip live-country-chip ${isActive ? 'active' : ''}" data-country="${escapeHtml(cId)}">
+            ${flag}${escapeHtml(cName)}
+          </button>
+        `;
+      }).join('');
     }
 
     // Filter Channels
     let filtered = this.liveChannels;
 
     if (this.activeLiveCategory !== 'all') {
-      filtered = filtered.filter((c) => (c.category || '').toLowerCase() === this.activeLiveCategory.toLowerCase());
+      const targetCat = this.activeLiveCategory.toLowerCase();
+      filtered = filtered.filter((c) => {
+        const catStr = (c.category || '').toLowerCase();
+        return catStr === targetCat || catStr.includes(targetCat) || targetCat.includes(catStr);
+      });
     }
 
     if (this.activeLiveCountry !== 'all') {
-      filtered = filtered.filter((c) => (c.country || '').toLowerCase() === this.activeLiveCountry.toLowerCase());
+      const targetCountry = this.activeLiveCountry.toLowerCase();
+      filtered = filtered.filter((c) => {
+        const countryStr = (c.country || '').toLowerCase();
+        if (targetCountry === 'us' && (countryStr.includes('united states') || countryStr.includes('usa') || countryStr.includes('us'))) return true;
+        if (targetCountry === 'uk' && (countryStr.includes('united kingdom') || countryStr.includes('uk') || countryStr.includes('great britain'))) return true;
+        if (targetCountry === 'ca' && (countryStr.includes('canada') || countryStr.includes('ca'))) return true;
+        if (targetCountry === 'au' && (countryStr.includes('australia') || countryStr.includes('au'))) return true;
+        if (targetCountry === 'global' && countryStr.includes('global')) return true;
+        return countryStr.includes(targetCountry) || targetCountry.includes(countryStr);
+      });
     }
 
     if (this.liveSearchTerm) {

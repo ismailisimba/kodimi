@@ -75,7 +75,7 @@ export function renderMediaCard(item) {
 
   return `
     <div class="media-card" data-id="${item.id}" data-time="${startTime}">
-      <img class="card-poster" src="${poster}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="if(this.src.indexOf('/thumbnail') === -1) { this.src='${thumbUrl}'; }" />
+      <img class="card-poster" src="${poster}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="if(this.src.indexOf('/thumbnail') === -1) { this.src='${thumbUrl}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=${encodeURIComponent(item.title.slice(0, 16))}'; }" />
       ${item.resolution ? `<span class="card-badge">${item.resolution}</span>` : ''}
       ${progressPct > 0 ? `
         <div class="card-progress-bar">
@@ -239,7 +239,7 @@ export function renderSeriesCard(series) {
 
   return `
     <div class="media-card series-card" data-series-name="${escapeHtml(series.series_name || series.title)}" data-sample-id="${series.sample_media_id || ''}">
-      <img class="card-poster" src="${poster}" alt="${escapeHtml(series.title)}" loading="lazy" onerror="if(this.src.indexOf('/thumbnail') === -1 && '${fallbackThumb}') { this.src='${fallbackThumb}'; }" />
+      <img class="card-poster" src="${poster}" alt="${escapeHtml(series.title)}" loading="lazy" onerror="if(this.src.indexOf('/thumbnail') === -1 && '${fallbackThumb}') { this.src='${fallbackThumb}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=${encodeURIComponent(series.title.slice(0, 16))}'; }" />
       <span class="card-badge" style="background-color: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); font-weight: 700;">${seasonText} • ${epText}</span>
       <div class="card-overlay">
         <div class="card-title">${escapeHtml(series.title)}</div>
@@ -403,7 +403,7 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1) {
     return `
       <div class="series-episode-card" data-id="${ep.id}">
         <div class="episode-thumb-container">
-          <img class="episode-thumb" src="${epThumb}" alt="${escapeHtml(ep.title)}" onerror="this.src='${fallbackThumb}';" />
+          <img class="episode-thumb" src="${epThumb}" alt="${escapeHtml(ep.title)}" onerror="if(this.src.indexOf('/thumbnail') === -1 && '${fallbackThumb}') { this.src='${fallbackThumb}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=E${ep.episode || 1}'; }" />
           <button class="episode-play-overlay episode-play-btn" data-id="${ep.id}" data-time="${startTime}" title="${isResume ? 'Resume' : 'Play'}">
             <span class="material-symbols-outlined fill" style="font-size: 28px;">play_arrow</span>
           </button>

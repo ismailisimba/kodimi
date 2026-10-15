@@ -297,7 +297,7 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
   const legacyFile = path.join(thumbsDir, `${mediaId}.jpg`);
   const svgFile = path.join(thumbsDir, `${mediaId}.svg`);
 
-  if (fs.existsSync(cacheFile)) return cacheFile;
+  if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) return cacheFile;
 
   try {
     const duration = await getOrProbeDuration(mediaId, gcsPath);
@@ -312,6 +312,10 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
     const signedUrl = await getSignedReadUrl(gcsPath, 60);
 
     await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Thumbnail extraction timed out'));
+      }, 7000);
+
       ffmpeg(signedUrl)
         .inputOptions([
           '-probesize 1000000',
@@ -328,8 +332,22 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
           '-q:v 3',
         ])
         .save(cacheFile)
-        .on('end', resolve)
+        .on('end', () => {
+          clearTimeout(timeout);
+          if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
+            resolve();
+          } else {
+            reject(new Error('Empty frame output'));
+          }
+        })
         .on('error', () => {
+          clearTimeout(timeout);
+          try { if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size < 500) fs.unlinkSync(cacheFile); } catch (_) {}
+
+          const retryTimeout = setTimeout(() => {
+            reject(new Error('Retry thumbnail extraction timed out'));
+          }, 7000);
+
           // Retry at 5s fallback
           ffmpeg(signedUrl)
             .inputOptions([
@@ -345,15 +363,29 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
               '-c:v mjpeg',
             ])
             .save(cacheFile)
-            .on('end', resolve)
-            .on('error', reject);
+            .on('end', () => {
+              clearTimeout(retryTimeout);
+              if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
+                resolve();
+              } else {
+                reject(new Error('Retry empty frame output'));
+              }
+            })
+            .on('error', (retryErr) => {
+              clearTimeout(retryTimeout);
+              reject(retryErr);
+            });
         });
     });
 
-    return cacheFile;
+    if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
+      return cacheFile;
+    }
+    throw new Error('No valid frame file created');
   } catch (err) {
-    if (fs.existsSync(legacyFile)) return legacyFile;
-    if (fs.existsSync(svgFile)) return svgFile;
+    try { if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size < 500) fs.unlinkSync(cacheFile); } catch (_) {}
+    if (fs.existsSync(legacyFile) && fs.statSync(legacyFile).size > 500) return legacyFile;
+    if (fs.existsSync(svgFile) && fs.statSync(svgFile).size > 100) return svgFile;
 
     // Generate clean SVG cover
     const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">

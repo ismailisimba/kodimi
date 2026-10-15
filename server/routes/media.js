@@ -1,4 +1,6 @@
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
 import { mediaDB, playbackDB } from '../db/database.js';
 import { scanAndIndexBucket, getScanStatus } from '../services/scanner.js';
 import { enrichMediaMetadata } from '../services/aiTagger.js';
@@ -7,6 +9,26 @@ import { requireAuth } from '../services/auth.js';
 import config from '../config/env.js';
 
 const router = express.Router();
+
+const DEFAULT_SVG_THUMB = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e24"/>
+      <stop offset="100%" stop-color="#0f0f11"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+  <circle cx="320" cy="180" r="44" fill="#e50914" opacity="0.9"/>
+  <polygon points="312,162 336,180 312,198" fill="#ffffff"/>
+  <text x="320" y="260" font-family="Roboto, sans-serif" font-size="16" fill="#808080" text-anchor="middle" font-weight="bold">KODIMI STREAM</text>
+</svg>`;
+
+function sendFallbackThumbnail(res) {
+  if (res.headersSent) return;
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.status(200).send(DEFAULT_SVG_THUMB);
+}
 
 function isVaultAuthorized(req) {
   const pin = req.headers['x-vault-pin'] || req.query.pin;
@@ -103,7 +125,7 @@ router.post('/sync-bucket', requireAuth, (req, res) => {
 router.get('/:id/thumbnail', async (req, res) => {
   const item = mediaDB.getById(req.params.id);
   if (!item) {
-    return res.status(404).send('Media not found');
+    return sendFallbackThumbnail(res);
   }
 
   if (item.is_adult && !isVaultAuthorized(req)) {
@@ -113,10 +135,22 @@ router.get('/:id/thumbnail', async (req, res) => {
   try {
     const variant = req.query.variant || 'random';
     const thumbPath = await getOrGenerateThumbnail(item.id, item.gcs_path, variant);
+    if (!thumbPath || !fs.existsSync(thumbPath) || fs.statSync(thumbPath).size === 0) {
+      return sendFallbackThumbnail(res);
+    }
+
+    const ext = path.extname(thumbPath).toLowerCase();
+    const contentType = ext === '.svg' ? 'image/svg+xml' : 'image/jpeg';
+
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.sendFile(thumbPath);
+    res.sendFile(path.resolve(thumbPath), (err) => {
+      if (err && !res.headersSent) {
+        sendFallbackThumbnail(res);
+      }
+    });
   } catch (err) {
-    res.status(404).send('Thumbnail not available');
+    sendFallbackThumbnail(res);
   }
 });
 

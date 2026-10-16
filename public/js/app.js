@@ -33,6 +33,7 @@ class KodimiApp {
     this.activeFilter = 'all';
     this.searchTerm = '';
     this.activeMedia = null;
+    this.featuredItem = null;
     this.player = null;
     this.eventSource = null;
 
@@ -156,6 +157,10 @@ class KodimiApp {
           await this.loadVaultData();
         }
 
+        if (filter === 'all') {
+          this.selectNextFeaturedItem();
+        }
+
         this.navItems.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         this.activeFilter = filter;
@@ -169,6 +174,7 @@ class KodimiApp {
       this.activeFilter = 'all';
       this.searchInput.value = '';
       this.searchTerm = '';
+      this.selectNextFeaturedItem();
       this.renderView();
     });
 
@@ -401,6 +407,10 @@ class KodimiApp {
       // 7. Regular Media Play & Info Buttons
       const playBtn = e.target.closest('.quick-play-btn, #hero-play-btn');
       if (playBtn) {
+        if (playBtn.id === 'hero-play-btn' && playBtn.dataset.seriesName) {
+          this.openSeriesModal(playBtn.dataset.seriesName);
+          return;
+        }
         const id = playBtn.dataset.id;
         const item = this.findMediaById(id);
         const startTime = parseFloat(playBtn.dataset.time || (item && item.current_time) || 0);
@@ -410,6 +420,10 @@ class KodimiApp {
 
       const infoBtn = e.target.closest('.quick-info-btn, #hero-info-btn');
       if (infoBtn) {
+        if (infoBtn.id === 'hero-info-btn' && infoBtn.dataset.seriesName) {
+          this.openSeriesModal(infoBtn.dataset.seriesName);
+          return;
+        }
         const id = infoBtn.dataset.id;
         const item = this.findMediaById(id);
         if (item) this.openDetailModal(item);
@@ -581,6 +595,7 @@ class KodimiApp {
       this.continueWatching = isVaultOpen ? allCw : allCw.filter((m) => !m.is_adult);
       this.seriesList = isVaultOpen ? allSeries : allSeries.filter((s) => !s.is_adult);
 
+      this.selectNextFeaturedItem();
       this.renderView();
     } catch (err) {
       console.error('Failed to load media catalog:', err);
@@ -589,10 +604,65 @@ class KodimiApp {
     }
   }
 
+  getEligibleFeaturedItems() {
+    // 1. Candidate movies with rich plot or backdrop
+    const candidateMovies = (this.mediaItems || []).filter(
+      (m) => m.type === 'movie' && !m.is_adult && (m.plot && m.plot.length > 15)
+    );
+
+    // 2. Candidate series with rich plot or backdrop
+    const candidateSeries = (this.seriesList || []).filter(
+      (s) => !s.is_adult && (s.plot && s.plot.length > 15)
+    );
+
+    let candidates = [...candidateMovies, ...candidateSeries];
+
+    // Fallback if no rich items found
+    if (candidates.length === 0) {
+      candidates = (this.mediaItems || []).filter((m) => !m.is_adult);
+    }
+
+    return candidates;
+  }
+
+  selectNextFeaturedItem() {
+    const candidates = this.getEligibleFeaturedItems();
+    if (!candidates || candidates.length === 0) {
+      this.featuredItem = null;
+      return null;
+    }
+
+    if (candidates.length === 1) {
+      this.featuredItem = candidates[0];
+      return this.featuredItem;
+    }
+
+    let lastId = null;
+    try {
+      lastId = sessionStorage.getItem('kodimi_last_featured_id');
+    } catch (_) {}
+
+    const currentId = this.featuredItem?.id || lastId;
+    // Exclude the last shown item so it is GUARANTEED to change on every reload or visit
+    const pool = candidates.filter((c) => c.id !== currentId);
+    const selectionPool = pool.length > 0 ? pool : candidates;
+
+    const randomIndex = Math.floor(Math.random() * selectionPool.length);
+    const selected = selectionPool[randomIndex];
+    this.featuredItem = selected;
+
+    try {
+      sessionStorage.setItem('kodimi_last_featured_id', selected.id);
+    } catch (_) {}
+
+    return selected;
+  }
+
   findMediaById(id) {
     const cw = this.continueWatching.find((m) => m.id === id);
     const media = this.mediaItems.find((m) => m.id === id) ||
-           this.privateItems.find((m) => m.id === id);
+           this.privateItems.find((m) => m.id === id) ||
+           (this.seriesList && this.seriesList.find((s) => s.id === id));
     if (cw) {
       return { ...(media || {}), ...cw, current_time: cw.current_time };
     }
@@ -619,7 +689,11 @@ class KodimiApp {
       this.gridContainer.style.display = 'none';
       this.emptyState.style.display = 'none';
 
-      const hero = this.mediaItems.find((m) => m.type === 'movie' && m.plot && m.plot.length > 20) || this.mediaItems[0];
+      if (!this.featuredItem) {
+        this.selectNextFeaturedItem();
+      }
+
+      const hero = this.featuredItem;
       if (hero) {
         this.heroSection.style.display = 'flex';
         this.heroSection.innerHTML = renderHeroBanner(hero);

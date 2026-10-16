@@ -7,7 +7,8 @@ export function renderHeroBanner(item) {
 
   const pin = sessionStorage.getItem('kodimi_vault_pin');
   const pinParam = (item.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
-  const heroThumb = `/api/media/${item.id}/thumbnail?variant=69${pinParam}`;
+  const thumbMediaId = item.sample_media_id || item.id;
+  const heroThumb = `/api/media/${thumbMediaId}/thumbnail?variant=69${pinParam}`;
   let backdrop = item.backdrop_url || item.poster_url || heroThumb;
   if (backdrop.includes('placehold.co')) {
     backdrop = heroThumb;
@@ -32,6 +33,11 @@ export function renderHeroBanner(item) {
     badges.push(`<span class="chip">${item.genres.slice(0, 2).join(' • ')}</span>`);
   }
 
+  const isSeries = item.type === 'series';
+  const playLabel = isSeries ? 'Browse Series' : 'Play';
+  const infoLabel = isSeries ? 'Episodes' : 'More Info';
+  const seriesAttr = (isSeries && (item.series_name || item.title)) ? `data-series-name="${escapeHtml(item.series_name || item.title)}"` : '';
+
   return `
     <div class="hero-backdrop">
       <img src="${backdrop}" alt="${escapeHtml(item.title)}" loading="eager" onerror="this.onerror=null; this.src='${heroThumb}';" />
@@ -42,13 +48,13 @@ export function renderHeroBanner(item) {
       <h1 class="hero-title">${escapeHtml(item.title)}</h1>
       <p class="hero-plot">${escapeHtml(item.plot || 'Stream seamlessly on Kodimi with adaptive multi-resolution.')}</p>
       <div class="hero-actions">
-        <button class="btn-filled" id="hero-play-btn" data-id="${item.id}">
+        <button class="btn-filled" id="hero-play-btn" data-id="${item.id}" ${seriesAttr}>
           <span class="material-symbols-outlined fill">play_arrow</span>
-          <span>Play</span>
+          <span>${playLabel}</span>
         </button>
-        <button class="btn-tonal" id="hero-info-btn" data-id="${item.id}">
+        <button class="btn-tonal" id="hero-info-btn" data-id="${item.id}" ${seriesAttr}>
           <span class="material-symbols-outlined">info</span>
-          <span>More Info</span>
+          <span>${infoLabel}</span>
         </button>
       </div>
     </div>

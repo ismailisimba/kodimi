@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f11" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Kodimi - Personal Streaming Platform</title>
   
   <!-- Favicon -->
@@ -530,6 +533,34 @@
       </div>
     </div>
   </div>
+
+  <!-- Material 3 Mobile Bottom Navigation Bar -->
+  <nav class="mobile-bottom-nav" id="mobile-bottom-nav">
+    <button class="nav-item mobile-nav-btn active" data-filter="all">
+      <span class="material-symbols-outlined">home</span>
+      <span class="mobile-nav-label">Home</span>
+    </button>
+    <button class="nav-item mobile-nav-btn" data-filter="movie">
+      <span class="material-symbols-outlined">movie</span>
+      <span class="mobile-nav-label">Movies</span>
+    </button>
+    <button class="nav-item mobile-nav-btn" data-filter="series">
+      <span class="material-symbols-outlined">tv</span>
+      <span class="mobile-nav-label">Shows</span>
+    </button>
+    <button class="nav-item mobile-nav-btn" data-filter="livetv" id="mobile-nav-livetv-btn">
+      <span class="material-symbols-outlined" style="color: #ff5252;">live_tv</span>
+      <span class="mobile-nav-label">Live TV</span>
+    </button>
+    <button class="nav-item mobile-nav-btn" data-filter="continue">
+      <span class="material-symbols-outlined">history</span>
+      <span class="mobile-nav-label">Continue</span>
+    </button>
+    <button class="nav-item mobile-nav-btn" data-filter="vault" id="mobile-nav-vault-btn">
+      <span class="material-symbols-outlined">lock</span>
+      <span class="mobile-nav-label">Private</span>
+    </button>
+  </nav>
 
   <!-- Application Entrypoint Module -->
   <script type="module" src="/js/app.js"></script>

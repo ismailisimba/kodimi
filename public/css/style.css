@@ -958,37 +958,341 @@ body {
   letter-spacing: 0.5px;
 }
 
-/* Responsive adjustments */
-@media (max-width: 768px) {
-  .top-app-bar {
-    padding: 0 16px;
-  }
+/* ==========================================================================
+   Mobile & Responsive Adjustments
+   ========================================================================== */
+
+/* Mobile Bottom Navigation Bar (Hidden by default on Desktop) */
+.mobile-bottom-nav {
+  display: none;
+}
+
+/* Tablet & Landscape Adjustments (769px to 1150px) */
+@media (max-width: 1150px) {
   .nav-links {
+    margin-left: 14px;
+    gap: 4px;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nav-links::-webkit-scrollbar {
     display: none;
   }
+  .nav-item {
+    padding: 6px 12px;
+    font-size: 13px;
+    gap: 4px;
+  }
   .search-input {
-    width: 140px;
+    width: 160px;
   }
   .search-input:focus {
-    width: 180px;
+    width: 200px;
   }
+}
+
+/* Mobile Devices (<= 768px) */
+@media (max-width: 768px) {
+  /* Top App Bar */
+  .top-app-bar {
+    padding: 0 12px;
+    height: 60px;
+  }
+  .brand-logo {
+    font-size: 20px;
+  }
+  .brand-badge {
+    display: none;
+  }
+  .nav-links {
+    display: none; /* Replaced by bottom nav */
+  }
+  .app-bar-actions {
+    gap: 8px;
+  }
+  .search-box {
+    flex: 1;
+    max-width: 160px;
+  }
+  .search-input {
+    width: 100%;
+    padding: 6px 10px 6px 32px;
+    font-size: 13px;
+  }
+  .search-input:focus {
+    width: 100%;
+    max-width: 220px;
+  }
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Main View Area with Mobile Bottom Nav Padding */
+  main#main-content {
+    padding-bottom: 100px !important;
+  }
+
+  /* Material 3 Mobile Bottom Navigation Bar */
+  .mobile-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60px;
+    background-color: rgba(18, 18, 22, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    z-index: 40;
+    align-items: center;
+    justify-content: space-around;
+    padding: 2px 4px env(safe-area-inset-bottom, 0px) 4px;
+  }
+
+  .mobile-nav-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    background: transparent;
+    border: none;
+    color: var(--md-sys-color-on-surface-variant);
+    font-size: 10px;
+    font-weight: 500;
+    padding: 4px 6px;
+    border-radius: 8px;
+    cursor: pointer;
+    flex: 1;
+    max-width: 64px;
+    transition: all 0.2s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-nav-btn .material-symbols-outlined {
+    font-size: 22px;
+    transition: transform 0.2s ease;
+  }
+
+  .mobile-nav-btn.active {
+    color: var(--md-sys-color-primary);
+    background-color: rgba(229, 9, 20, 0.12);
+    font-weight: 700;
+  }
+
+  .mobile-nav-btn.active .material-symbols-outlined {
+    transform: scale(1.1);
+  }
+
+  .mobile-nav-label {
+    white-space: nowrap;
+    letter-spacing: 0.2px;
+  }
+
+  /* Floating Action Button (FAB) moved safely above bottom nav */
+  .fab {
+    bottom: 76px;
+    right: 16px;
+    height: 48px;
+    padding: 0 16px;
+    gap: 8px;
+    font-size: 13px;
+    border-radius: var(--md-shape-corner-full);
+  }
+
+  /* Hero Banner */
   .hero-banner {
-    padding: 0 20px 40px 20px;
-    height: 55vh;
+    padding: 0 16px 28px 16px;
+    height: auto;
+    min-height: 420px;
+  }
+  .hero-content {
+    max-width: 100%;
+    width: 100%;
   }
   .hero-title {
-    font-size: 28px;
+    font-size: 24px;
+    line-height: 1.2;
+    margin-bottom: 8px;
   }
+  .hero-plot {
+    font-size: 13px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-bottom: 14px;
+  }
+  .hero-actions {
+    display: flex;
+    gap: 10px;
+    width: 100%;
+  }
+  .hero-actions button {
+    flex: 1;
+    justify-content: center;
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+
+  /* Carousels & Media Cards */
   .media-section {
-    padding: 12px 16px;
+    padding: 8px 16px;
+    margin-bottom: 4px;
   }
-  .media-grid {
-    padding: 16px;
-    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-    gap: 12px;
+  .section-title {
+    font-size: 17px;
+  }
+  .carousel-nav-btn {
+    display: none !important; /* Hide desktop arrow buttons on touch screen */
+  }
+  .carousel-track {
+    padding: 4px 16px;
+    gap: 10px;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
   }
   .media-card {
-    flex: 0 0 140px;
+    flex: 0 0 130px;
+    width: 130px;
+    scroll-snap-align: start;
+  }
+  .series-card {
+    flex: 0 0 150px;
+    width: 150px;
+  }
+  .card-poster {
+    height: 195px;
+  }
+  .card-title {
+    font-size: 12px;
+  }
+  .card-meta {
+    font-size: 10px;
+  }
+
+  /* Grid View */
+  #grid-container {
+    padding-top: 72px !important;
+  }
+  #grid-container > div:first-child {
+    padding: 0 16px !important;
+  }
+  .media-grid {
+    padding: 12px 16px 32px 16px;
+    grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+    gap: 10px;
+  }
+  .media-grid .media-card {
+    flex: unset;
+    width: auto;
+  }
+  .media-grid .card-poster {
+    height: 155px;
+  }
+
+  /* Live TV View */
+  #livetv-container {
+    padding-top: 72px !important;
+  }
+  .livetv-header-banner {
+    padding: 16px;
+    gap: 14px;
+  }
+  .livetv-search-box {
+    width: 100%;
+  }
+  .livetv-filters-container {
+    padding: 0 16px 14px 16px;
+    gap: 8px;
+  }
+  .live-channels-grid {
+    padding: 0 16px 32px 16px;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .live-channel-card {
+    padding: 12px;
+  }
+
+  /* Modals as Native Bottom Sheets on Mobile */
+  .modal-backdrop {
+    padding: 0;
+    align-items: flex-end;
+  }
+  .modal-card {
+    max-height: 92vh;
+    border-radius: 20px 20px 0 0;
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+  }
+  .series-modal-header {
+    min-height: 180px;
+  }
+  .series-header-content {
+    padding: 16px;
+    min-height: 180px;
+  }
+  .series-title {
+    font-size: 22px;
+  }
+  .series-plot {
+    font-size: 13px;
+    -webkit-line-clamp: 3;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .series-seasons-section {
+    padding: 16px 16px 32px 16px;
+  }
+  .series-episode-card {
+    padding: 10px;
+    gap: 10px;
+  }
+  .episode-thumb-container {
+    width: 100px;
+    height: 56px;
+    flex-shrink: 0;
+  }
+
+  /* Video Player Controls */
+  .player-overlay-top {
+    padding: 12px 16px;
+  }
+  .player-overlay-bottom {
+    padding: 12px 16px 24px 16px;
+    gap: 8px;
+  }
+  .player-title {
+    font-size: 14px;
+    max-width: 200px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Extra Small Mobile Devices (<= 480px) */
+@media (max-width: 480px) {
+  .fab span:not(.material-symbols-outlined):not(.badge) {
+    display: none;
+  }
+  .fab {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+  .mobile-nav-label {
+    font-size: 9px;
   }
 }
 

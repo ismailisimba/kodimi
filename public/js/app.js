@@ -162,7 +162,7 @@ class KodimiApp {
         }
 
         this.navItems.forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
+        document.querySelectorAll(`.nav-item[data-filter="${filter}"]`).forEach((b) => b.classList.add('active'));
         this.activeFilter = filter;
         this.renderView();
       });
@@ -170,7 +170,7 @@ class KodimiApp {
 
     document.getElementById('brand-home').addEventListener('click', () => {
       this.navItems.forEach((b) => b.classList.remove('active'));
-      document.querySelector('[data-filter="all"]').classList.add('active');
+      document.querySelectorAll('.nav-item[data-filter="all"]').forEach((b) => b.classList.add('active'));
       this.activeFilter = 'all';
       this.searchInput.value = '';
       this.searchTerm = '';
@@ -550,7 +550,7 @@ class KodimiApp {
       this.vaultModal.classList.remove('open');
 
       this.navItems.forEach((b) => b.classList.remove('active'));
-      if (this.navVaultBtn) this.navVaultBtn.classList.add('active');
+      document.querySelectorAll('.nav-item[data-filter="vault"]').forEach((b) => b.classList.add('active'));
       this.activeFilter = 'vault';
 
       await this.loadVaultData();
@@ -786,7 +786,7 @@ class KodimiApp {
               vaultState.lock();
               this.privateItems = [];
               this.navItems.forEach((b) => b.classList.remove('active'));
-              document.querySelector('[data-filter="all"]').classList.add('active');
+              document.querySelectorAll('.nav-item[data-filter="all"]').forEach((b) => b.classList.add('active'));
               this.activeFilter = 'all';
               this.renderView();
             };

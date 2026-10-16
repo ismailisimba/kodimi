@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import path from 'path';
@@ -284,6 +285,9 @@ async function processTorrentDownload(id, torrentSource, customName) {
 
     const torrent = client.add(torrentSource, {
       announce: PUBLIC_TRACKERS,
+      deselect: true,
+      destroyStoreOnDestroy: true,
+      storeCacheSlots: 5,
     });
     const job = activeJobs.get(id);
     if (job) {
@@ -318,6 +322,15 @@ async function processTorrentDownload(id, torrentSource, customName) {
     torrent.on('ready', async () => {
       console.log(`[Torrent] Metadata ready for: "${torrent.name}" (total ${torrent.files.length} file(s))`);
 
+      // Deselect all pieces across the torrent to prevent concurrent multi-gigabyte background downloads
+      try {
+        if (torrent.pieces && torrent.pieces.length > 0) {
+          torrent.deselect(0, torrent.pieces.length - 1, false);
+        }
+      } catch (err) {
+        console.warn('[Torrent] Deselect warning on ready:', err.message);
+      }
+
       // Filter for all valid media files
       const videoFiles = torrent.files.filter((f) => {
         const ext = path.extname(f.name).toLowerCase();
@@ -329,7 +342,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
 
       if (!targetFiles || targetFiles.length === 0) {
         failDownload(id, 'No media files found in torrent');
-        torrent.destroy();
+        try { torrent.destroy({ destroyStore: true }); } catch (_) {}
         return;
       }
 
@@ -410,6 +423,11 @@ async function processTorrentDownload(id, torrentSource, customName) {
         });
 
         console.log(`[Torrent] Starting file ${i + 1}/${targetFiles.length}: "${cleanFilename}" (${(fileBytes / (1024 * 1024)).toFixed(1)} MB)`);
+
+        // Select pieces ONLY for this active file
+        try {
+          currentFile.select();
+        } catch (_) {}
 
         const MAX_FILE_RETRIES = 3;
         let fileSuccess = false;
@@ -535,6 +553,22 @@ async function processTorrentDownload(id, torrentSource, customName) {
                 isDone = true;
                 cleanup();
 
+                // Cease chunk requests for this completed file
+                try {
+                  currentFile.deselect();
+                } catch (_) {}
+
+                // Truncate completed file in tmpfs to immediately reclaim RAM on Cloud Run
+                try {
+                  const localFilePath = path.join(torrent.path || '/tmp/webtorrent', currentFile.path);
+                  if (fs.existsSync(localFilePath)) {
+                    await fs.promises.truncate(localFilePath, 0);
+                    console.log(`[Torrent] Reclaimed tmpfs disk space for: ${currentFile.name}`);
+                  }
+                } catch (truncErr) {
+                  console.warn(`[Torrent] Could not truncate local file ${currentFile.name}:`, truncErr.message);
+                }
+
                 totalDownloadedPrev += fileBytes;
                 console.log(`[Torrent] Successfully saved file ${i + 1}/${targetFiles.length} to GCS: ${cleanFilename}`);
 
@@ -575,7 +609,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
         if (!fileSuccess) {
           console.error(`[Torrent] Failed while processing ${cleanFilename} after ${MAX_FILE_RETRIES} attempts:`, lastStreamErr?.message);
           failDownload(id, `File download failed: ${lastStreamErr?.message}`);
-          torrent.destroy();
+          try { torrent.destroy({ destroyStore: true }); } catch (_) {}
           return;
         }
       }
@@ -586,7 +620,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
         console.log(`[Torrent] Successfully completed all ${targetFiles.length} file(s) for: ${torrent.name}`);
         completeDownload(id, isMultiFile ? torrent.name : singleTargetName, totalBytes, isMultiFile);
       }
-      torrent.destroy();
+      try { torrent.destroy({ destroyStore: true }); } catch (_) {}
     });
 
     torrent.on('error', (err) => {
@@ -735,7 +769,7 @@ export function pauseDownload(id) {
   const job = activeJobs.get(id);
   if (job) {
     if (job.torrent) {
-      try { job.torrent.destroy(); } catch (_) {}
+      try { job.torrent.destroy({ destroyStore: true }); } catch (_) {}
     }
     if (job.currentReadStream) {
       try { job.currentReadStream.destroy(); } catch (_) {}
@@ -792,7 +826,7 @@ export function cancelDownload(id, shouldUpsert = true) {
   const job = activeJobs.get(id);
   if (job) {
     if (job.torrent) {
-      try { job.torrent.destroy(); } catch (_) {}
+      try { job.torrent.destroy({ destroyStore: true }); } catch (_) {}
     }
     if (job.currentReadStream) {
       try { job.currentReadStream.destroy(); } catch (_) {}

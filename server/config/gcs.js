@@ -75,6 +75,8 @@ export function createWriteStream(filename, options = {}) {
   const bucket = getBucket();
   return bucket.file(filename).createWriteStream({
     resumable: true,
+    validation: false,
+    chunkSize: 8 * 1024 * 1024,
     ...options,
   });
 }

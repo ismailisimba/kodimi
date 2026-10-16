@@ -427,13 +427,69 @@ async function processTorrentDownload(id, torrentSource, customName) {
               const writeStream = createWriteStream(gcsPath);
               const readStream = currentFile.createReadStream();
               let currentFileDownloaded = 0;
+              let lastDataReceived = Date.now();
+              let isDone = false;
+              let watchdogTimer = null;
 
               if (job) {
                 job.currentWriteStream = writeStream;
                 job.currentReadStream = readStream;
               }
 
+              const cleanup = () => {
+                if (watchdogTimer) {
+                  clearInterval(watchdogTimer);
+                  watchdogTimer = null;
+                }
+                try { readStream.unpipe(writeStream); } catch (_) {}
+                try { readStream.removeAllListeners(); } catch (_) {}
+                try { readStream.destroy(); } catch (_) {}
+                try { writeStream.destroy(); } catch (_) {}
+              };
+
+              // Active stall watchdog
+              watchdogTimer = setInterval(() => {
+                if (isDone) return;
+                const checkJob = activeJobs.get(id);
+                if (!checkJob || checkJob.status === 'failed' || checkJob.status === 'paused') {
+                  isDone = true;
+                  cleanup();
+                  reject(new Error('Download stopped or paused'));
+                  return;
+                }
+
+                const idleTime = Date.now() - lastDataReceived;
+                const peers = torrent.numPeers || 0;
+
+                // If idle for more than 4 seconds, update UI with realistic speed (0) and state
+                if (idleTime > 4000) {
+                  const idleStatus = peers === 0
+                    ? (isMultiFile ? `Searching for peers [${i + 1}/${targetFiles.length}]...` : 'Searching for peers...')
+                    : (isMultiFile ? `Waiting for pieces [${i + 1}/${targetFiles.length}] (${peers} peers)...` : `Waiting for pieces (${peers} peers)...`);
+
+                  updateDownload(id, {
+                    speed: 0,
+                    peers,
+                    status_text: idleStatus,
+                  });
+
+                  // Re-announce to trackers/DHT if 0 peers for > 30s
+                  if (peers === 0 && idleTime > 30000 && typeof torrent.discovery?.tracker?.announce === 'function') {
+                    try { torrent.discovery.tracker.announce(); } catch (_) {}
+                  }
+                }
+
+                // If completely stalled for 120 seconds without a single byte, abort this attempt to recover
+                if (idleTime > 120000) {
+                  isDone = true;
+                  console.warn(`[Torrent] Stream for "${cleanFilename}" stalled for 120s with no data. Aborting attempt ${attempt}...`);
+                  cleanup();
+                  reject(new Error('Stream stalled: no data received for 120s'));
+                }
+              }, 2000);
+
               readStream.on('data', (chunk) => {
+                lastDataReceived = Date.now();
                 currentFileDownloaded += chunk.length;
                 const totalSoFar = totalDownloadedPrev + currentFileDownloaded;
                 const now = Date.now();
@@ -459,18 +515,26 @@ async function processTorrentDownload(id, torrentSource, customName) {
               });
 
               readStream.on('error', (err) => {
+                if (isDone) return;
+                isDone = true;
+                cleanup();
                 console.error(`[Torrent Read Error for ${cleanFilename}]:`, err.message);
-                try { writeStream.destroy(); } catch (_) {}
                 reject(err);
               });
 
               writeStream.on('error', (err) => {
+                if (isDone) return;
+                isDone = true;
+                cleanup();
                 console.error(`[GCS Write Error for ${cleanFilename}]:`, err.message);
-                try { readStream.destroy(); } catch (_) {}
                 reject(err);
               });
 
               writeStream.on('finish', async () => {
+                if (isDone) return;
+                isDone = true;
+                cleanup();
+
                 totalDownloadedPrev += fileBytes;
                 console.log(`[Torrent] Successfully saved file ${i + 1}/${targetFiles.length} to GCS: ${cleanFilename}`);
 
@@ -752,6 +816,21 @@ export function cancelDownload(id, shouldUpsert = true) {
 export async function initDownloader() {
   try {
     const list = await downloadsDB.getAllAsync();
+
+    // Clean up stale abandoned direct uploads older than 15 minutes
+    const staleDirectUploads = list.filter(
+      (d) => d.status === 'uploading' && d.created_at && (Date.now() - new Date(d.created_at).getTime() > 15 * 60 * 1000)
+    );
+    for (const d of staleDirectUploads) {
+      console.log(`[Downloader] Expiring abandoned direct upload: ${d.name} (${d.id})`);
+      downloadsDB.upsert({
+        ...d,
+        status: 'failed',
+        error: 'Upload timed out or abandoned by client',
+        status_text: 'Upload timed out',
+      });
+    }
+
     const downloading = list.filter((d) => d.status === 'downloading');
     for (const dl of downloading) {
       console.log(`[Downloader] Auto-resuming in-flight job on startup: ${dl.name} (${dl.id})`);

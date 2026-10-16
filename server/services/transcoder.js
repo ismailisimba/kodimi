@@ -342,7 +342,7 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
 
       const item = mediaDB.getById(mediaId);
       const duration = (item && item.duration > 0) ? item.duration : 0;
-      let seekTime = 45;
+      let seekTime = 2;
 
       if (duration > 120) {
         // Fast seek into early 15% - 35% of video
@@ -352,47 +352,59 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
       } else if (duration > 10) {
         seekTime = Math.max(2, Math.round(duration * 0.3));
       } else {
-        seekTime = variant === '42' ? 45 : 90;
+        seekTime = variant === '42' ? 2 : 5;
       }
 
       const signedUrl = await getSignedReadUrl(gcsPath, 60);
 
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Thumbnail extraction timed out'));
-        }, 12000);
+      const extractFrame = (targetSeek) => {
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Thumbnail extraction timed out'));
+          }, 12000);
 
-        ffmpeg(signedUrl)
-          .seekInput(seekTime)
-          .inputOptions([
-            '-noaccurate_seek',
-            '-probesize 131072',
-            '-analyzeduration 131072',
-            '-fflags +nobuffer+fastseek',
-          ])
-          .outputOptions([
-            '-map 0:v:0',
-            '-vframes 1',
-            '-vf scale=640:-1,format=yuv420p',
-            '-f image2',
-            '-c:v mjpeg',
-            '-q:v 3',
-          ])
-          .save(cacheFile)
-          .on('end', () => {
-            clearTimeout(timeout);
-            if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
-              resolve();
-            } else {
-              reject(new Error('Empty frame output'));
-            }
-          })
-          .on('error', (err) => {
-            clearTimeout(timeout);
-            try { if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size < 500) fs.unlinkSync(cacheFile); } catch (_) {}
-            reject(err);
-          });
-      });
+          ffmpeg(signedUrl)
+            .seekInput(targetSeek)
+            .inputOptions([
+              '-noaccurate_seek',
+              '-probesize 131072',
+              '-analyzeduration 131072',
+              '-fflags +nobuffer+fastseek',
+            ])
+            .outputOptions([
+              '-map 0:v:0',
+              '-vframes 1',
+              '-vf scale=640:-1,format=yuv420p',
+              '-f image2',
+              '-c:v mjpeg',
+              '-q:v 3',
+            ])
+            .save(cacheFile)
+            .on('end', () => {
+              clearTimeout(timeout);
+              if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
+                resolve();
+              } else {
+                reject(new Error('Empty frame output'));
+              }
+            })
+            .on('error', (err) => {
+              clearTimeout(timeout);
+              try { if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size < 500) fs.unlinkSync(cacheFile); } catch (_) {}
+              reject(err);
+            });
+        });
+      };
+
+      try {
+        await extractFrame(seekTime);
+      } catch (firstErr) {
+        if (seekTime > 2) {
+          await extractFrame(1.5);
+        } else {
+          throw firstErr;
+        }
+      }
 
       if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
         // Asynchronously upload to GCS so all future instances/restarts get instant thumbnails

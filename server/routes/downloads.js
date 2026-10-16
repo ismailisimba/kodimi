@@ -152,7 +152,17 @@ router.get('/events', requireAuth, (req, res) => {
   // Send initial ping
   res.write(': connected\n\n');
 
+  // Heartbeat ping every 15s to keep Cloud Run connection alive
+  const pingInterval = setInterval(() => {
+    try {
+      res.write(': keepalive\n\n');
+    } catch (_) {
+      clearInterval(pingInterval);
+    }
+  }, 15000);
+
   req.on('close', () => {
+    clearInterval(pingInterval);
     downloadEvents.off('progress', onProgress);
   });
 });

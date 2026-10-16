@@ -159,6 +159,12 @@ export function renderDownloadItem(dl) {
         <span class="material-symbols-outlined" style="font-size: 18px;">delete</span>
       </button>
     `;
+  } else if (dl.status === 'uploading') {
+    actionButtonsHtml = `
+      <button class="icon-btn dl-delete-btn" data-id="${dl.id}" title="Cancel Upload" style="width: 28px; height: 28px; color: #ffb4ab;">
+        <span class="material-symbols-outlined" style="font-size: 18px;">close</span>
+      </button>
+    `;
   } else {
     actionButtonsHtml = `
       <button class="icon-btn dl-delete-btn" data-id="${dl.id}" title="Delete from list" style="width: 28px; height: 28px; color: #ffb4ab;">
@@ -167,17 +173,33 @@ export function renderDownloadItem(dl) {
     `;
   }
 
-  const statusDisplay = dl.status_text
-    ? escapeHtml(dl.status_text)
-    : isCompleted
-    ? '<span style="color: #4caf50;">✓ Saved to GCS</span>'
-    : isDownloading
-    ? '<span style="color: var(--md-sys-color-primary);">Streaming to GCS...</span>'
-    : isPaused
-    ? '<span style="color: #ffb74d;">⏸ Paused</span>'
-    : isFailed
-    ? `<span style="color: #f44336;">${escapeHtml(dl.error || 'Failed')}</span>`
-    : '';
+  let statusColor = '#64b5f6';
+  let statusText = dl.status_text || '';
+
+  if (isCompleted) {
+    statusColor = '#4caf50';
+    statusText = '✓ Saved to GCS';
+  } else if (isFailed) {
+    statusColor = '#f44336';
+    statusText = dl.error || dl.status_text || 'Failed';
+  } else if (isPaused) {
+    statusColor = '#ffb74d';
+    statusText = '⏸ Paused';
+  } else if (dl.status === 'uploading') {
+    statusColor = '#64b5f6';
+    statusText = dl.status_text || 'Uploading to Cloud Storage...';
+  } else if (isDownloading) {
+    if (!statusText) {
+      statusText = dl.speed > 0 ? 'Streaming to GCS...' : 'Connecting to peers...';
+    }
+    if (statusText.toLowerCase().includes('search') || statusText.toLowerCase().includes('waiting')) {
+      statusColor = '#ffb74d';
+    } else {
+      statusColor = '#64b5f6';
+    }
+  }
+
+  const statusDisplay = `<span style="color: ${statusColor};">${escapeHtml(statusText)}</span>`;
 
   return `
     <div class="download-item" id="dl-${dl.id}" style="background-color: var(--md-sys-color-surface-container-high); border-radius: var(--md-shape-corner-m); padding: 12px 16px; margin-bottom: 8px; border: 1px solid var(--md-sys-color-outline-variant);">
@@ -194,7 +216,7 @@ export function renderDownloadItem(dl) {
       </div>
 
       <div style="width: 100%; height: 6px; background-color: var(--md-sys-color-surface-container-highest); border-radius: 9999px; overflow: hidden; margin-bottom: 8px;">
-        <div style="height: 100%; width: ${dl.progress || 0}%; background-color: ${isCompleted ? '#4caf50' : isFailed ? '#f44336' : isPaused ? '#ffb74d' : 'var(--md-sys-color-primary)'}; transition: width 0.3s ease;"></div>
+        <div style="height: 100%; width: ${dl.progress || 0}%; background-color: ${isCompleted ? '#4caf50' : isFailed ? '#f44336' : isPaused ? '#ffb74d' : '#2196f3'}; transition: width 0.3s ease;"></div>
       </div>
 
       <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--md-sys-color-on-surface-variant);">

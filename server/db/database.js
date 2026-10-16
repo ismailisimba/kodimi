@@ -56,6 +56,7 @@ const DownloadSchema = new mongoose.Schema({
   source_type: String,
   source_url: String,
   status: { type: String, default: 'queued', index: true },
+  status_text: String,
   progress: { type: Number, default: 0 },
   speed: { type: Number, default: 0 },
   downloaded_bytes: { type: Number, default: 0 },

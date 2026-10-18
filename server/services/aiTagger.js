@@ -16,24 +16,43 @@ function getAIClient() {
 }
 
 /**
- * Heuristic parser from filename
+ * Heuristic parser from filename (and optional parent torrent/folder context)
  */
-export function heuristicParseFilename(filename) {
+export function heuristicParseFilename(filename, contextHint = '') {
   const base = filename.replace(/\.[^/.]+$/, ''); // remove extension
   let clean = base.replace(/[\._]/g, ' ');
+  const combinedText = `${filename} ${clean} ${contextHint} ${contextHint.replace(/[\._]/g, ' ')}`;
 
-  // Detect adult content tags & keywords (err on side of caution)
-  const ADULT_PATTERNS = [
-    'fuck', 'facefuck', 'porn', 'xxx', 'creampie', 'blowjob', 'pussy', 'cock', 'dickdrainer',
-    'analcollege', 'puretaboo', 'swallowed', 'realwifestories', 'fakehostel', 'diabolic',
-    'brazzers', 'bangbros', 'naughtyamerica', 'realitykings', 'mofos', 'evilangel', 'blacked',
-    'tushy', 'vixen', 'hentai', 'milf', 'slut', 'threesome', 'gangbang',
-    'dildo', 'masturbat', 'swap fuck', 'daughter swap', 'wife swap', 'horny housewives',
-    'sex addicts', 'ahasss', 'fakehub', 'woodman', 'teenslikeitbig',
-    'symmetrical', 'avi love', 'harley jade', 'pigtail facefuck'
+  // Detect adult content tags, studios, & keywords (err on side of caution)
+  const ADULT_WORD_PATTERNS = [
+    'fuck', 'fucks', 'fucked', 'fucking', 'fucker', 'facefuck', 'anal', 'assaholic',
+    'porn', 'porno', 'xxx', 'nsfw', 'creampie', 'creampies', 'blowjob', 'blowjobs',
+    'handjob', 'footjob', 'rimjob', 'deepthroat', 'pussy', 'pussies', 'cock', 'cocks',
+    'dick', 'dicks', 'dickdrainer', 'tits', 'boobs', 'slut', 'sluts', 'slutty',
+    'whore', 'whores', 'milf', 'milfs', 'hentai', 'threesome', 'foursome', 'gangbang',
+    'orgy', 'dildo', 'masturbat', 'masturbate', 'masturbation', 'cum', 'cumshot', 'squirt',
+    'bdsm', 'femdom', 'bondage', 'fetish', 'erotic', 'hardcore', 'stepmom', 'stepsis',
+    'stepsister', 'stepson', 'stepdad', 'stepbrother', 'lesbian', 'lesbians',
+    'brazzers', 'bangbros', 'naughtyamerica', 'realitykings', 'mofos', 'evilangel',
+    'blacked', 'blackedraw', 'tushy', 'tushyraw', 'vixen', 'deeper', 'slayed',
+    'sextury', '21sextury', 'dorcel', 'puretaboo', 'swallowed', 'realwifestories',
+    'fakehostel', 'fakehub', 'diabolic', 'analcollege', 'woodman', 'teenslikeitbig',
+    'teamskeet', 'digitalplayground', 'wickedpictures', 'onlyfans', 'manyvids', 'chaturbate',
+    'siterip', 'ahasss', 'symmetrical'
   ];
-  const isAdultRegex = new RegExp(`\\b(${ADULT_PATTERNS.join('|')})\\b|fuck|porn|xxx|creampie|blowjob|dickdrainer|puretaboo|swallowed|realwifestories|fakehostel|diabolic|ahasss|symmetrical`, 'i');
-  const isAdult = isAdultRegex.test(filename) || isAdultRegex.test(clean);
+
+  const ADULT_PHRASE_PATTERNS = [
+    '21 sextury', 'pure pleasures', 'pure taboo', 'naughty america', 'reality kings',
+    'evil angel', 'team skeet', 'new sensations', 'sweet sinner', 'marc dorcel',
+    'swap fuck', 'daughter swap', 'wife swap', 'horny housewives', 'sex addicts',
+    'avi love', 'harley jade', 'pigtail facefuck', 'sluts love', 'split scenes', 'wicked pictures'
+  ];
+
+  const wordRegex = new RegExp(`\\b(${ADULT_WORD_PATTERNS.join('|')})\\b`, 'i');
+  const phraseRegex = new RegExp(`(${ADULT_PHRASE_PATTERNS.join('|')}|fuck|porn|xxx|creampie|blowjob|dickdrainer|puretaboo|swallowed|realwifestories|fakehostel|diabolic|ahasss|symmetrical|assaholic|sextury|brazzers|bangbros|blacked|tushy)`, 'i');
+  const scenePattern = /\bscene\s+\d+\b/i.test(combinedText) && /\b(1080p|720p|2160p|4k)\b/i.test(combinedText) && !/\bS\d{1,2}E\d{1,2}\b/i.test(combinedText);
+
+  const isAdult = wordRegex.test(combinedText) || phraseRegex.test(combinedText) || scenePattern;
 
   // Detect Season & Episode (e.g. S01E02 or 1x02)
   const seMatch = clean.match(/\bS(\d{1,2})E(\d{1,2})\b/i) || clean.match(/\b(\d{1,2})x(\d{1,2})\b/i);
@@ -109,8 +128,8 @@ export function heuristicParseFilename(filename) {
  * Enriches media metadata using Google Gemini AI.
  * Falls back to heuristic parsing if API is unavailable.
  */
-export async function enrichMediaMetadata(filename, fileSize = 0) {
-  const parsed = heuristicParseFilename(filename);
+export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = '') {
+  const parsed = heuristicParseFilename(filename, contextHint);
 
   // If adult content, avoid sending to general safety filters and generate structured tags
   if (parsed.is_adult) {
@@ -133,11 +152,12 @@ export async function enrichMediaMetadata(filename, fileSize = 0) {
 
   try {
     const prompt = `You are an expert movie and TV media cataloger for a personal streaming platform named Kodimi.
-Analyze this video file name: "${filename}".
+Analyze this video file name: "${filename}" ${contextHint ? `(from release: "${contextHint}")` : ''}.
 Detected Season: ${parsed.season || 'null'}, Episode: ${parsed.episode || 'null'}, Inferred Series: "${parsed.series_name || ''}", Inferred Episode Title: "${parsed.episode_title || ''}".
 
-IMPORTANT RULES FOR TV SERIES EPISODES:
-1. If this is a TV series episode (contains SxxExx or season/episode pattern):
+IMPORTANT RULES:
+1. If this is adult/pornographic/XXX/18+ explicit content, set "is_adult": true, "type": "movie", "series_name": null.
+2. If this is a TV series episode (contains SxxExx or season/episode pattern):
    - Set "type": "series"
    - Set "series_name": Canonical name of the TV show (e.g. "Slow Horses")
    - Set "season": Season number (integer, e.g. 6)
@@ -145,7 +165,7 @@ IMPORTANT RULES FOR TV SERIES EPISODES:
    - Set "episode_title": The actual title of this specific episode (e.g. "Sayonara")
    - Set "title": MUST be formatted as: "{series_name} S{XX}E{XX}: {episode_title}" (e.g. "Slow Horses S06E05: Sayonara"). If episode title is unknown, use "{series_name} S{XX}E{XX}".
    - Set "plot": An accurate 2-3 sentence synopsis/plot overview of THIS SPECIFIC EPISODE (what happens in this episode, not just the generic series premise).
-2. If this is a standalone Movie:
+3. If this is a standalone Movie:
    - Set "type": "movie"
    - Set "series_name": null, "season": null, "episode": null, "episode_title": null
    - Set "title": Canonical movie title
@@ -164,7 +184,8 @@ Return a strictly valid JSON object with fields:
   "genres": string[],
   "tags": string[],
   "poster_url": string,
-  "backdrop_url": string
+  "backdrop_url": string,
+  "is_adult": boolean
 }
 
 Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON string.`;
@@ -177,6 +198,27 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
     const text = response.text?.trim() || '';
     const cleanJson = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
     const aiData = JSON.parse(cleanJson);
+
+    const isAdultDetected = Boolean(
+      parsed.is_adult ||
+      aiData.is_adult ||
+      (Array.isArray(aiData.genres) && aiData.genres.some((g) => /adult|erotic|xxx|porn/i.test(g)))
+    );
+
+    if (isAdultDetected) {
+      return {
+        ...parsed,
+        is_adult: true,
+        type: 'movie',
+        series_name: null,
+        size_bytes: fileSize,
+        plot: 'Private Media content.',
+        genres: ['Adult'],
+        tags: ['Private', '18+'],
+        poster_url: null,
+        backdrop_url: null,
+      };
+    }
 
     let seriesName = aiData.series_name || parsed.series_name;
     let finalTitle = aiData.title || parsed.title;
@@ -198,6 +240,7 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
 
     return {
       ...parsed,
+      is_adult: false,
       size_bytes: fileSize,
       title: finalTitle,
       type: aiData.type || parsed.type,

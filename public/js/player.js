@@ -172,7 +172,10 @@ class KodimiPlayer {
 
     this.onUserActivity();
 
-    // Start periodic progress sync
+    // Start periodic progress sync (every 15s to minimize background HTTP & DB load)
+    if (this.progressInterval) {
+      clearInterval(this.progressInterval);
+    }
     this.progressInterval = setInterval(() => {
       if (this.currentMedia && !this.isLive) {
         const cur = this.getEffectiveCurrentTime();
@@ -181,7 +184,7 @@ class KodimiPlayer {
           api.saveProgress(this.currentMedia.id, cur, dur, 0);
         }
       }
-    }, 5000);
+    }, 15000);
   }
 
   openLive(channel) {

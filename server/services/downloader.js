@@ -452,7 +452,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
           // Ensure already downloaded file is indexed into media catalog
           if (!mediaDB.getByGcsPath(cleanFilename)) {
             try {
-              const metadata = await enrichMediaMetadata(cleanFilename, fileBytes);
+              const metadata = await enrichMediaMetadata(cleanFilename, fileBytes, torrent.name);
               const saved = mediaDB.upsert({
                 ...metadata,
                 gcs_path: cleanFilename,
@@ -630,7 +630,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
 
                 // Immediately enrich and index this completed file into Kodimi media catalog!
                 try {
-                  const metadata = await enrichMediaMetadata(cleanFilename, fileBytes);
+                  const metadata = await enrichMediaMetadata(cleanFilename, fileBytes, torrent.name);
                   const saved = await mediaDB.upsert({
                     ...metadata,
                     gcs_path: cleanFilename,
@@ -794,7 +794,7 @@ async function completeDownload(id, gcsPath, totalBytes, isMultiFile = false) {
   // Auto-enrich and index into media catalog only for single files (multi-file items are indexed per file)
   if (!isMultiFile) {
     try {
-      const metadata = await enrichMediaMetadata(gcsPath, totalBytes);
+      const metadata = await enrichMediaMetadata(gcsPath, totalBytes, job.name || '');
       const saved = await mediaDB.upsert({
         ...metadata,
         gcs_path: gcsPath,

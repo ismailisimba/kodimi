@@ -186,15 +186,14 @@ router.get('/worker-keepalive', (req, res) => {
  * Automatically closes when no downloads are active so idle browser tabs never keep Cloud Run awake.
  */
 router.get('/events', requireAuth, (req, res) => {
+  if (!hasActiveDownloads()) {
+    return res.status(204).end();
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
-
-  if (!hasActiveDownloads()) {
-    res.write(`data: ${JSON.stringify({ type: 'idle' })}\n\n`);
-    return res.end();
-  }
 
   const cleanup = () => {
     clearInterval(pingInterval);

@@ -9,6 +9,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import config from '../config/env.js';
+import { heuristicParseFilename } from '../services/aiTagger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,7 +112,38 @@ async function refreshCache() {
   try {
     const allMedia = await MediaModel.find({}).lean();
     mediaCache.clear();
-    allMedia.forEach((m) => mediaCache.set(m.id, m));
+    const autoVaultOps = [];
+    allMedia.forEach((m) => {
+      if (!m.is_adult) {
+        const check = heuristicParseFilename(m.filename || m.gcs_path || '');
+        if (check.is_adult) {
+          m.is_adult = true;
+          m.genres = ['Adult'];
+          m.tags = ['Private', '18+'];
+          m.plot = 'Private Media content.';
+          autoVaultOps.push({
+            updateOne: {
+              filter: { id: m.id },
+              update: {
+                $set: {
+                  is_adult: true,
+                  genres: ['Adult'],
+                  tags: ['Private', '18+'],
+                  plot: 'Private Media content.',
+                  updated_at: new Date(),
+                },
+              },
+            },
+          });
+        }
+      }
+      mediaCache.set(m.id, m);
+    });
+
+    if (autoVaultOps.length > 0) {
+      console.log(`[DB] Auto-vaulted ${autoVaultOps.length} leaked adult item(s) into Private Vault.`);
+      await MediaModel.bulkWrite(autoVaultOps).catch((e) => console.warn('[DB Auto-Vault Error]:', e.message));
+    }
 
     const allPlayback = await PlaybackModel.find({}).lean();
     playbackCache.clear();

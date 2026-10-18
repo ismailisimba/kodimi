@@ -282,6 +282,8 @@ export async function streamSubtitles(gcsPath, trackIndex = 0, req, res) {
   }
 }
 
+const MIN_CINEMATIC_SIZE = 10000; // 10 KB - non-cinematic black screens & logo bumpers are ~4-7 KB
+
 /**
  * Generates and caches cinematic video frame screenshot thumbnails.
  * Backed by permanent GCS cloud storage (.thumbnails/) across all container deployments.
@@ -299,10 +301,8 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
   const legacyFile = path.join(thumbsDir, `${mediaId}.jpg`);
   const altFile = path.join(thumbsDir, `${mediaId}_${variant === '42' ? '69' : '42'}.jpg`);
 
-  // 1. Check local ephemeral disk
-  if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) return cacheFile;
-  if (fs.existsSync(legacyFile) && fs.statSync(legacyFile).size > 500) return legacyFile;
-  if (fs.existsSync(altFile) && fs.statSync(altFile).size > 500) return altFile;
+  // 1. Check local ephemeral disk for the specific requested variant
+  if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size >= MIN_CINEMATIC_SIZE) return cacheFile;
 
   // 2. In-flight promise deduplication to prevent multiple concurrent extractions
   const dedupKey = `${mediaId}_${variant}`;
@@ -314,99 +314,127 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
     try {
       const bucket = getBucket();
 
-      // 3. Check persistent GCS cache (.thumbnails/)
+      // 3. Check persistent GCS cache (.thumbnails/) for this specific variant
       const gcsKey = `.thumbnails/${mediaId}_${variant}.jpg`;
       const legacyGcsKey = `.thumbnails/${mediaId}.jpg`;
       const altGcsKey = `.thumbnails/${mediaId}_${variant === '42' ? '69' : '42'}.jpg`;
 
-      const [existsPrimary] = await bucket.file(gcsKey).exists().catch(() => [false]);
-      if (existsPrimary) {
-        await bucket.file(gcsKey).download({ destination: cacheFile });
-        return cacheFile;
-      }
+      const downloadIfCinematic = async (key, dest) => {
+        try {
+          const file = bucket.file(key);
+          const [exists] = await file.exists().catch(() => [false]);
+          if (!exists) return null;
+          const [meta] = await file.getMetadata().catch(() => [{}]);
+          const sz = parseInt(meta?.size || 0, 10);
+          if (sz >= MIN_CINEMATIC_SIZE) {
+            await file.download({ destination: dest });
+            if (fs.existsSync(dest) && fs.statSync(dest).size >= MIN_CINEMATIC_SIZE) {
+              return dest;
+            }
+          }
+        } catch (_) {}
+        return null;
+      };
 
-      const [existsLegacy] = await bucket.file(legacyGcsKey).exists().catch(() => [false]);
-      if (existsLegacy) {
-        await bucket.file(legacyGcsKey).download({ destination: legacyFile });
-        return legacyFile;
-      }
+      const primaryCached = await downloadIfCinematic(gcsKey, cacheFile);
+      if (primaryCached) return primaryCached;
 
-      const [existsAlt] = await bucket.file(altGcsKey).exists().catch(() => [false]);
-      if (existsAlt) {
-        await bucket.file(altGcsKey).download({ destination: altFile });
-        return altFile;
-      }
-
-      // 4. Generate with FFmpeg if not yet cached in GCS
+      // 4. Generate with FFmpeg if this variant is not yet cached in GCS or was non-cinematic
       if (!gcsPath) return null;
 
       const item = mediaDB.getById(mediaId);
-      const duration = (item && item.duration > 0) ? item.duration : 0;
-      let seekTime = 2;
-
-      if (duration > 120) {
-        // Fast seek into early 15% - 35% of video
-        seekTime = variant === '42'
-          ? Math.min(180, Math.max(30, Math.round(duration * 0.15)))
-          : Math.min(420, Math.max(60, Math.round(duration * 0.35)));
-      } else if (duration > 10) {
-        seekTime = Math.max(2, Math.round(duration * 0.3));
-      } else {
-        seekTime = variant === '42' ? 2 : 5;
+      let duration = (item && item.duration > 0) ? item.duration : 0;
+      if (!duration || duration <= 0) {
+        try {
+          duration = await getOrProbeDuration(mediaId, gcsPath);
+        } catch (_) {}
       }
 
-      const signedUrl = await getSignedReadUrl(gcsPath, 60);
+      // True cinematic candidate timestamps (deep into actual narrative/action, avoiding intros & bumpers)
+      let candidates = [];
+      if (duration > 60) {
+        if (variant === '42') {
+          candidates = [
+            Math.round(duration * 0.42),
+            Math.round(duration * 0.46),
+            Math.round(duration * 0.38),
+          ];
+        } else {
+          candidates = [
+            Math.round(duration * 0.68),
+            Math.round(duration * 0.72),
+            Math.round(duration * 0.64),
+          ];
+        }
+      } else if (duration > 10) {
+        candidates = variant === '42'
+          ? [Math.round(duration * 0.42), Math.round(duration * 0.50)]
+          : [Math.round(duration * 0.68), Math.round(duration * 0.75)];
+      } else {
+        // Unknown duration: seek deep into full-length media (10-25 mins)
+        candidates = variant === '42' ? [600, 780, 960] : [1200, 1500, 1800];
+      }
+
+      const signedUrl = await getSignedReadUrl(gcsPath, 120);
 
       const extractFrame = (targetSeek) => {
         return new Promise((resolve, reject) => {
+          let command = null;
           const timeout = setTimeout(() => {
+            try { if (command) command.kill('SIGKILL'); } catch (_) {}
             reject(new Error('Thumbnail extraction timed out'));
-          }, 12000);
+          }, 15000);
 
-          ffmpeg(signedUrl)
-            .seekInput(targetSeek)
+          command = ffmpeg(signedUrl)
             .inputOptions([
-              '-noaccurate_seek',
-              '-probesize 131072',
-              '-analyzeduration 131072',
+              '-probesize 1000000',
+              '-analyzeduration 1000000',
               '-fflags +nobuffer+fastseek',
             ])
+            .seekInput(targetSeek)
             .outputOptions([
               '-map 0:v:0',
               '-vframes 1',
               '-vf scale=640:-1,format=yuv420p',
               '-f image2',
               '-c:v mjpeg',
-              '-q:v 3',
+              '-q:v 2',
             ])
             .save(cacheFile)
             .on('end', () => {
               clearTimeout(timeout);
               if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
-                resolve();
+                resolve(fs.statSync(cacheFile).size);
               } else {
                 reject(new Error('Empty frame output'));
               }
             })
             .on('error', (err) => {
               clearTimeout(timeout);
-              try { if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size < 500) fs.unlinkSync(cacheFile); } catch (_) {}
+              try { if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile); } catch (_) {}
               reject(err);
             });
         });
       };
 
-      try {
-        await extractFrame(seekTime);
-      } catch (firstErr) {
-        if (seekTime > 2) {
-          await extractFrame(1.5);
-        } else {
-          throw firstErr;
-        }
+      let bestSize = 0;
+      let generated = false;
+
+      for (const seekSec of candidates) {
+        try {
+          const sz = await extractFrame(seekSec);
+          if (sz >= MIN_CINEMATIC_SIZE) {
+            bestSize = sz;
+            generated = true;
+            break; // Found high-detail cinematic frame!
+          } else if (sz > bestSize) {
+            bestSize = sz;
+            generated = true;
+          }
+        } catch (_) {}
       }
 
-      if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
+      if (generated && fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
         // Asynchronously upload to GCS so all future instances/restarts get instant thumbnails
         bucket.upload(cacheFile, {
           destination: gcsKey,
@@ -418,6 +446,17 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
 
         return cacheFile;
       }
+
+      // 5. Fallback: if generation failed, check if alt or legacy variant exists
+      const altCached = (fs.existsSync(altFile) && fs.statSync(altFile).size >= MIN_CINEMATIC_SIZE)
+        ? altFile
+        : await downloadIfCinematic(altGcsKey, altFile);
+      if (altCached) return altCached;
+
+      const legacyCached = (fs.existsSync(legacyFile) && fs.statSync(legacyFile).size >= MIN_CINEMATIC_SIZE)
+        ? legacyFile
+        : await downloadIfCinematic(legacyGcsKey, legacyFile);
+      if (legacyCached) return legacyCached;
 
       return null;
     } catch (err) {
@@ -584,15 +623,19 @@ export async function startThumbnailWarmer() {
       console.log(`[Thumbnail Warmer] Checking ${items.length} media items in catalog...`);
 
       const [gcsFiles] = await bucket.getFiles({ prefix: '.thumbnails/' });
-      const existingGcsThumbSet = new Set(gcsFiles.map((f) => f.name.replace('.thumbnails/', '')));
-      console.log(`[Thumbnail Warmer] Found ${existingGcsThumbSet.size} pre-rendered thumbnails in GCS.`);
+      const validGcsThumbSet = new Set(
+        gcsFiles
+          .filter((f) => parseInt(f.metadata?.size || 0, 10) >= MIN_CINEMATIC_SIZE)
+          .map((f) => f.name.replace('.thumbnails/', ''))
+      );
+      console.log(`[Thumbnail Warmer] Found ${validGcsThumbSet.size} pre-rendered cinematic thumbnails in GCS.`);
 
       let warmed = 0;
       for (const item of items) {
         if (!item.gcs_path) continue;
         const key42 = `${item.id}_42.jpg`;
         const key69 = `${item.id}_69.jpg`;
-        const hasThumb = existingGcsThumbSet.has(key42) || existingGcsThumbSet.has(key69) || existingGcsThumbSet.has(`${item.id}.jpg`);
+        const hasThumb = validGcsThumbSet.has(key42) || validGcsThumbSet.has(key69);
 
         if (!hasThumb) {
           try {

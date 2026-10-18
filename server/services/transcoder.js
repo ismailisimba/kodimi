@@ -95,38 +95,20 @@ export async function streamOriginalRemux(gcsPath, startTimeSeconds = 0, req, re
     command.seekInput(startTimeSeconds);
   }
 
-  const isSeeking = startTimeSeconds > 0;
   const remuxOutputOptions = [
     '-map 0:v:0',
     '-map 0:a:0?',
-  ];
-
-  if (isSeeking) {
-    remuxOutputOptions.push(
-      '-c:v libx264',
-      '-preset ultrafast',
-      '-tune zerolatency',
-      '-crf 18',
-      '-pix_fmt yuv420p',
-      '-g 48',
-      '-keyint_min 24',
-      '-sc_threshold 0'
-    );
-  } else {
-    remuxOutputOptions.push('-c:v copy');
-  }
-
-  remuxOutputOptions.push(
+    '-c:v copy',
     '-c:a aac',
     '-b:a 192k',
     '-ar 48000',
     '-ac 2',
-    '-threads 0',
+    '-threads 2',
     '-avoid_negative_ts make_zero',
     '-max_muxing_queue_size 1024',
     '-movflags frag_keyframe+empty_moov+default_base_moof',
-    '-flush_packets 1'
-  );
+    '-flush_packets 1',
+  ];
 
   command
     .format('mp4')
@@ -191,7 +173,7 @@ export async function streamTranscodedVideo(gcsPath, quality, startTimeSeconds =
       `-b:a ${profile.audioBitrate}`,
       '-ar 48000',
       '-ac 2',
-      '-threads 0',
+      '-threads 2',
       '-preset ultrafast',
       '-tune zerolatency',
       '-g 48',
@@ -284,6 +266,78 @@ export async function streamSubtitles(gcsPath, trackIndex = 0, req, res) {
 
 const MIN_CINEMATIC_SIZE = 10000; // 10 KB - non-cinematic black screens & logo bumpers are ~4-7 KB
 
+// In-memory inventory of valid GCS thumbnail keys (.thumbnails/...) and cached Signed URLs
+let gcsThumbInventory = null;
+let gcsInventoryPromise = null;
+const signedThumbUrlCache = new Map();
+
+async function ensureThumbInventory() {
+  if (gcsThumbInventory) return gcsThumbInventory;
+  if (gcsInventoryPromise) return gcsInventoryPromise;
+
+  gcsInventoryPromise = (async () => {
+    try {
+      const bucket = getBucket();
+      const [gcsFiles] = await bucket.getFiles({ prefix: '.thumbnails/' });
+      const validSet = new Set();
+      for (const f of gcsFiles) {
+        if (parseInt(f.metadata?.size || 0, 10) >= MIN_CINEMATIC_SIZE) {
+          validSet.add(f.name);
+        }
+      }
+      gcsThumbInventory = validSet;
+      return gcsThumbInventory;
+    } catch (err) {
+      console.warn('[Thumbnail Inventory Warning]:', err.message);
+      return new Set();
+    } finally {
+      gcsInventoryPromise = null;
+    }
+  })();
+
+  return gcsInventoryPromise;
+}
+
+/**
+ * Resolves a direct GCS Signed Read URL for a cached thumbnail if available in GCS,
+ * avoiding downloading or proxying image bytes through Cloud Run.
+ */
+export async function getThumbnailRedirectUrl(mediaId, gcsPath, requestedVariant = 'random') {
+  let variant = requestedVariant;
+  if (!variant || variant === 'random') {
+    variant = Math.random() < 0.5 ? '42' : '69';
+  }
+  if (variant !== '42' && variant !== '69') {
+    variant = '42';
+  }
+
+  const inventory = await ensureThumbInventory();
+  const candidates = [
+    `.thumbnails/${mediaId}_${variant}.jpg`,
+    `.thumbnails/${mediaId}_${variant === '42' ? '69' : '42'}.jpg`,
+    `.thumbnails/${mediaId}.jpg`,
+  ];
+
+  const matchedKey = candidates.find((k) => inventory.has(k));
+  if (matchedKey) {
+    const cached = signedThumbUrlCache.get(matchedKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.url;
+    }
+    try {
+      // Sign for 24 hours, cache in memory for 12 hours
+      const url = await getSignedReadUrl(matchedKey, 24 * 60);
+      signedThumbUrlCache.set(matchedKey, {
+        url,
+        expiresAt: Date.now() + 12 * 60 * 60 * 1000,
+      });
+      return url;
+    } catch (_) {}
+  }
+
+  return null;
+}
+
 /**
  * Generates and caches cinematic video frame screenshot thumbnails.
  * Backed by permanent GCS cloud storage (.thumbnails/) across all container deployments.
@@ -301,8 +355,10 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
   const legacyFile = path.join(thumbsDir, `${mediaId}.jpg`);
   const altFile = path.join(thumbsDir, `${mediaId}_${variant === '42' ? '69' : '42'}.jpg`);
 
-  // 1. Check local ephemeral disk for the specific requested variant
+  // 1. Check local ephemeral disk for any valid variant of this item
   if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size >= MIN_CINEMATIC_SIZE) return cacheFile;
+  if (fs.existsSync(altFile) && fs.statSync(altFile).size >= MIN_CINEMATIC_SIZE) return altFile;
+  if (fs.existsSync(legacyFile) && fs.statSync(legacyFile).size >= MIN_CINEMATIC_SIZE) return legacyFile;
 
   // 2. In-flight promise deduplication to prevent multiple concurrent extractions
   const dedupKey = `${mediaId}_${variant}`;
@@ -313,14 +369,16 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
   const thumbPromise = (async () => {
     try {
       const bucket = getBucket();
+      const inventory = await ensureThumbInventory();
 
-      // 3. Check persistent GCS cache (.thumbnails/) for this specific variant
+      // 3. Check persistent GCS cache (.thumbnails/) for any valid variant before running FFmpeg
       const gcsKey = `.thumbnails/${mediaId}_${variant}.jpg`;
-      const legacyGcsKey = `.thumbnails/${mediaId}.jpg`;
       const altGcsKey = `.thumbnails/${mediaId}_${variant === '42' ? '69' : '42'}.jpg`;
+      const legacyGcsKey = `.thumbnails/${mediaId}.jpg`;
 
       const downloadIfCinematic = async (key, dest) => {
         try {
+          if (inventory.size > 0 && !inventory.has(key)) return null;
           const file = bucket.file(key);
           const [exists] = await file.exists().catch(() => [false]);
           if (!exists) return null;
@@ -329,6 +387,7 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
           if (sz >= MIN_CINEMATIC_SIZE) {
             await file.download({ destination: dest });
             if (fs.existsSync(dest) && fs.statSync(dest).size >= MIN_CINEMATIC_SIZE) {
+              inventory.add(key);
               return dest;
             }
           }
@@ -339,7 +398,13 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
       const primaryCached = await downloadIfCinematic(gcsKey, cacheFile);
       if (primaryCached) return primaryCached;
 
-      // 4. Generate with FFmpeg if this variant is not yet cached in GCS or was non-cinematic
+      const altCached = await downloadIfCinematic(altGcsKey, altFile);
+      if (altCached) return altCached;
+
+      const legacyCached = await downloadIfCinematic(legacyGcsKey, legacyFile);
+      if (legacyCached) return legacyCached;
+
+      // 4. Generate with FFmpeg ONLY if no valid thumbnail exists in GCS for this mediaId
       if (!gcsPath) return null;
 
       const item = mediaDB.getById(mediaId);
@@ -435,28 +500,19 @@ export async function getOrGenerateThumbnail(mediaId, gcsPath, requestedVariant 
       }
 
       if (generated && fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
-        // Asynchronously upload to GCS so all future instances/restarts get instant thumbnails
+        // Upload to GCS and register in inventory so future requests get a direct 302 GCS redirect
         bucket.upload(cacheFile, {
           destination: gcsKey,
           metadata: {
             contentType: 'image/jpeg',
             cacheControl: 'public, max-age=31536000',
           },
+        }).then(() => {
+          if (gcsThumbInventory) gcsThumbInventory.add(gcsKey);
         }).catch((err) => console.warn(`[GCS Thumb Upload Error for ${mediaId}]:`, err.message));
 
         return cacheFile;
       }
-
-      // 5. Fallback: if generation failed, check if alt or legacy variant exists
-      const altCached = (fs.existsSync(altFile) && fs.statSync(altFile).size >= MIN_CINEMATIC_SIZE)
-        ? altFile
-        : await downloadIfCinematic(altGcsKey, altFile);
-      if (altCached) return altCached;
-
-      const legacyCached = (fs.existsSync(legacyFile) && fs.statSync(legacyFile).size >= MIN_CINEMATIC_SIZE)
-        ? legacyFile
-        : await downloadIfCinematic(legacyGcsKey, legacyFile);
-      if (legacyCached) return legacyCached;
 
       return null;
     } catch (err) {
@@ -663,6 +719,7 @@ export default {
   streamOriginalRemux,
   streamTranscodedVideo,
   streamSubtitles,
+  getThumbnailRedirectUrl,
   getOrGenerateThumbnail,
   getSubtitleTracks,
   getOrProbeDuration,

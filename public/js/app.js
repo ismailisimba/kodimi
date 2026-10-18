@@ -507,7 +507,7 @@ class KodimiApp {
       await api.checkAuth();
       this.loginModal.classList.remove('open');
       this.loadData();
-      this.setupDownloadStream();
+      this.loadDownloads();
     } catch {
       this.loginModal.classList.add('open');
     }
@@ -524,7 +524,7 @@ class KodimiApp {
       this.loginModal.classList.remove('open');
       this.loginPassword.value = '';
       this.loadData();
-      this.setupDownloadStream();
+      this.loadDownloads();
     } catch (err) {
       this.loginError.textContent = err.message || 'Incorrect password';
       this.loginError.style.display = 'block';
@@ -937,13 +937,15 @@ class KodimiApp {
     try {
       const res = await api.getDownloads();
       const list = res.downloads || [];
-      const activeCount = list.filter((d) => d.status === 'downloading').length;
+      const activeCount = list.filter((d) => d.status === 'downloading' || d.status === 'uploading').length;
 
       if (activeCount > 0) {
         this.downloadCountBadge.textContent = activeCount;
         this.downloadCountBadge.style.display = 'flex';
+        this.setupDownloadStream();
       } else {
         this.downloadCountBadge.style.display = 'none';
+        this.closeDownloadStream();
       }
 
       if (list.length === 0) {
@@ -1122,8 +1124,17 @@ class KodimiApp {
     }
   }
 
+  closeDownloadStream() {
+    if (this.eventSource) {
+      try { this.eventSource.close(); } catch (_) {}
+      this.eventSource = null;
+    }
+  }
+
   setupDownloadStream() {
-    if (this.eventSource) this.eventSource.close();
+    if (this.eventSource && this.eventSource.readyState !== EventSource.CLOSED) {
+      return;
+    }
     const token = authState.getToken();
     if (!token) return;
 
@@ -1131,6 +1142,11 @@ class KodimiApp {
     this.eventSource.onmessage = (event) => {
       try {
         const update = JSON.parse(event.data);
+        if (update && update.type === 'idle') {
+          this.closeDownloadStream();
+          this.loadDownloads();
+          return;
+        }
         if (update && update.id) {
           const itemEl = document.getElementById(`dl-${update.id}`);
           if (itemEl) {
@@ -1141,9 +1157,16 @@ class KodimiApp {
 
           if (update.status === 'completed') {
             this.loadData();
+            this.loadDownloads();
+          } else if (update.status === 'failed' || update.status === 'paused') {
+            this.loadDownloads();
           }
         }
       } catch (_) {}
+    };
+    this.eventSource.onerror = () => {
+      // Close on error/EOF so browser does not loop reconnections when server scales to zero
+      this.closeDownloadStream();
     };
   }
 

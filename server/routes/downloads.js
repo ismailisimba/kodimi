@@ -9,6 +9,7 @@ import {
   pauseDownload,
   resumeDownload,
   cancelDownload,
+  hasActiveDownloads,
   downloadEvents,
 } from '../services/downloader.js';
 import { requireAuth } from '../services/auth.js';
@@ -135,7 +136,54 @@ router.delete('/:id', requireAuth, async (req, res) => {
 });
 
 /**
+ * Internal worker keep-alive endpoint: keeps Cloud Run CPU allocated strictly while a download is active,
+ * and closes immediately once all downloads finish so the instance scales to zero ($0/hr).
+ */
+router.get('/worker-keepalive', (req, res) => {
+  if (!hasActiveDownloads()) {
+    return res.status(200).send('idle');
+  }
+
+  res.setHeader('Content-Type', 'text/plain');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  res.write('active\n');
+
+  const cleanup = () => {
+    clearInterval(pingInterval);
+    clearTimeout(maxTimer);
+    downloadEvents.off('idle', onIdle);
+    try { res.end('done\n'); } catch (_) {}
+  };
+
+  const onIdle = () => cleanup();
+  downloadEvents.once('idle', onIdle);
+
+  const pingInterval = setInterval(() => {
+    if (!hasActiveDownloads()) {
+      cleanup();
+      return;
+    }
+    try {
+      res.write('.\n');
+    } catch (_) {
+      cleanup();
+    }
+  }, 15000);
+
+  const maxTimer = setTimeout(() => cleanup(), 12 * 60 * 1000);
+
+  req.on('close', () => {
+    clearInterval(pingInterval);
+    clearTimeout(maxTimer);
+    downloadEvents.off('idle', onIdle);
+  });
+});
+
+/**
  * Server-Sent Events (SSE) for live download progress updates.
+ * Automatically closes when no downloads are active so idle browser tabs never keep Cloud Run awake.
  */
 router.get('/events', requireAuth, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -143,27 +191,56 @@ router.get('/events', requireAuth, (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
+  if (!hasActiveDownloads()) {
+    res.write(`data: ${JSON.stringify({ type: 'idle' })}\n\n`);
+    return res.end();
+  }
+
+  const cleanup = () => {
+    clearInterval(pingInterval);
+    downloadEvents.off('progress', onProgress);
+    downloadEvents.off('idle', onIdle);
+    try { res.end(); } catch (_) {}
+  };
+
   const onProgress = (data) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    try {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch (_) {
+      cleanup();
+    }
+  };
+
+  const onIdle = () => {
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'idle' })}\n\n`);
+    } catch (_) {}
+    cleanup();
   };
 
   downloadEvents.on('progress', onProgress);
+  downloadEvents.once('idle', onIdle);
 
   // Send initial ping
   res.write(': connected\n\n');
 
-  // Heartbeat ping every 15s to keep Cloud Run connection alive
+  // Heartbeat ping every 15s ONLY while downloads are active
   const pingInterval = setInterval(() => {
+    if (!hasActiveDownloads()) {
+      onIdle();
+      return;
+    }
     try {
       res.write(': keepalive\n\n');
     } catch (_) {
-      clearInterval(pingInterval);
+      cleanup();
     }
   }, 15000);
 
   req.on('close', () => {
     clearInterval(pingInterval);
     downloadEvents.off('progress', onProgress);
+    downloadEvents.off('idle', onIdle);
   });
 });
 

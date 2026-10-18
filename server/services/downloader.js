@@ -6,9 +6,10 @@ import axios from 'axios';
 import { createWriteStream, fileExists } from '../config/gcs.js';
 import { downloadsDB, mediaDB } from '../db/database.js';
 import { enrichMediaMetadata } from './aiTagger.js';
-import { getOrProbeDuration } from './transcoder.js';
+import { getOrProbeDuration, getOrGenerateThumbnail } from './transcoder.js';
 
 export const downloadEvents = new EventEmitter();
+downloadEvents.setMaxListeners(50);
 
 // Supported media formats
 const VIDEO_EXTENSIONS = new Set([
@@ -37,6 +38,44 @@ const PUBLIC_TRACKERS = [
 
 // Active in-memory download jobs
 const activeJobs = new Map();
+let keepaliveActive = false;
+
+export function hasActiveDownloads() {
+  return activeJobs.size > 0;
+}
+
+function checkAndEmitIdle() {
+  if (activeJobs.size === 0) {
+    downloadEvents.emit('idle');
+    if (webTorrentClient) {
+      try {
+        webTorrentClient.destroy();
+      } catch (_) {}
+      webTorrentClient = null;
+      console.log('[Downloader] All downloads finished. Destroyed WebTorrent client and released resources.');
+    }
+  }
+}
+
+function ensureWorkerKeepalive() {
+  if (keepaliveActive || activeJobs.size === 0 || process.env.NODE_ENV !== 'production') return;
+  keepaliveActive = true;
+  const serviceUrl = process.env.SERVICE_URL || 'https://kodimi-jzam6yvx3q-ez.a.run.app';
+
+  (async () => {
+    while (activeJobs.size > 0) {
+      try {
+        await axios.get(`${serviceUrl}/api/downloads/worker-keepalive`, {
+          timeout: 15 * 60 * 1000,
+        });
+      } catch (_) {}
+      if (activeJobs.size > 0) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    keepaliveActive = false;
+  })();
+}
 
 let webTorrentClient = null;
 
@@ -45,7 +84,7 @@ async function getWebTorrentClient() {
     const WebTorrentModule = await import('webtorrent');
     const WebTorrent = WebTorrentModule.default || WebTorrentModule;
     webTorrentClient = new WebTorrent({
-      maxConns: 55,
+      maxConns: 40,
       dht: true,
     });
 
@@ -159,6 +198,7 @@ export async function startDownload(sourceUrl, customName = '') {
   downloadsDB.upsert(downloadRecord);
   activeJobs.set(id, { ...downloadRecord });
   broadcastProgress(downloadRecord);
+  ensureWorkerKeepalive();
 
   if (isMagnet || isTorrent) {
     processTorrentDownload(id, cleanSourceUrl, customName);
@@ -197,6 +237,7 @@ export async function startTorrentFromBuffer(buffer, originalFilename = '') {
   downloadsDB.upsert(downloadRecord);
   activeJobs.set(id, { ...downloadRecord });
   broadcastProgress(downloadRecord);
+  ensureWorkerKeepalive();
 
   processTorrentDownload(id, buffer, '');
   return downloadRecord;
@@ -252,15 +293,18 @@ export async function completeDirectUpload(id, filename, size = 0) {
   downloadsDB.upsert(job);
   broadcastProgress(job);
   activeJobs.delete(id);
+  checkAndEmitIdle();
 
   // Auto-enrich and index into media catalog
   try {
     const metadata = await enrichMediaMetadata(filename, size);
-    const saved = mediaDB.upsert({
+    const saved = await mediaDB.upsert({
       ...metadata,
       gcs_path: filename,
     });
-    getOrProbeDuration(saved.id, filename).catch(() => {});
+    getOrProbeDuration(saved.id, filename)
+      .then(() => getOrGenerateThumbnail(saved.id, filename, '42'))
+      .catch(() => {});
     console.log(`[Catalog] Direct upload successfully indexed: ${metadata.title}`);
     return saved;
   } catch (err) {
@@ -303,11 +347,19 @@ async function processTorrentDownload(id, torrentSource, customName) {
       });
     });
 
+    const discoveryStart = Date.now();
     // Periodic discovery updater while waiting for torrent metadata
     const discoveryInterval = setInterval(() => {
       const currentJob = activeJobs.get(id);
       if (!currentJob || currentJob.status !== 'downloading' || torrent.metadata) {
         clearInterval(discoveryInterval);
+        return;
+      }
+      // Fail dead torrents that cannot find peers/metadata within 3 minutes so they don't burn CPU forever
+      if (Date.now() - discoveryStart > 180000) {
+        clearInterval(discoveryInterval);
+        failDownload(id, 'No active peers or metadata found within 3 minutes');
+        try { torrent.destroy({ destroyStore: true }); } catch (_) {}
         return;
       }
       const peers = torrent.numPeers || 0;
@@ -444,6 +496,10 @@ async function processTorrentDownload(id, torrentSource, customName) {
             await new Promise((resolve, reject) => {
               const writeStream = createWriteStream(gcsPath);
               const readStream = currentFile.createReadStream();
+              try {
+                if (typeof writeStream.setMaxListeners === 'function') writeStream.setMaxListeners(30);
+                if (typeof readStream.setMaxListeners === 'function') readStream.setMaxListeners(30);
+              } catch (_) {}
               let currentFileDownloaded = 0;
               let lastDataReceived = Date.now();
               let isDone = false;
@@ -575,11 +631,13 @@ async function processTorrentDownload(id, torrentSource, customName) {
                 // Immediately enrich and index this completed file into Kodimi media catalog!
                 try {
                   const metadata = await enrichMediaMetadata(cleanFilename, fileBytes);
-                  const saved = mediaDB.upsert({
+                  const saved = await mediaDB.upsert({
                     ...metadata,
                     gcs_path: cleanFilename,
                   });
-                  getOrProbeDuration(saved.id, cleanFilename).catch(() => {});
+                  getOrProbeDuration(saved.id, cleanFilename)
+                    .then(() => getOrGenerateThumbnail(saved.id, cleanFilename, '42'))
+                    .catch(() => {});
                   console.log(`[Catalog] Automatically indexed multi-file item: ${metadata.title}`);
                 } catch (err) {
                   console.error(`[Catalog] Failed to auto-index ${cleanFilename}:`, err.message);
@@ -731,15 +789,19 @@ async function completeDownload(id, gcsPath, totalBytes, isMultiFile = false) {
   downloadsDB.upsert(job);
   broadcastProgress(job);
   activeJobs.delete(id);
+  checkAndEmitIdle();
 
   // Auto-enrich and index into media catalog only for single files (multi-file items are indexed per file)
   if (!isMultiFile) {
     try {
       const metadata = await enrichMediaMetadata(gcsPath, totalBytes);
-      mediaDB.upsert({
+      const saved = await mediaDB.upsert({
         ...metadata,
         gcs_path: gcsPath,
       });
+      getOrProbeDuration(saved.id, gcsPath)
+        .then(() => getOrGenerateThumbnail(saved.id, gcsPath, '42'))
+        .catch(() => {});
       console.log(`[Catalog] Automatically indexed downloaded media: ${metadata.title}`);
     } catch (err) {
       console.log(`[Catalog] Ingestion completed for ${gcsPath}`);
@@ -756,6 +818,7 @@ function failDownload(id, errorMsg) {
     downloadsDB.upsert(job);
     broadcastProgress(job);
     activeJobs.delete(id);
+    checkAndEmitIdle();
   }
   console.error(`[Download Failed - ${id}]: ${errorMsg}`);
 }
@@ -783,6 +846,7 @@ export function pauseDownload(id) {
     downloadsDB.upsert(job);
     broadcastProgress(job);
     activeJobs.delete(id);
+    checkAndEmitIdle();
     return true;
   }
   const dbJob = downloadsDB.getById(id);
@@ -811,6 +875,7 @@ export async function resumeDownload(id) {
   downloadsDB.upsert(job);
   activeJobs.set(id, { ...job });
   broadcastProgress(job);
+  ensureWorkerKeepalive();
 
   if (job.source_type === 'magnet' || job.source_type === 'torrent') {
     const cleanSource = typeof job.source_url === 'string' ? sanitizeMagnetUri(job.source_url) : job.source_url;
@@ -842,6 +907,7 @@ export function cancelDownload(id, shouldUpsert = true) {
       broadcastProgress(job);
     }
     activeJobs.delete(id);
+    checkAndEmitIdle();
     return true;
   }
   return false;
@@ -867,8 +933,21 @@ export async function initDownloader() {
 
     const downloading = list.filter((d) => d.status === 'downloading');
     for (const dl of downloading) {
-      console.log(`[Downloader] Auto-resuming in-flight job on startup: ${dl.name} (${dl.id})`);
-      resumeDownload(dl.id).catch((err) => console.warn(`[Downloader Auto-Resume Error]:`, err.message));
+      const lastUpdated = dl.updated_at ? new Date(dl.updated_at).getTime() : (dl.created_at ? new Date(dl.created_at).getTime() : 0);
+      const ageMs = Date.now() - lastUpdated;
+      // Only auto-resume if the job was active within the last 20 minutes; otherwise pause so cold starts stay idle
+      if (ageMs > 20 * 60 * 1000) {
+        console.log(`[Downloader] Pausing stale in-flight job on startup (${Math.round(ageMs / 60000)}m old): ${dl.name}`);
+        downloadsDB.upsert({
+          ...dl,
+          status: 'paused',
+          speed: 0,
+          status_text: 'Paused after idle timeout — click Resume to continue',
+        });
+      } else {
+        console.log(`[Downloader] Auto-resuming recent in-flight job on startup: ${dl.name} (${dl.id})`);
+        resumeDownload(dl.id).catch((err) => console.warn(`[Downloader Auto-Resume Error]:`, err.message));
+      }
     }
   } catch (err) {
     console.error('[Downloader Init Error]:', err.message);
@@ -883,6 +962,8 @@ export default {
   pauseDownload,
   resumeDownload,
   cancelDownload,
+  hasActiveDownloads,
   initDownloader,
   downloadEvents,
 };
+

@@ -4,7 +4,7 @@ import path from 'path';
 import { mediaDB, playbackDB } from '../db/database.js';
 import { scanAndIndexBucket, getScanStatus } from '../services/scanner.js';
 import { enrichMediaMetadata } from '../services/aiTagger.js';
-import { getOrGenerateThumbnail, getOrProbeDuration } from '../services/transcoder.js';
+import { getThumbnailRedirectUrl, getOrGenerateThumbnail, getOrProbeDuration } from '../services/transcoder.js';
 import { requireAuth } from '../services/auth.js';
 import config from '../config/env.js';
 
@@ -134,6 +134,15 @@ router.get('/:id/thumbnail', async (req, res) => {
 
   try {
     const variant = req.query.variant || 'random';
+
+    // 1. Zero-CPU fast path: redirect directly to cached GCS Signed Read URL if thumbnail exists in GCS
+    const redirectUrl = await getThumbnailRedirectUrl(item.id, item.gcs_path, variant);
+    if (redirectUrl) {
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+      return res.redirect(302, redirectUrl);
+    }
+
+    // 2. Fallback: generate if brand-new item not yet in GCS
     const thumbPath = await getOrGenerateThumbnail(item.id, item.gcs_path, variant);
     if (!thumbPath || !fs.existsSync(thumbPath) || fs.statSync(thumbPath).size === 0) {
       return sendFallbackThumbnail(res);

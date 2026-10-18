@@ -264,9 +264,16 @@ export const mediaDB = {
     return null;
   },
 
-  upsert: async (item) => {
+  upsert: async (item, allowVaultExit = false) => {
+    const existing = mediaCache.get(item.id) || (item.gcs_path ? mediaDB.getByGcsPath(item.gcs_path) : null);
+    const heuristicCheck = heuristicParseFilename(item.filename || item.gcs_path || '');
+    const enforcedAdult = allowVaultExit
+      ? Boolean(item.is_adult)
+      : Boolean(item.is_adult || existing?.is_adult || heuristicCheck.is_adult);
+
     const docData = {
       ...item,
+      is_adult: enforcedAdult,
       updated_at: new Date(),
     };
 

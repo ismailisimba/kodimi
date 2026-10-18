@@ -75,7 +75,8 @@ router.get('/genres', requireAuth, (req, res) => {
 });
 
 router.get('/continue-watching', requireAuth, (req, res) => {
-  const allowAdult = isVaultAuthorized(req);
+  const showAdult = req.query.adult === 'true' || req.query.is_adult === 'true';
+  const allowAdult = showAdult && isVaultAuthorized(req);
   const items = playbackDB.getContinueWatching(15, allowAdult);
   res.json({ items });
 });
@@ -213,10 +214,11 @@ router.post('/:id/retag', requireAuth, async (req, res) => {
 
   try {
     const updatedMeta = await enrichMediaMetadata(item.filename, item.size_bytes);
-    const updated = mediaDB.upsert({
+    const updated = await mediaDB.upsert({
       ...updatedMeta,
       id: item.id,
       gcs_path: item.gcs_path,
+      is_adult: Boolean(item.is_adult || updatedMeta.is_adult),
     });
     res.json({ success: true, item: updated });
   } catch (err) {
@@ -233,10 +235,13 @@ router.post('/:id/vault-toggle', requireAuth, async (req, res) => {
   const { is_adult } = req.body;
   const newAdultState = typeof is_adult === 'boolean' ? is_adult : !item.is_adult;
 
-  const updated = await mediaDB.upsert({
-    ...item,
-    is_adult: newAdultState,
-  });
+  const updated = await mediaDB.upsert(
+    {
+      ...item,
+      is_adult: newAdultState,
+    },
+    true
+  );
 
   console.log(`[Vault Toggle] Moved "${item.title}" to ${newAdultState ? 'Private Vault' : 'Public Library'}`);
   res.json({ success: true, item: updated, is_adult: newAdultState });

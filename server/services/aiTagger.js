@@ -51,8 +51,9 @@ export function heuristicParseFilename(filename, contextHint = '') {
   const wordRegex = new RegExp(`\\b(${ADULT_WORD_PATTERNS.join('|')})\\b`, 'i');
   const phraseRegex = new RegExp(`(${ADULT_PHRASE_PATTERNS.join('|')}|fuck|porn|xxx|creampie|blowjob|dickdrainer|puretaboo|swallowed|realwifestories|fakehostel|diabolic|ahasss|symmetrical|assaholic|sextury|brazzers|bangbros|blacked|tushy)`, 'i');
   const scenePattern = /\bscene\s+\d+\b/i.test(combinedText) && /\b(1080p|720p|2160p|4k)\b/i.test(combinedText) && !/\bS\d{1,2}E\d{1,2}\b/i.test(combinedText);
+  const genericPrivatePattern = /^(0*\d{1,4}|testvid\d*|vid_?\d+|clip_?\d+|private_?.*)$/i.test(base.trim());
 
-  const isAdult = wordRegex.test(combinedText) || phraseRegex.test(combinedText) || scenePattern;
+  const isAdult = wordRegex.test(combinedText) || phraseRegex.test(combinedText) || scenePattern || genericPrivatePattern;
 
   // Detect Season & Episode (e.g. S01E02 or 1x02)
   const seMatch = clean.match(/\bS(\d{1,2})E(\d{1,2})\b/i) || clean.match(/\b(\d{1,2})x(\d{1,2})\b/i);

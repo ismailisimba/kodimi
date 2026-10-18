@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState } from './api.js';
-import KodimiPlayer from './player.js';
+import { api, authState, vaultState } from './api.js?v=19';
+import KodimiPlayer from './player.js?v=19';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -14,7 +14,7 @@ import {
   renderSeriesModalContent,
   renderScheduleModalContent,
   escapeHtml,
-} from './components.js';
+} from './components.js?v=19';
 
 class KodimiApp {
   constructor() {
@@ -576,10 +576,62 @@ class KodimiApp {
     }
   }
 
+  isPrivateOrAdultItem(item) {
+    if (!item) return true;
+    if (item.is_adult) return true;
+    if (Array.isArray(item.genres) && item.genres.some((g) => /^(adult|erotic|18\+|nsfw|private|xxx)$/i.test(String(g).trim()))) {
+      return true;
+    }
+    if (Array.isArray(item.tags) && item.tags.some((t) => /^(private|18\+|adult|nsfw|xxx)$/i.test(String(t).trim()))) {
+      return true;
+    }
+    if (item.plot === 'Private Media content.') return true;
+
+    const fullText = `${item.title || ''} ${item.series_name || ''} ${item.filename || ''} ${item.gcs_path || ''}`;
+    const fileAndSeriesText = `${item.series_name || ''} ${item.filename || ''} ${item.gcs_path || ''} ${item.type !== 'series' ? (item.title || '') : ''}`;
+
+    if (/\b(facefuck|anal|assaholic|porn|porno|xxx|nsfw|creampie|blowjob|handjob|deepthroat|pussy|cock|dickdrainer|slut|sluts|slutty|whore|milf|milfs|hentai|threesome|gangbang|orgy|dildo|masturbat|cumshot|squirt|bdsm|femdom|bondage|fetish|erotic|hardcore|stepmom|stepsis|stepsister|brazzers|bangbros|naughtyamerica|realitykings|mofos|evilangel|blacked|tushy|vixen|deeper|slayed|sextury|21sextury|dorcel|puretaboo|swallowed|realwifestories|fakehostel|fakehub|diabolic|analcollege|woodman|teenslikeitbig|teamskeet|digitalplayground|wickedpictures|onlyfans|manyvids|chaturbate|siterip|ahasss)\b/i.test(fullText)) {
+      return true;
+    }
+    if (/\b(fuck|fucks|fucked|fucking|dick)\b/i.test(fileAndSeriesText)) {
+      return true;
+    }
+    if (/(21 sextury|pure pleasures|pure taboo|naughty america|reality kings|evil angel|fake hostel|fake taxi|anal college|dick drainers|reality junkies|split scenes)/i.test(fullText)) {
+      return true;
+    }
+    const baseName = String(item.filename || item.gcs_path || '').replace(/\.[^/.]+$/, '').trim();
+    if (/^(0*\d{1,4}|testvid\d*|vid_?\d+|clip_?\d+|private_?.*)$/i.test(baseName)) {
+      return true;
+    }
+    return false;
+  }
+
+  isFeaturedSafe(item) {
+    if (this.isPrivateOrAdultItem(item)) return false;
+    if (!item.plot || item.plot.length <= 25) return false;
+    if (item.plot === 'Private Media content.' || item.plot.includes('newly indexed media file')) return false;
+
+    const titleText = `${item.title || ''} ${item.series_name || ''}`;
+    if (/\b(fuck|shit|slut|anal|ass|porn|xxx|scene\s+\d+)\b/i.test(titleText)) return false;
+
+    const MAINSTREAM_GENRES = new Set([
+      'action', 'adventure', 'animation', 'biography', 'comedy', 'crime',
+      'documentary', 'drama', 'family', 'fantasy', 'history', 'horror',
+      'music', 'musical', 'mystery', 'romance', 'sci-fi', 'science fiction',
+      'sport', 'thriller', 'war', 'western', 'psychological thriller'
+    ]);
+    const hasMainstreamGenre = Array.isArray(item.genres) && item.genres.some((g) => MAINSTREAM_GENRES.has(String(g).trim().toLowerCase()));
+    if (!hasMainstreamGenre) return false;
+
+    if (item.type === 'movie' && (!item.year || item.year < 1950 || item.year > 2030)) {
+      return false;
+    }
+    return true;
+  }
+
   async loadData() {
     this.loadingIndicator.style.display = 'flex';
     try {
-      const isVaultOpen = vaultState.isUnlocked();
       const [mediaRes, cwRes, seriesRes] = await Promise.all([
         api.getMedia({ limit: 500 }),
         api.getContinueWatching().catch(() => ({ items: [] })),
@@ -590,10 +642,11 @@ class KodimiApp {
       const allCw = cwRes.items || [];
       const allSeries = seriesRes.items || [];
 
-      // Filter out adult content from public views unless vault is unlocked
-      this.mediaItems = isVaultOpen ? allMedia : allMedia.filter((m) => !m.is_adult);
-      this.continueWatching = isVaultOpen ? allCw : allCw.filter((m) => !m.is_adult);
-      this.seriesList = isVaultOpen ? allSeries : allSeries.filter((s) => !s.is_adult);
+      // Strictly filter out private/adult content from public views at all times
+      // (Vault items are loaded exclusively into this.privateItems when viewing the Vault tab)
+      this.mediaItems = allMedia.filter((m) => !this.isPrivateOrAdultItem(m));
+      this.continueWatching = allCw.filter((m) => !this.isPrivateOrAdultItem(m));
+      this.seriesList = allSeries.filter((s) => !this.isPrivateOrAdultItem(s));
 
       this.selectNextFeaturedItem();
       this.renderView();
@@ -605,21 +658,21 @@ class KodimiApp {
   }
 
   getEligibleFeaturedItems() {
-    // 1. Candidate movies with rich plot or backdrop
+    // 1. Candidate movies that pass strict Featured safety, genre, year, and plot checks
     const candidateMovies = (this.mediaItems || []).filter(
-      (m) => m.type === 'movie' && !m.is_adult && (m.plot && m.plot.length > 15)
+      (m) => m.type === 'movie' && this.isFeaturedSafe(m)
     );
 
-    // 2. Candidate series with rich plot or backdrop
+    // 2. Candidate series that pass strict Featured safety, genre, and plot checks
     const candidateSeries = (this.seriesList || []).filter(
-      (s) => !s.is_adult && (s.plot && s.plot.length > 15)
+      (s) => this.isFeaturedSafe(s)
     );
 
     let candidates = [...candidateMovies, ...candidateSeries];
 
-    // Fallback if no rich items found
+    // Fallback if no rich items found (still strictly excluding any private/adult items)
     if (candidates.length === 0) {
-      candidates = (this.mediaItems || []).filter((m) => !m.is_adult);
+      candidates = (this.mediaItems || []).filter((m) => !this.isPrivateOrAdultItem(m));
     }
 
     return candidates;
@@ -689,12 +742,12 @@ class KodimiApp {
       this.gridContainer.style.display = 'none';
       this.emptyState.style.display = 'none';
 
-      if (!this.featuredItem) {
+      if (!this.featuredItem || this.isPrivateOrAdultItem(this.featuredItem)) {
         this.selectNextFeaturedItem();
       }
 
       const hero = this.featuredItem;
-      if (hero) {
+      if (hero && !this.isPrivateOrAdultItem(hero)) {
         this.heroSection.style.display = 'flex';
         this.heroSection.innerHTML = renderHeroBanner(hero);
       } else {

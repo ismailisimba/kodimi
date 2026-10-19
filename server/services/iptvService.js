@@ -29,6 +29,131 @@ const COUNTRY_PLAYLISTS = [
   { id: 'global', name: 'English (Global)', flag: '🌐', url: 'https://iptv-org.github.io/iptv/languages/eng.m3u' },
 ];
 
+// Verified high-definition live channels with resilient, working streams
+const CURATED_CHANNELS = [
+  {
+    id: 'bein-sports-1-hd',
+    name: 'beIN Sports 1 HD',
+    fullName: 'beIN Sports 1 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd11/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports1.qa',
+  },
+  {
+    id: 'bein-sports-2-hd',
+    name: 'beIN Sports 2 HD',
+    fullName: 'beIN Sports 2 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd22/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports2.qa',
+  },
+  {
+    id: 'bein-sports-3-hd',
+    name: 'beIN Sports 3 HD',
+    fullName: 'beIN Sports 3 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd33/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports3.qa',
+  },
+  {
+    id: 'bein-sports-4-hd',
+    name: 'beIN Sports 4 HD',
+    fullName: 'beIN Sports 4 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd44/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports4.qa',
+  },
+  {
+    id: 'bein-sports-5-hd',
+    name: 'beIN Sports 5 HD',
+    fullName: 'beIN Sports 5 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd55/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports5.qa',
+  },
+  {
+    id: 'bein-sports-6-hd',
+    name: 'beIN Sports 6 HD',
+    fullName: 'beIN Sports 6 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd66/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports6.qa',
+  },
+  {
+    id: 'bein-sports-7-hd',
+    name: 'beIN Sports 7 HD',
+    fullName: 'beIN Sports 7 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd77/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports7.qa',
+  },
+  {
+    id: 'bein-sports-8-hd',
+    name: 'beIN Sports 8 HD',
+    fullName: 'beIN Sports 8 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd88/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports8.qa',
+  },
+  {
+    id: 'bein-sports-9-hd',
+    name: 'beIN Sports 9 HD',
+    fullName: 'beIN Sports 9 HD (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'http://primetv.cc.cd/beinfhd99/tracks-v1a1/mono.tbin.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'Global',
+    tvgId: 'beINSports9.qa',
+  },
+  {
+    id: 'bein-sports-xtra',
+    name: 'beIN SPORTS XTRA',
+    fullName: 'beIN SPORTS XTRA (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'https://d9ssxzmclhfo4.cloudfront.net/bein_sports.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'United States',
+    tvgId: 'beINSPORTSXTRA.us',
+  },
+  {
+    id: 'bein-sports-xtra-espanol',
+    name: 'beIN SPORTS XTRA en Español',
+    fullName: 'beIN SPORTS XTRA en Español (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'https://dc1644a9jazgj.cloudfront.net/beIN_Sports_Xtra_Espanol.m3u8',
+    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    country: 'United States',
+    tvgId: 'beINSPORTSXTRAenEspanol.us',
+  },
+];
+
 // In-Memory cache of parsed channels
 let channelCache = [];
 let channelsById = new Map();
@@ -181,8 +306,34 @@ export async function initIptvService() {
 
     await Promise.allSettled([...categoryPromises, ...countryPromises]);
 
+    // Prioritize and inject verified curated channels
+    const finalMap = new Map();
+    for (const curated of CURATED_CHANNELS) {
+      finalMap.set(curated.id, curated);
+    }
+
+    // Add remaining channels from playlists, replacing any broken beIN links with curated streams
+    for (const [id, ch] of combinedMap.entries()) {
+      const lowerName = ch.name.toLowerCase();
+      const beinMatch = lowerName.match(/bein\s*sports?\s*([1-9])/i);
+      if (beinMatch) {
+        const num = parseInt(beinMatch[1], 10);
+        const curatedId = `bein-sports-${num}-hd`;
+        if (finalMap.has(curatedId)) {
+          continue; // Already using verified stream
+        }
+      }
+      if (lowerName.includes('bein') && lowerName.includes('xtra')) {
+        continue; // Already using verified CloudFront stream
+      }
+
+      if (!finalMap.has(id)) {
+        finalMap.set(id, ch);
+      }
+    }
+
     // Populate memory cache
-    channelCache = Array.from(combinedMap.values());
+    channelCache = Array.from(finalMap.values());
     channelsById.clear();
     channelCache.forEach((c) => channelsById.set(c.id, c));
 
@@ -507,30 +658,123 @@ export async function getChannelSchedule(channelId) {
 }
 
 /**
- * Proxies live HLS streams to bypass restrictive browser CORS headers.
+ * Rewrites relative and absolute URIs within M3U8 playlists so they route through Kodimi's proxy.
  */
-export async function proxyHlsStream(streamUrl, res) {
+function rewriteM3u8(manifestText, baseUrl) {
+  const lines = manifestText.split('\n');
+  const rewritten = lines.map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+
+    // Handle URI attributes in tags (e.g. #EXT-X-KEY:...,URI="...", #EXT-X-MEDIA:...,URI="...", #EXT-X-MAP:URI="...")
+    if (trimmed.startsWith('#')) {
+      return line.replace(/URI=["']?([^"',\s]+)["']?/g, (match, uri) => {
+        try {
+          const resolved = new URL(uri, baseUrl).href;
+          return `URI="/api/iptv/proxy?url=${encodeURIComponent(resolved)}"`;
+        } catch {
+          return match;
+        }
+      });
+    }
+
+    // Non-comment lines are sub-playlists or media segments (.ts, .tbin, .m4s, etc.)
+    try {
+      const resolved = new URL(trimmed, baseUrl).href;
+      return `/api/iptv/proxy?url=${encodeURIComponent(resolved)}`;
+    } catch {
+      return line;
+    }
+  });
+
+  return rewritten.join('\n');
+}
+
+/**
+ * Proxies live HLS streams and segments to bypass browser CORS and Mixed Content restrictions.
+ */
+export async function proxyHlsStream(streamUrl, req, res) {
   try {
+    const cleanPath = streamUrl.split('?')[0].toLowerCase();
+    const isBinarySegment =
+      cleanPath.endsWith('.ts') ||
+      cleanPath.endsWith('.tbin') ||
+      cleanPath.endsWith('.m4s') ||
+      cleanPath.endsWith('.mp4') ||
+      cleanPath.endsWith('.key') ||
+      cleanPath.endsWith('.aac') ||
+      cleanPath.endsWith('.vtt') ||
+      cleanPath.endsWith('.cmfv') ||
+      cleanPath.endsWith('.cmfa');
+
+    const headers = {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      Accept: '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+    };
+
+    if (req && req.headers && req.headers.range) {
+      headers.Range = req.headers.range;
+    }
+
+    if (isBinarySegment) {
+      const response = await axios({
+        method: 'GET',
+        url: streamUrl,
+        responseType: 'stream',
+        timeout: 12000,
+        headers,
+      });
+
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', '*');
+
+      let contentType = response.headers['content-type'] || 'application/octet-stream';
+      if (cleanPath.endsWith('.ts') || cleanPath.endsWith('.tbin')) {
+        contentType = 'video/mp2t';
+      }
+      res.setHeader('Content-Type', contentType);
+
+      if (response.headers['content-length']) {
+        res.setHeader('Content-Length', response.headers['content-length']);
+      }
+      if (response.headers['content-range']) {
+        res.setHeader('Content-Range', response.headers['content-range']);
+      }
+      res.status(response.status);
+
+      return response.data.pipe(res);
+    }
+
+    // Fetch as arraybuffer to safely inspect without corrupting binary data if segment had no extension
     const response = await axios({
       method: 'GET',
       url: streamUrl,
-      responseType: 'stream',
+      responseType: 'arraybuffer',
       timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
+      headers,
     });
 
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Range, Accept, Content-Type');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Access-Control-Allow-Headers', '*');
 
-    if (response.headers['content-type']) {
-      res.setHeader('Content-Type', response.headers['content-type']);
+    const buf = Buffer.from(response.data);
+    const textPrefix = buf.slice(0, 100).toString('utf-8');
+
+    if (textPrefix.includes('#EXTM3U')) {
+      const manifestText = buf.toString('utf-8');
+      const rewritten = rewriteM3u8(manifestText, streamUrl);
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.send(rewritten);
     }
 
-    response.data.pipe(res);
+    // Otherwise treat as binary or standard media chunk
+    res.setHeader('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+    return res.send(buf);
   } catch (err) {
     console.error(`[IPTV Proxy Error for ${streamUrl}]:`, err.message);
     if (!res.headersSent) {

@@ -65,8 +65,20 @@ router.get('/channels/:id/schedule', requireAuth, async (req, res) => {
 });
 
 /**
+ * OPTIONS /api/iptv/proxy
+ * Handle CORS preflight requests for HLS stream segments.
+ */
+router.options('/proxy', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(204).end();
+});
+
+/**
  * GET /api/iptv/proxy
- * Proxies live HLS streams to bypass browser CORS restrictions.
+ * Proxies live HLS streams and segments with dynamic manifest rewriting to bypass CORS restrictions.
  */
 router.get('/proxy', async (req, res) => {
   const { url } = req.query;
@@ -74,7 +86,7 @@ router.get('/proxy', async (req, res) => {
     return res.status(400).send('Stream URL parameter is required');
   }
 
-  await proxyHlsStream(url, res);
+  await proxyHlsStream(url, req, res);
 });
 
 export default router;

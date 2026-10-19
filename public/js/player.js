@@ -47,6 +47,7 @@ class KodimiPlayer {
     this.subtitleCues = [];
     this.controlsTimeout = null;
     this.progressInterval = null;
+    this.hls = null;
 
     this.initEvents();
   }
@@ -222,31 +223,114 @@ class KodimiPlayer {
     this.onUserActivity();
   }
 
+  destroyHls() {
+    if (this.hls) {
+      try {
+        this.hls.destroy();
+      } catch (err) {
+        console.warn('[Player] Error destroying Hls instance:', err);
+      }
+      this.hls = null;
+    }
+  }
+
   loadLiveSource(streamUrl) {
+    this.destroyHls();
     this.video.pause();
     this.video.volume = this.currentVolume;
     this.video.muted = this.isMuted;
 
     this.showLoader(`Connecting to ${this.currentMedia?.name || 'Live Channel'}...`);
 
-    // First try direct stream
-    this.video.src = streamUrl;
-    const playPromise = this.video.play();
+    // If page is HTTPS and stream is HTTP, route through Kodimi proxy immediately to prevent Mixed Content blocking
+    const isMixedContent = window.location.protocol === 'https:' && streamUrl.startsWith('http:');
+    // Streams from known sources like primetv.cc.cd require proxying for CORS & relative segment resolution
+    const initialUrl = (isMixedContent || streamUrl.includes('primetv.cc.cd'))
+      ? api.getLiveProxyUrl(streamUrl)
+      : streamUrl;
 
-    if (playPromise !== undefined) {
-      playPromise.catch((err) => {
-        console.warn('[Live TV] Direct stream failed, switching to Kodimi CORS Proxy:', err.message);
-        const proxyUrl = api.getLiveProxyUrl(streamUrl);
-        this.video.src = proxyUrl;
-        this.video.play().catch((proxyErr) => {
-          console.error('[Live TV Proxy Error]:', proxyErr.message);
-          this.showLoader('Live stream unavailable or offline');
+    this.startHlsStream(initialUrl, streamUrl);
+  }
+
+  startHlsStream(playUrl, originalStreamUrl) {
+    this.destroyHls();
+
+    if (window.Hls && window.Hls.isSupported()) {
+      const hls = new window.Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 30,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        manifestLoadingTimeOut: 12000,
+        manifestLoadingMaxRetry: 3,
+        levelLoadingTimeOut: 12000,
+        fragLoadingTimeOut: 15000,
+      });
+      this.hls = hls;
+
+      hls.loadSource(playUrl);
+      hls.attachMedia(this.video);
+
+      hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+        console.log('[Live TV] HLS manifest parsed successfully');
+        this.hideLoader();
+        this.video.play().catch((err) => {
+          console.warn('[Live TV] Autoplay prevented:', err.message);
         });
       });
+
+      hls.on(window.Hls.Events.ERROR, (event, data) => {
+        console.warn('[HLS.js Event Error]:', data.type, data.details, 'Fatal:', data.fatal);
+        if (data.fatal) {
+          switch (data.type) {
+            case window.Hls.ErrorTypes.NETWORK_ERROR:
+              // If direct stream failed, fallback to Kodimi proxy
+              if (playUrl === originalStreamUrl) {
+                console.log('[Live TV] Direct stream network error, switching to Kodimi proxy...');
+                this.startHlsStream(api.getLiveProxyUrl(originalStreamUrl), originalStreamUrl);
+                return;
+              }
+              console.error('[Live TV] Fatal network error on stream proxy.');
+              this.destroyHls();
+              this.showLoader('Live stream temporarily unavailable');
+              break;
+            case window.Hls.ErrorTypes.MEDIA_ERROR:
+              console.log('[Live TV] Fatal media error, recovering...');
+              hls.recoverMediaError();
+              break;
+            default:
+              console.error('[Live TV] Fatal unrecoverable HLS error:', data.details);
+              this.destroyHls();
+              this.showLoader('Live stream playback error');
+              break;
+          }
+        }
+      });
+    } else if (this.video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS for Safari / iOS
+      this.video.src = playUrl;
+      const playPromise = this.video.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          if (playUrl === originalStreamUrl) {
+            console.warn('[Live TV] Native HLS failed, trying proxy...');
+            this.video.src = api.getLiveProxyUrl(originalStreamUrl);
+            this.video.play().catch(() => {
+              this.showLoader('Live stream unavailable');
+            });
+          } else {
+            this.showLoader('Live stream unavailable');
+          }
+        });
+      }
+    } else {
+      this.showLoader('HLS playback is not supported on this browser');
     }
   }
 
   loadVideoSource(url, startTime = 0) {
+    this.destroyHls();
     this.video.pause();
     this.video.src = url;
 
@@ -262,6 +346,8 @@ class KodimiPlayer {
   }
 
   close() {
+    this.destroyHls();
+
     if (this.currentMedia && !this.isLive) {
       const cur = this.getEffectiveCurrentTime();
       const dur = this.getEffectiveDuration();
@@ -278,7 +364,8 @@ class KodimiPlayer {
     }
 
     this.video.pause();
-    this.video.src = '';
+    this.video.removeAttribute('src');
+    this.video.load();
     this.clearSubtitleTracks();
     this.container.classList.add('player-hidden');
     document.body.style.overflow = '';

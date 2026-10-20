@@ -17,9 +17,33 @@ export const vaultState = {
   lock: () => sessionStorage.removeItem('kodimi_vault_pin'),
 };
 
+export const profileState = {
+  getActiveProfile: () => {
+    try {
+      const p = localStorage.getItem('kodimi_active_profile');
+      return p ? JSON.parse(p) : null;
+    } catch {
+      return null;
+    }
+  },
+  setActiveProfile: (profile) => {
+    if (!profile) {
+      localStorage.removeItem('kodimi_active_profile');
+    } else {
+      localStorage.setItem('kodimi_active_profile', JSON.stringify(profile));
+    }
+    window.dispatchEvent(new CustomEvent('kodimi_profile_changed', { detail: profile }));
+  },
+  getActiveProfileId: () => {
+    const p = profileState.getActiveProfile();
+    return p?.id || 'default';
+  },
+};
+
 export async function request(endpoint, options = {}) {
   const token = authState.getToken();
   const vaultPin = vaultState.getPin();
+  const activeProfileId = profileState.getActiveProfileId();
   const headers = {
     'Content-Type': 'application/json',
     ...(options.headers || {}),
@@ -30,6 +54,9 @@ export async function request(endpoint, options = {}) {
   }
   if (vaultPin) {
     headers['x-vault-pin'] = vaultPin;
+  }
+  if (activeProfileId) {
+    headers['x-profile-id'] = activeProfileId;
   }
 
   const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -201,6 +228,15 @@ export const api = {
 
   // Subtitle Tracks Probe
   getSubtitleTracks: (id) => request(`/stream/${id}/subtitles/tracks`),
+
+  // Profiles & Watchlist
+  getProfiles: () => request('/profiles'),
+  createProfile: (data) => request('/profiles', { method: 'POST', body: JSON.stringify(data) }),
+  updateProfile: (id, data) => request(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProfile: (id) => request(`/profiles/${id}`, { method: 'DELETE' }),
+  getWatchlist: (profileId) => request(`/profiles/${profileId || profileState.getActiveProfileId()}/watchlist`),
+  toggleWatchlist: (mediaId, profileId) =>
+    request(`/profiles/${profileId || profileState.getActiveProfileId()}/watchlist/${mediaId}`, { method: 'POST' }),
 };
 
 export default api;

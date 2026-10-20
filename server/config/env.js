@@ -19,6 +19,9 @@ export const config = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   gcpKeyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS || '',
   mongoUri: process.env.MONGO_URI || process.env.MONGODB_URI || '',
+  isWorker: process.env.IS_WORKER === 'true',
+  workerServiceUrl: process.env.WORKER_SERVICE_URL || null,
+  serviceUrl: process.env.SERVICE_URL || 'https://kodimi.mnembo.com',
 };
 
 export default config;

@@ -35,6 +35,10 @@ function isVaultAuthorized(req) {
   return req.user?.vault === true || (pin && pin.toString().trim() === config.privatePin.toString().trim());
 }
 
+function getProfileId(req) {
+  return req.headers['x-profile-id'] || 'default';
+}
+
 // Public/Auth protected media listing
 router.get('/', requireAuth, (req, res) => {
   const { type, genre, search, limit, offset, adult, is_adult } = req.query;
@@ -75,9 +79,10 @@ router.get('/genres', requireAuth, (req, res) => {
 });
 
 router.get('/continue-watching', requireAuth, (req, res) => {
+  const profileId = getProfileId(req);
   const showAdult = req.query.adult === 'true' || req.query.is_adult === 'true';
   const allowAdult = showAdult && isVaultAuthorized(req);
-  const items = playbackDB.getContinueWatching(15, allowAdult);
+  const items = playbackDB.getContinueWatching(profileId, 15, allowAdult);
   res.json({ items });
 });
 
@@ -202,7 +207,8 @@ router.get('/:id', requireAuth, (req, res) => {
     getOrProbeDuration(item.id, item.gcs_path).catch(() => {});
   }
 
-  const progress = playbackDB.getProgress(item.id);
+  const profileId = getProfileId(req);
+  const progress = playbackDB.getProgress(item.id, profileId);
   res.json({ item, progress });
 });
 
@@ -258,7 +264,8 @@ router.post('/playback/progress', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'mediaId is required' });
   }
 
-  playbackDB.saveProgress(mediaId, currentTime, duration, completed);
+  const profileId = getProfileId(req);
+  playbackDB.saveProgress(mediaId, currentTime, duration, completed, profileId);
   res.json({ success: true });
 });
 

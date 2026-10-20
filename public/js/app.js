@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState } from './api.js?v=19';
-import KodimiPlayer from './player.js?v=19';
+import { api, authState, vaultState, profileState } from './api.js?v=22';
+import KodimiPlayer from './player.js?v=22';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -13,8 +13,11 @@ import {
   renderLiveChannelCard,
   renderSeriesModalContent,
   renderScheduleModalContent,
+  renderProfileCard,
+  renderAddProfileCard,
+  renderProfileDropdownItem,
   escapeHtml,
-} from './components.js?v=19';
+} from './components.js?v=22';
 
 class KodimiApp {
   constructor() {
@@ -36,6 +39,9 @@ class KodimiApp {
     this.featuredItem = null;
     this.player = null;
     this.eventSource = null;
+    this.profiles = [];
+    this.isManagingProfiles = false;
+    this.selectedProfileColor = '#e50914';
 
     this.initElements();
     this.initPlayer();
@@ -129,6 +135,30 @@ class KodimiApp {
     this.detailVaultBtn = document.getElementById('detail-vault-btn');
     this.detailVaultIcon = document.getElementById('detail-vault-icon');
     this.detailVaultText = document.getElementById('detail-vault-text');
+
+    // Multi-Profile Elements
+    this.profileSwitcherBtn = document.getElementById('profile-switcher-btn');
+    this.navProfileAvatar = document.getElementById('nav-profile-avatar');
+    this.navProfileName = document.getElementById('nav-profile-name');
+    this.profileDropdown = document.getElementById('profile-dropdown');
+    this.profileDropdownList = document.getElementById('profile-dropdown-list');
+    this.dropdownManageProfilesBtn = document.getElementById('dropdown-manage-profiles-btn');
+    this.profileModal = document.getElementById('profile-modal');
+    this.profilesGrid = document.getElementById('profiles-grid');
+    this.manageProfilesBtn = document.getElementById('manage-profiles-btn');
+    this.manageProfilesBtnText = document.getElementById('manage-profiles-btn-text');
+    this.addProfileBtn = document.getElementById('add-profile-btn');
+    this.profileEditModal = document.getElementById('profile-edit-modal');
+    this.profileEditForm = document.getElementById('profile-edit-form');
+    this.profileEditTitle = document.getElementById('profile-edit-title');
+    this.profileEditId = document.getElementById('profile-edit-id');
+    this.profileEditName = document.getElementById('profile-edit-name-input');
+    this.profileEditAvatarPreview = document.getElementById('profile-edit-avatar-preview');
+    this.profileColorSwatches = document.getElementById('profile-color-swatches');
+    this.profileEditKidsToggle = document.getElementById('profile-edit-kids-toggle');
+    this.profileEditError = document.getElementById('profile-edit-error');
+    this.profileEditDeleteBtn = document.getElementById('profile-edit-delete-btn');
+    this.profileEditCancelBtn = document.getElementById('profile-edit-cancel-btn');
   }
 
   initPlayer() {
@@ -479,7 +509,7 @@ class KodimiApp {
     });
 
     // Close Modals on Backdrop Click
-    [this.downloadModal, this.detailModal, this.vaultModal, this.seriesModal, this.scheduleModal].forEach((modal) => {
+    [this.downloadModal, this.detailModal, this.vaultModal, this.seriesModal, this.scheduleModal, this.profileEditModal].forEach((modal) => {
       if (!modal) return;
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -488,6 +518,8 @@ class KodimiApp {
       });
     });
 
+    this.initProfileEvents();
+
     window.addEventListener('kodimi_auth_required', () => {
       this.loginModal.classList.add('open');
     });
@@ -495,6 +527,284 @@ class KodimiApp {
     window.addEventListener('kodimi_player_closed', () => {
       this.loadData();
     });
+  }
+
+  initProfileEvents() {
+    if (this.profileSwitcherBtn) {
+      this.profileSwitcherBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = this.profileDropdown.style.display === 'block';
+        this.profileDropdown.style.display = isOpen ? 'none' : 'block';
+      });
+    }
+
+    document.addEventListener('click', (e) => {
+      if (this.profileDropdown && !this.profileDropdown.contains(e.target) && e.target !== this.profileSwitcherBtn) {
+        this.profileDropdown.style.display = 'none';
+      }
+    });
+
+    if (this.dropdownManageProfilesBtn) {
+      this.dropdownManageProfilesBtn.addEventListener('click', () => {
+        this.profileDropdown.style.display = 'none';
+        this.openProfileModal(true);
+      });
+    }
+
+    if (this.manageProfilesBtn) {
+      this.manageProfilesBtn.addEventListener('click', () => {
+        this.isManagingProfiles = !this.isManagingProfiles;
+        if (this.manageProfilesBtnText) {
+          this.manageProfilesBtnText.textContent = this.isManagingProfiles ? 'Done' : 'Manage Profiles';
+        }
+        this.renderProfileSelector();
+      });
+    }
+
+    if (this.addProfileBtn) {
+      this.addProfileBtn.addEventListener('click', () => {
+        this.openProfileEditModal(null);
+      });
+    }
+
+    if (this.profileEditCancelBtn) {
+      this.profileEditCancelBtn.addEventListener('click', () => {
+        this.closeProfileEditModal();
+      });
+    }
+
+    if (this.profileColorSwatches) {
+      this.profileColorSwatches.addEventListener('click', (e) => {
+        const swatch = e.target.closest('.color-swatch');
+        if (!swatch) return;
+        this.profileColorSwatches.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('active'));
+        swatch.classList.add('active');
+        this.selectedProfileColor = swatch.dataset.color || '#e50914';
+        if (this.profileEditAvatarPreview) {
+          this.profileEditAvatarPreview.style.backgroundColor = this.selectedProfileColor;
+        }
+      });
+    }
+
+    if (this.profileEditForm) {
+      this.profileEditForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const id = this.profileEditId.value;
+        const name = this.profileEditName.value.trim();
+        const color = this.selectedProfileColor;
+        const isKids = this.profileEditKidsToggle ? this.profileEditKidsToggle.checked : false;
+
+        this.profileEditError.style.display = 'none';
+        try {
+          if (id) {
+            await api.updateProfile(id, { name, color, is_kids: isKids });
+          } else {
+            await api.createProfile({ name, color, is_kids: isKids });
+          }
+          this.closeProfileEditModal();
+          await this.loadProfiles();
+          this.renderProfileSelector();
+          this.renderProfileDropdown();
+
+          const current = profileState.getActiveProfile();
+          if (current && current.id === id) {
+            const updated = this.profiles.find((p) => p.id === id);
+            if (updated) this.selectProfile(updated);
+          }
+        } catch (err) {
+          this.profileEditError.textContent = err.message || 'Failed to save profile';
+          this.profileEditError.style.display = 'block';
+        }
+      });
+    }
+
+    if (this.profileEditDeleteBtn) {
+      this.profileEditDeleteBtn.addEventListener('click', async () => {
+        const id = this.profileEditId.value;
+        if (!id) return;
+        if (!confirm('Are you sure you want to delete this profile? Playback history and watchlist for this profile will be permanently removed.')) {
+          return;
+        }
+
+        try {
+          await api.deleteProfile(id);
+          this.closeProfileEditModal();
+          await this.loadProfiles();
+          const active = profileState.getActiveProfile();
+          if (active && active.id === id) {
+            const fallback = this.profiles[0];
+            if (fallback) this.selectProfile(fallback);
+          }
+          this.renderProfileSelector();
+          this.renderProfileDropdown();
+        } catch (err) {
+          this.profileEditError.textContent = err.message || 'Cannot delete profile';
+          this.profileEditError.style.display = 'block';
+        }
+      });
+    }
+  }
+
+  async loadProfiles() {
+    try {
+      const res = await api.getProfiles();
+      this.profiles = res.profiles || [];
+    } catch (err) {
+      console.warn('[Profiles] Could not load profiles:', err);
+      this.profiles = [{ id: 'default', name: 'Owner', color: '#e50914', avatar: 'account_circle' }];
+    }
+  }
+
+  updateNavProfileBadge() {
+    const active = profileState.getActiveProfile() || this.profiles[0];
+    if (!active) return;
+
+    if (this.navProfileName) {
+      this.navProfileName.textContent = active.name;
+    }
+    if (this.navProfileAvatar) {
+      this.navProfileAvatar.style.backgroundColor = active.color || '#e50914';
+      const icon = active.avatar || 'account_circle';
+      this.navProfileAvatar.innerHTML = `<span class="material-symbols-outlined" style="font-size: 16px;">${icon}</span>`;
+    }
+
+    // Parental Control: Hide Vault if kids profile
+    const vaultBtns = [this.navVaultBtn, document.getElementById('mobile-nav-vault-btn')];
+    vaultBtns.forEach((btn) => {
+      if (btn) {
+        btn.style.display = active.is_kids ? 'none' : 'flex';
+      }
+    });
+
+    if (active.is_kids && this.activeFilter === 'vault') {
+      this.activeFilter = 'all';
+      this.navItems.forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.nav-item[data-filter="all"]').forEach((b) => b.classList.add('active'));
+    }
+  }
+
+  renderProfileDropdown() {
+    if (!this.profileDropdownList) return;
+    const active = profileState.getActiveProfile() || this.profiles[0];
+    this.profileDropdownList.innerHTML = this.profiles
+      .map((p) => renderProfileDropdownItem(p, active && active.id === p.id))
+      .join('');
+
+    this.profileDropdownList.querySelectorAll('.profile-dropdown-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.profileId;
+        const target = this.profiles.find((p) => p.id === id);
+        if (target) {
+          this.selectProfile(target);
+          this.profileDropdown.style.display = 'none';
+        }
+      });
+    });
+  }
+
+  renderProfileSelector() {
+    if (!this.profilesGrid) return;
+    const active = profileState.getActiveProfile();
+    let html = this.profiles
+      .map((p) => renderProfileCard(p, this.isManagingProfiles))
+      .join('');
+
+    if (!this.isManagingProfiles) {
+      html += renderAddProfileCard();
+    }
+
+    this.profilesGrid.innerHTML = html;
+    this.profilesGrid.classList.toggle('managing-profiles', this.isManagingProfiles);
+
+    this.profilesGrid.querySelectorAll('.profile-card').forEach((card) => {
+      if (card.id === 'profile-card-add') {
+        card.addEventListener('click', () => this.openProfileEditModal(null));
+        return;
+      }
+      const id = card.dataset.profileId;
+      const profile = this.profiles.find((p) => p.id === id);
+      if (!profile) return;
+
+      if (active && active.id === id) {
+        card.classList.add('active');
+      }
+
+      card.addEventListener('click', () => {
+        if (this.isManagingProfiles) {
+          this.openProfileEditModal(profile);
+        } else {
+          this.selectProfile(profile);
+          this.closeProfileModal();
+        }
+      });
+    });
+  }
+
+  selectProfile(profile) {
+    profileState.setActiveProfile(profile);
+    this.updateNavProfileBadge();
+    this.renderProfileDropdown();
+    this.loadData();
+  }
+
+  openProfileModal(manageMode = false) {
+    this.isManagingProfiles = manageMode;
+    if (this.manageProfilesBtnText) {
+      this.manageProfilesBtnText.textContent = manageMode ? 'Done' : 'Manage Profiles';
+    }
+    this.renderProfileSelector();
+    if (this.profileModal) this.profileModal.classList.add('open');
+  }
+
+  closeProfileModal() {
+    if (this.profileModal) this.profileModal.classList.remove('open');
+    this.isManagingProfiles = false;
+  }
+
+  openProfileEditModal(profile = null) {
+    if (!this.profileEditModal) return;
+    this.profileEditError.style.display = 'none';
+
+    if (profile) {
+      this.profileEditTitle.textContent = 'Edit Profile';
+      this.profileEditId.value = profile.id;
+      this.profileEditName.value = profile.name;
+      this.selectedProfileColor = profile.color || '#e50914';
+      if (this.profileEditKidsToggle) {
+        this.profileEditKidsToggle.checked = Boolean(profile.is_kids);
+      }
+      if (this.profileEditDeleteBtn) {
+        this.profileEditDeleteBtn.style.display = this.profiles.length > 1 ? 'flex' : 'none';
+      }
+    } else {
+      this.profileEditTitle.textContent = 'Add Profile';
+      this.profileEditId.value = '';
+      this.profileEditName.value = '';
+      this.selectedProfileColor = '#007aff';
+      if (this.profileEditKidsToggle) {
+        this.profileEditKidsToggle.checked = false;
+      }
+      if (this.profileEditDeleteBtn) {
+        this.profileEditDeleteBtn.style.display = 'none';
+      }
+    }
+
+    if (this.profileEditAvatarPreview) {
+      this.profileEditAvatarPreview.style.backgroundColor = this.selectedProfileColor;
+    }
+
+    if (this.profileColorSwatches) {
+      this.profileColorSwatches.querySelectorAll('.color-swatch').forEach((s) => {
+        s.classList.toggle('active', s.dataset.color === this.selectedProfileColor);
+      });
+    }
+
+    this.profileEditModal.classList.add('open');
+    if (this.profileEditName) this.profileEditName.focus();
+  }
+
+  closeProfileEditModal() {
+    if (this.profileEditModal) this.profileEditModal.classList.remove('open');
   }
 
   async checkSessionAndLoad() {
@@ -506,6 +816,18 @@ class KodimiApp {
     try {
       await api.checkAuth();
       this.loginModal.classList.remove('open');
+
+      await this.loadProfiles();
+      const currentProfile = profileState.getActiveProfile();
+      const validProfile = currentProfile && this.profiles.find((p) => p.id === currentProfile.id);
+
+      if (!validProfile) {
+        this.openProfileModal(false);
+      } else {
+        this.updateNavProfileBadge();
+        this.renderProfileDropdown();
+      }
+
       this.loadData();
       this.loadDownloads();
     } catch {
@@ -523,6 +845,18 @@ class KodimiApp {
       await api.login(pwd);
       this.loginModal.classList.remove('open');
       this.loginPassword.value = '';
+
+      await this.loadProfiles();
+      const currentProfile = profileState.getActiveProfile();
+      const validProfile = currentProfile && this.profiles.find((p) => p.id === currentProfile.id);
+
+      if (!validProfile) {
+        this.openProfileModal(false);
+      } else {
+        this.updateNavProfileBadge();
+        this.renderProfileDropdown();
+      }
+
       this.loadData();
       this.loadDownloads();
     } catch (err) {

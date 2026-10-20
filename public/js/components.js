@@ -504,3 +504,44 @@ export function escapeHtml(str) {
   );
 }
 
+export function renderProfileCard(profile, isManaging = false) {
+  const color = profile.color || '#e50914';
+  const icon = profile.avatar || 'account_circle';
+  return `
+    <div class="profile-card" data-profile-id="${profile.id}">
+      <div class="profile-card-avatar" style="background-color: ${color};">
+        <span class="material-symbols-outlined" style="font-size: 52px; color: white;">${icon}</span>
+        ${profile.is_kids ? '<span class="profile-card-badge">Kids</span>' : ''}
+        ${isManaging ? '<div class="profile-card-edit-overlay"><span class="material-symbols-outlined" style="font-size: 32px;">edit</span></div>' : ''}
+      </div>
+      <span class="profile-card-name">${escapeHtml(profile.name)}</span>
+    </div>
+  `;
+}
+
+export function renderAddProfileCard() {
+  return `
+    <div class="profile-card" id="profile-card-add" style="opacity: 0.85;">
+      <div class="profile-card-avatar" style="background-color: var(--md-sys-color-surface-container-high); border: 2px dashed var(--md-sys-color-outline);">
+        <span class="material-symbols-outlined" style="font-size: 44px; color: var(--md-sys-color-outline);">add</span>
+      </div>
+      <span class="profile-card-name" style="color: var(--md-sys-color-outline);">Add Profile</span>
+    </div>
+  `;
+}
+
+export function renderProfileDropdownItem(profile, isActive = false) {
+  const color = profile.color || '#e50914';
+  const icon = profile.avatar || 'account_circle';
+  return `
+    <button class="profile-dropdown-item ${isActive ? 'active' : ''}" data-profile-id="${profile.id}">
+      <div style="width: 24px; height: 24px; border-radius: 50%; background-color: ${color}; display: flex; align-items: center; justify-content: center;">
+        <span class="material-symbols-outlined" style="font-size: 14px; color: white;">${icon}</span>
+      </div>
+      <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(profile.name)}</span>
+      ${profile.is_kids ? '<span style="font-size: 9px; background: #ff9500; color: black; padding: 1px 4px; border-radius: 4px; font-weight: 700;">KIDS</span>' : ''}
+      ${isActive ? '<span class="material-symbols-outlined" style="font-size: 16px; margin-left: auto;">check</span>' : ''}
+    </button>
+  `;
+}
+

@@ -73,6 +73,27 @@
         <span class="material-symbols-outlined" id="sync-icon">sync</span>
       </button>
 
+      <!-- Profile Button & Dropdown Menu -->
+      <div class="profile-menu-container" style="position: relative;">
+        <button class="profile-nav-btn" id="profile-switcher-btn" title="Switch Profile">
+          <div class="profile-nav-avatar" id="nav-profile-avatar" style="background-color: #e50914;">
+            <span class="material-symbols-outlined" style="font-size: 16px;">account_circle</span>
+          </div>
+          <span class="profile-nav-name" id="nav-profile-name">Owner</span>
+          <span class="material-symbols-outlined" style="font-size: 16px; opacity: 0.7;">expand_more</span>
+        </button>
+
+        <div class="profile-dropdown" id="profile-dropdown" style="display: none;">
+          <div class="profile-dropdown-header">Profiles</div>
+          <div id="profile-dropdown-list"></div>
+          <div class="profile-dropdown-divider"></div>
+          <button class="profile-dropdown-item" id="dropdown-manage-profiles-btn">
+            <span class="material-symbols-outlined">manage_accounts</span>
+            <span>Switch / Manage</span>
+          </button>
+        </div>
+      </div>
+
       <!-- Logout Button -->
       <button class="icon-btn" id="logout-btn" title="Sign Out">
         <span class="material-symbols-outlined">logout</span>
@@ -410,6 +431,111 @@
     </div>
   </div>
 
+  <!-- "Who's Watching?" Profile Selector Modal -->
+  <div class="modal-backdrop" id="profile-modal">
+    <div class="modal-card profile-selection-card">
+      <div style="text-align: center; margin-bottom: 28px;">
+        <span class="brand-logo" style="font-size: 22px; letter-spacing: 3px; display: block; margin-bottom: 8px;">KODIMI</span>
+        <h1 style="font-size: 30px; font-weight: 700; color: white; margin: 0;">Who's Watching?</h1>
+        <p style="font-size: 14px; color: var(--md-sys-color-on-surface-variant); margin-top: 6px;">
+          Choose a profile to access your personalized library & continue watching
+        </p>
+      </div>
+
+      <!-- Profiles Grid Container -->
+      <div class="profiles-grid" id="profiles-grid"></div>
+
+      <!-- Profile Actions -->
+      <div style="display: flex; justify-content: center; gap: 14px; margin-top: 32px;">
+        <button class="btn-tonal" id="manage-profiles-btn">
+          <span class="material-symbols-outlined">edit</span>
+          <span id="manage-profiles-btn-text">Manage Profiles</span>
+        </button>
+        <button class="btn-tonal" id="add-profile-btn">
+          <span class="material-symbols-outlined">add</span>
+          <span>Add Profile</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add / Edit Profile Dialog -->
+  <div class="modal-backdrop" id="profile-edit-modal">
+    <div class="modal-card" style="max-width: 440px;">
+      <div style="padding: 24px 24px 12px 24px;">
+        <h2 id="profile-edit-title" style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Edit Profile</h2>
+        <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant);">
+          Personalize profile name, color, and preferences
+        </p>
+      </div>
+
+      <div style="padding: 0 24px 24px 24px;">
+        <form id="profile-edit-form" style="display: flex; flex-direction: column; gap: 18px;">
+          <input type="hidden" id="profile-edit-id" value="" />
+
+          <!-- Profile Preview Avatar -->
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <div id="profile-edit-avatar-preview" class="profile-avatar-preview" style="background-color: #e50914;">
+              <span class="material-symbols-outlined" style="font-size: 36px;">account_circle</span>
+            </div>
+            <div style="flex: 1;">
+              <label style="display: block; font-size: 12px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 6px;">Profile Name</label>
+              <input
+                type="text"
+                id="profile-edit-name-input"
+                required
+                maxlength="25"
+                placeholder="Name"
+                style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 10px 14px; color: white; font-size: 15px;"
+              />
+            </div>
+          </div>
+
+          <!-- Color Swatches -->
+          <div>
+            <label style="display: block; font-size: 12px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 8px;">Theme Color</label>
+            <div class="color-swatches" id="profile-color-swatches">
+              <button type="button" class="color-swatch active" data-color="#e50914" style="background: #e50914;"></button>
+              <button type="button" class="color-swatch" data-color="#007aff" style="background: #007aff;"></button>
+              <button type="button" class="color-swatch" data-color="#34c759" style="background: #34c759;"></button>
+              <button type="button" class="color-swatch" data-color="#af52de" style="background: #af52de;"></button>
+              <button type="button" class="color-swatch" data-color="#ff9500" style="background: #ff9500;"></button>
+              <button type="button" class="color-swatch" data-color="#00c7be" style="background: #00c7be;"></button>
+              <button type="button" class="color-swatch" data-color="#ff2d55" style="background: #ff2d55;"></button>
+            </div>
+          </div>
+
+          <!-- Kids Profile Toggle -->
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: var(--md-sys-color-surface-container-high); border-radius: var(--md-shape-corner-m);">
+            <div>
+              <div style="font-size: 14px; font-weight: 500;">Kids Profile</div>
+              <div style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">Hides mature & private titles</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="profile-edit-kids-toggle">
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div id="profile-edit-error" style="display: none; font-size: 12px; color: #ffb4ab; background: rgba(255, 180, 171, 0.1); padding: 8px; border-radius: var(--md-shape-corner-s);"></div>
+
+          <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
+            <button type="button" id="profile-edit-delete-btn" class="btn-tonal" style="color: #ff5252; display: none;">
+              <span class="material-symbols-outlined">delete</span>
+              <span>Delete</span>
+            </button>
+            <button type="button" id="profile-edit-cancel-btn" class="btn-tonal">
+              Cancel
+            </button>
+            <button type="submit" class="btn-filled" style="background-color: var(--md-sys-color-primary); color: white;">
+              Save Profile
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Fullscreen Material Video Player Container -->
   <div id="player-container" class="player-container player-hidden">
     <video id="player-video" class="player-video" playsinline></video>
@@ -566,6 +692,6 @@
   </nav>
 
   <!-- Application Entrypoint Module -->
-  <script type="module" src="/js/app.js?v=21"></script>
+  <script type="module" src="/js/app.js?v=22"></script>
 </body>
 </html>

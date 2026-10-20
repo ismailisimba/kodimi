@@ -620,15 +620,22 @@ async function processTorrentDownload(id, torrentSource, customName) {
                   currentFile.deselect();
                 } catch (_) {}
 
-                // Truncate completed file in tmpfs to immediately reclaim RAM on Cloud Run
+                // Truncate and unlink completed file in tmpfs to immediately reclaim RAM on Cloud Run
                 try {
-                  const localFilePath = path.join(torrent.path || '/tmp/webtorrent', currentFile.path);
-                  if (fs.existsSync(localFilePath)) {
-                    await fs.promises.truncate(localFilePath, 0);
-                    console.log(`[Torrent] Reclaimed tmpfs disk space for: ${currentFile.name}`);
+                  const candidatePaths = [
+                    path.join(torrent.path || '/tmp', currentFile.path),
+                    path.join('/tmp', currentFile.path),
+                    path.join('/tmp/webtorrent', currentFile.path),
+                  ];
+                  for (const lp of candidatePaths) {
+                    if (fs.existsSync(lp)) {
+                      try { await fs.promises.truncate(lp, 0); } catch (_) {}
+                      try { await fs.promises.unlink(lp); } catch (_) {}
+                      console.log(`[Torrent] Reclaimed tmpfs disk space for: ${currentFile.name} (${lp})`);
+                    }
                   }
                 } catch (truncErr) {
-                  console.warn(`[Torrent] Could not truncate local file ${currentFile.name}:`, truncErr.message);
+                  console.warn(`[Torrent] Could not clean local file ${currentFile.name}:`, truncErr.message);
                 }
 
                 totalDownloadedPrev += fileBytes;

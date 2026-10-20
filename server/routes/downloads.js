@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import config from '../config/env.js';
 import { downloadsDB } from '../db/database.js';
 import {
   startDownload,
@@ -12,10 +13,30 @@ import {
   hasActiveDownloads,
   downloadEvents,
 } from '../services/downloader.js';
-import { requireAuth } from '../services/auth.js';
+import { requireAuth, generateToken } from '../services/auth.js';
 import { getSignedWriteUrl, fileExists } from '../config/gcs.js';
 
 const router = express.Router();
+
+async function forwardToWorker(req, res, targetPath) {
+  try {
+    const token = req.headers.authorization || `Bearer ${generateToken({ user: 'admin' })}`;
+    const url = `${config.workerServiceUrl.replace(/\/$/, '')}${targetPath}`;
+    const response = await fetch(url, {
+      method: req.method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token,
+      },
+      body: ['POST', 'PUT', 'PATCH'].includes(req.method) ? JSON.stringify(req.body) : undefined,
+    });
+    const data = await response.json().catch(() => ({}));
+    return res.status(response.status).json(data);
+  } catch (err) {
+    console.error(`[Worker Forward Error to ${targetPath}]:`, err.message);
+    return res.status(502).json({ error: `Worker communication failed: ${err.message}` });
+  }
+}
 
 router.get('/', requireAuth, async (req, res) => {
   const downloads = await downloadsDB.getAllAsync();
@@ -23,6 +44,10 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 router.post('/', requireAuth, async (req, res) => {
+  if (config.workerServiceUrl && !config.isWorker) {
+    return forwardToWorker(req, res, '/api/downloads');
+  }
+
   const { url, name } = req.body;
 
   if (!url) {
@@ -95,6 +120,10 @@ router.post('/complete-upload', requireAuth, async (req, res) => {
  * Ingest an uploaded .torrent file buffer.
  */
 router.post('/upload-torrent', requireAuth, async (req, res) => {
+  if (config.workerServiceUrl && !config.isWorker) {
+    return forwardToWorker(req, res, '/api/downloads/upload-torrent');
+  }
+
   const { filename, data } = req.body;
 
   if (!data) {
@@ -113,12 +142,20 @@ router.post('/upload-torrent', requireAuth, async (req, res) => {
 });
 
 router.post('/:id/pause', requireAuth, (req, res) => {
+  if (config.workerServiceUrl && !config.isWorker) {
+    return forwardToWorker(req, res, `/api/downloads/${req.params.id}/pause`);
+  }
+
   const { id } = req.params;
   const paused = pauseDownload(id);
   res.json({ success: true, paused });
 });
 
 router.post('/:id/resume', requireAuth, async (req, res) => {
+  if (config.workerServiceUrl && !config.isWorker) {
+    return forwardToWorker(req, res, `/api/downloads/${req.params.id}/resume`);
+  }
+
   const { id } = req.params;
   try {
     const job = await resumeDownload(id);
@@ -129,6 +166,10 @@ router.post('/:id/resume', requireAuth, async (req, res) => {
 });
 
 router.delete('/:id', requireAuth, async (req, res) => {
+  if (config.workerServiceUrl && !config.isWorker) {
+    return forwardToWorker(req, res, `/api/downloads/${req.params.id}`);
+  }
+
   const { id } = req.params;
   cancelDownload(id, false);
   await downloadsDB.deleteAsync(id);

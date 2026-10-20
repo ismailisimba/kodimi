@@ -43,13 +43,32 @@ const MediaSchema = new mongoose.Schema({
   updated_at: { type: Date, default: Date.now },
 });
 
+const ProfileSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  name: { type: String, required: true },
+  avatar: { type: String, default: 'account_circle' },
+  color: { type: String, default: '#e50914' },
+  is_kids: { type: Boolean, default: false },
+  created_at: { type: Date, default: Date.now },
+  updated_at: { type: Date, default: Date.now },
+});
+
+const WatchlistSchema = new mongoose.Schema({
+  profile_id: { type: String, required: true, index: true },
+  media_id: { type: String, required: true, index: true },
+  added_at: { type: Date, default: Date.now },
+});
+WatchlistSchema.index({ profile_id: 1, media_id: 1 }, { unique: true });
+
 const PlaybackSchema = new mongoose.Schema({
-  media_id: { type: String, required: true, unique: true, index: true },
+  profile_id: { type: String, required: true, default: 'default', index: true },
+  media_id: { type: String, required: true, index: true },
   current_time: { type: Number, default: 0 },
   duration: { type: Number, default: 0 },
   completed: { type: Boolean, default: false },
   updated_at: { type: Date, default: Date.now },
 });
+PlaybackSchema.index({ profile_id: 1, media_id: 1 }, { unique: true });
 
 const DownloadSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -72,11 +91,15 @@ const DownloadSchema = new mongoose.Schema({
 export const MediaModel = mongoose.model('Media', MediaSchema);
 export const PlaybackModel = mongoose.model('Playback', PlaybackSchema);
 export const DownloadModel = mongoose.model('Download', DownloadSchema);
+export const ProfileModel = mongoose.model('Profile', ProfileSchema);
+export const WatchlistModel = mongoose.model('Watchlist', WatchlistSchema);
 
 // In-Memory caches for high-speed synchronous retrieval
 let mediaCache = new Map();
 let playbackCache = new Map();
 let downloadCache = new Map();
+let profileCache = new Map();
+let watchlistCache = new Map();
 
 /**
  * Connect to MongoDB and sync in-memory cache
@@ -145,15 +168,58 @@ async function refreshCache() {
       await MediaModel.bulkWrite(autoVaultOps).catch((e) => console.warn('[DB Auto-Vault Error]:', e.message));
     }
 
+    // Drop legacy single-field unique index on media_id if present to support multi-profile playback
+    try {
+      await PlaybackModel.collection.dropIndex('media_id_1');
+    } catch (_) {}
+
+    // Backfill legacy playback records with default profile_id
+    await PlaybackModel.updateMany(
+      { profile_id: { $exists: false } },
+      { $set: { profile_id: 'default' } }
+    ).catch(() => {});
+
+    // Ensure initial default profile exists
+    let defaultProfile = await ProfileModel.findOne({ id: 'default' });
+    if (!defaultProfile) {
+      const count = await ProfileModel.countDocuments();
+      if (count === 0) {
+        await ProfileModel.create({
+          id: 'default',
+          name: 'Owner',
+          avatar: 'account_circle',
+          color: '#e50914',
+          is_kids: false,
+        });
+        console.log('[DB] Seeded initial default profile: "Owner"');
+      }
+    }
+
+    const allProfiles = await ProfileModel.find({}).lean();
+    profileCache.clear();
+    allProfiles.forEach((p) => profileCache.set(p.id, p));
+
+    const allWatchlists = await WatchlistModel.find({}).lean();
+    watchlistCache.clear();
+    allWatchlists.forEach((w) => {
+      if (!watchlistCache.has(w.profile_id)) {
+        watchlistCache.set(w.profile_id, new Set());
+      }
+      watchlistCache.get(w.profile_id).add(w.media_id);
+    });
+
     const allPlayback = await PlaybackModel.find({}).lean();
     playbackCache.clear();
-    allPlayback.forEach((p) => playbackCache.set(p.media_id, p));
+    allPlayback.forEach((p) => {
+      const profId = p.profile_id || 'default';
+      playbackCache.set(`${profId}:${p.media_id}`, p);
+    });
 
     const allDownloads = await DownloadModel.find({}).sort({ created_at: -1 }).lean();
     downloadCache.clear();
     allDownloads.forEach((d) => downloadCache.set(d.id, d));
 
-    console.log(`[DB] Cache populated with ${mediaCache.size} media items from MongoDB.`);
+    console.log(`[DB] Cache populated with ${mediaCache.size} media items and ${profileCache.size} profile(s) from MongoDB.`);
   } catch (err) {
     console.error('[DB] Cache refresh error:', err.message);
   }
@@ -418,12 +484,13 @@ export const mediaDB = {
 
 // Playback Progress DB Methods
 export const playbackDB = {
-  getProgress: (mediaId) => {
-    return playbackCache.get(mediaId) || null;
+  getProgress: (mediaId, profileId = 'default') => {
+    return playbackCache.get(`${profileId}:${mediaId}`) || null;
   },
 
-  saveProgress: (mediaId, currentTime, duration, completed = 0) => {
+  saveProgress: (mediaId, currentTime, duration, completed = 0, profileId = 'default') => {
     const docData = {
+      profile_id: profileId,
       media_id: mediaId,
       current_time: currentTime,
       duration,
@@ -431,20 +498,22 @@ export const playbackDB = {
       updated_at: new Date(),
     };
 
-    playbackCache.set(mediaId, docData);
+    playbackCache.set(`${profileId}:${mediaId}`, docData);
 
     PlaybackModel.findOneAndUpdate(
-      { media_id: mediaId },
+      { profile_id: profileId, media_id: mediaId },
       { $set: docData },
       { upsert: true, returnDocument: 'after' }
     ).catch((err) => console.error('[Playback Save Error]:', err.message));
   },
 
-  getContinueWatching: (limit = 15, allowAdult = false) => {
+  getContinueWatching: (profileId = 'default', limit = 15, allowAdult = false) => {
     const list = [];
-    for (const [mediaId, progress] of playbackCache.entries()) {
+    const prefix = `${profileId}:`;
+    for (const [key, progress] of playbackCache.entries()) {
+      if (!key.startsWith(prefix)) continue;
       if (!progress.completed && progress.current_time > 10) {
-        const media = mediaCache.get(mediaId);
+        const media = mediaCache.get(progress.media_id);
         if (media) {
           if (media.is_adult && !allowAdult) {
             continue; // Strictly hide private/adult titles unless vault is open
@@ -462,6 +531,103 @@ export const playbackDB = {
 
     list.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
     return list.slice(0, limit);
+  },
+};
+
+// Profiles & Watchlist DB Methods
+export const profilesDB = {
+  getAll: () => {
+    const list = Array.from(profileCache.values());
+    list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    return list;
+  },
+
+  getById: (id) => {
+    return profileCache.get(id) || null;
+  },
+
+  create: async (data) => {
+    const id = data.id || `prof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const profile = {
+      id,
+      name: (data.name || 'New Profile').trim(),
+      avatar: data.avatar || 'account_circle',
+      color: data.color || '#e50914',
+      is_kids: Boolean(data.is_kids),
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    profileCache.set(id, profile);
+    await ProfileModel.create(profile);
+    return profile;
+  },
+
+  update: async (id, data) => {
+    const existing = profileCache.get(id);
+    if (!existing) return null;
+    const updated = {
+      ...existing,
+      name: data.name !== undefined ? data.name.trim() : existing.name,
+      avatar: data.avatar !== undefined ? data.avatar : existing.avatar,
+      color: data.color !== undefined ? data.color : existing.color,
+      is_kids: data.is_kids !== undefined ? Boolean(data.is_kids) : existing.is_kids,
+      updated_at: new Date(),
+    };
+    profileCache.set(id, updated);
+    await ProfileModel.findOneAndUpdate({ id }, { $set: updated });
+    return updated;
+  },
+
+  delete: async (id) => {
+    if (profileCache.size <= 1) {
+      throw new Error('Cannot delete the only remaining profile');
+    }
+    profileCache.delete(id);
+    watchlistCache.delete(id);
+    const prefix = `${id}:`;
+    for (const key of playbackCache.keys()) {
+      if (key.startsWith(prefix)) playbackCache.delete(key);
+    }
+    await ProfileModel.deleteOne({ id });
+    await PlaybackModel.deleteMany({ profile_id: id });
+    await WatchlistModel.deleteMany({ profile_id: id });
+    return true;
+  },
+
+  getWatchlist: (profileId = 'default', allowAdult = false) => {
+    const ids = watchlistCache.get(profileId);
+    if (!ids || ids.size === 0) return [];
+    const list = [];
+    for (const mediaId of ids) {
+      const media = mediaCache.get(mediaId);
+      if (media) {
+        if (media.is_adult && !allowAdult) continue;
+        list.push(media);
+      }
+    }
+    return list;
+  },
+
+  toggleWatchlist: async (profileId = 'default', mediaId) => {
+    if (!watchlistCache.has(profileId)) {
+      watchlistCache.set(profileId, new Set());
+    }
+    const set = watchlistCache.get(profileId);
+    const has = set.has(mediaId);
+    if (has) {
+      set.delete(mediaId);
+      await WatchlistModel.deleteOne({ profile_id: profileId, media_id: mediaId });
+      return { inWatchlist: false };
+    } else {
+      set.add(mediaId);
+      await WatchlistModel.create({ profile_id: profileId, media_id: mediaId });
+      return { inWatchlist: true };
+    }
+  },
+
+  isInWatchlist: (profileId = 'default', mediaId) => {
+    const set = watchlistCache.get(profileId);
+    return set ? set.has(mediaId) : false;
   },
 };
 
@@ -541,5 +707,6 @@ export default {
   initDatabase,
   mediaDB,
   playbackDB,
+  profilesDB,
   downloadsDB,
 };

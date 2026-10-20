@@ -13,6 +13,7 @@ import mediaRoutes from './routes/media.js';
 import streamRoutes from './routes/stream.js';
 import downloadsRoutes from './routes/downloads.js';
 import iptvRoutes from './routes/iptv.js';
+import profileRoutes from './routes/profiles.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +32,7 @@ app.use('/api/media', mediaRoutes);
 app.use('/api/stream', streamRoutes);
 app.use('/api/downloads', downloadsRoutes);
 app.use('/api/iptv', iptvRoutes);
+app.use('/api/profiles', profileRoutes);
 
 // Health check endpoint for Cloud Run
 app.get('/health', (req, res) => {
@@ -53,13 +55,22 @@ app.use((req, res) => {
 // Initialize Database and Start Server
 async function start() {
   await initDatabase();
-  initDownloader();
+
+  if (config.isWorker || !config.workerServiceUrl) {
+    console.log(`[Downloader] Initializing background downloader (${config.isWorker ? 'Dedicated Worker Mode' : 'Embedded Mode'})...`);
+    initDownloader();
+  } else {
+    console.log(`[Downloader] Worker delegation active: Download tasks will be processed by ${config.workerServiceUrl}`);
+  }
 
   app.listen(config.port, '0.0.0.0', () => {
     console.log('==============================================');
-    console.log(`🎬 Kodimi Media Server running on port ${config.port}`);
+    console.log(`🎬 Kodimi Media Server ${config.isWorker ? '(WORKER)' : ''} running on port ${config.port}`);
     console.log(`📡 Environment: ${config.nodeEnv}`);
     console.log(`🪣 GCS Bucket: gs://${config.gcsBucketName}`);
+    if (config.isWorker) {
+      console.log('👷 Mode: Dedicated On-Demand Torrent Downloader Worker');
+    }
     console.log('==============================================');
 
     // Initial auto-sync of bucket if catalog is empty or on startup

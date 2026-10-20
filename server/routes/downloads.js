@@ -224,26 +224,43 @@ router.get('/worker-keepalive', (req, res) => {
 
 /**
  * Server-Sent Events (SSE) for live download progress updates.
+ * Streams real-time progress to clients from local jobs or worker jobs synced via MongoDB.
  * Automatically closes when no downloads are active so idle browser tabs never keep Cloud Run awake.
  */
-router.get('/events', requireAuth, (req, res) => {
-  if (!hasActiveDownloads()) {
+router.get('/events', requireAuth, async (req, res) => {
+  let activeDownloads = [];
+  try {
+    const all = await downloadsDB.getAllAsync();
+    activeDownloads = all.filter((d) => ['downloading', 'uploading', 'queued'].includes(d.status));
+  } catch (err) {
+    console.error('[SSE events] Error checking downloadsDB:', err.message);
+  }
+
+  // If no downloads are active in DB and no local active jobs, exit immediately with 204
+  if (activeDownloads.length === 0 && !hasActiveDownloads()) {
     return res.status(204).end();
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
+  let isCleanedUp = false;
+  let pollInterval = null;
+
   const cleanup = () => {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
     clearInterval(pingInterval);
-    downloadEvents.off('progress', onProgress);
-    downloadEvents.off('idle', onIdle);
+    if (pollInterval) clearInterval(pollInterval);
+    clearTimeout(maxTimer);
+    downloadEvents.off('progress', onLocalProgress);
+    downloadEvents.off('idle', onLocalIdle);
     try { res.end(); } catch (_) {}
   };
 
-  const onProgress = (data) => {
+  const onLocalProgress = (data) => {
     try {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     } catch (_) {
@@ -251,25 +268,69 @@ router.get('/events', requireAuth, (req, res) => {
     }
   };
 
-  const onIdle = () => {
+  const onLocalIdle = () => {
     try {
       res.write(`data: ${JSON.stringify({ type: 'idle' })}\n\n`);
     } catch (_) {}
     cleanup();
   };
 
-  downloadEvents.on('progress', onProgress);
-  downloadEvents.once('idle', onIdle);
+  downloadEvents.on('progress', onLocalProgress);
+  downloadEvents.once('idle', onLocalIdle);
 
-  // Send initial ping
+  // Send initial ping and current active items
   res.write(': connected\n\n');
-
-  // Heartbeat ping every 15s ONLY while downloads are active
-  const pingInterval = setInterval(() => {
-    if (!hasActiveDownloads()) {
-      onIdle();
+  for (const item of activeDownloads) {
+    try {
+      res.write(`data: ${JSON.stringify(item)}\n\n`);
+    } catch (_) {
+      cleanup();
       return;
     }
+  }
+
+  // Poll MongoDB periodically to stream progress updates (crucial when downloads run on worker service)
+  const trackedJobs = new Map();
+  for (const item of activeDownloads) {
+    trackedJobs.set(item.id, item.status);
+  }
+
+  const needsDbPolling = Boolean((config.workerServiceUrl && !config.isWorker) || (activeDownloads.length > 0 && !hasActiveDownloads()));
+
+  if (needsDbPolling) {
+    pollInterval = setInterval(async () => {
+      try {
+        const all = await downloadsDB.getAllAsync();
+        const currentActive = all.filter((d) => ['downloading', 'uploading', 'queued'].includes(d.status));
+
+        for (const item of currentActive) {
+          trackedJobs.set(item.id, item.status);
+          res.write(`data: ${JSON.stringify(item)}\n\n`);
+        }
+
+        // Check if any previously active job completed, failed, or paused
+        for (const [id] of Array.from(trackedJobs.entries())) {
+          const item = all.find((d) => d.id === id);
+          if (!item || !['downloading', 'uploading', 'queued'].includes(item.status)) {
+            if (item) {
+              res.write(`data: ${JSON.stringify(item)}\n\n`);
+            }
+            trackedJobs.delete(id);
+          }
+        }
+
+        // If no active downloads exist anywhere, emit idle and finish
+        if (currentActive.length === 0 && !hasActiveDownloads()) {
+          onLocalIdle();
+        }
+      } catch (err) {
+        cleanup();
+      }
+    }, 1200);
+  }
+
+  // Heartbeat ping every 15s to keep connections alive through reverse proxies
+  const pingInterval = setInterval(() => {
     try {
       res.write(': keepalive\n\n');
     } catch (_) {
@@ -277,11 +338,10 @@ router.get('/events', requireAuth, (req, res) => {
     }
   }, 15000);
 
-  req.on('close', () => {
-    clearInterval(pingInterval);
-    downloadEvents.off('progress', onProgress);
-    downloadEvents.off('idle', onIdle);
-  });
+  // Auto-close connection after 30 minutes safety timeout
+  const maxTimer = setTimeout(() => cleanup(), 30 * 60 * 1000);
+
+  req.on('close', cleanup);
 });
 
 export default router;

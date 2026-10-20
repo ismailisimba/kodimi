@@ -655,8 +655,6 @@ export const downloadsDB = {
   },
 
   getByIdAsync: async (id) => {
-    const cached = downloadCache.get(id);
-    if (cached) return cached;
     try {
       const doc = await DownloadModel.findOne({ id }).lean();
       if (doc) {
@@ -664,7 +662,7 @@ export const downloadsDB = {
         return doc;
       }
     } catch (_) {}
-    return null;
+    return downloadCache.get(id) || null;
   },
 
   upsert: (dl) => {

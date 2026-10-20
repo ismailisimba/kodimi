@@ -140,6 +140,7 @@ export function renderDownloadItem(dl) {
   const isFailed = dl.status === 'failed';
   const isDownloading = dl.status === 'downloading';
   const isPaused = dl.status === 'paused';
+  const isQueued = dl.status === 'queued';
 
   const speedStr = formatSpeed(dl.speed);
   const sizeStr = dl.total_bytes > 0
@@ -147,7 +148,7 @@ export function renderDownloadItem(dl) {
     : '';
 
   let actionButtonsHtml = '';
-  if (isDownloading) {
+  if (isDownloading || isQueued) {
     actionButtonsHtml = `
       <button class="icon-btn dl-pause-btn" data-id="${dl.id}" title="Pause" style="width: 28px; height: 28px;">
         <span class="material-symbols-outlined" style="font-size: 18px;">pause</span>
@@ -191,6 +192,9 @@ export function renderDownloadItem(dl) {
   } else if (isPaused) {
     statusColor = '#ffb74d';
     statusText = '⏸ Paused';
+  } else if (isQueued) {
+    statusColor = '#ffb74d';
+    statusText = dl.status_text || 'Queued...';
   } else if (dl.status === 'uploading') {
     statusColor = '#64b5f6';
     statusText = dl.status_text || 'Uploading to Cloud Storage...';
@@ -206,6 +210,8 @@ export function renderDownloadItem(dl) {
   }
 
   const statusDisplay = `<span style="color: ${statusColor};">${escapeHtml(statusText)}</span>`;
+  const progressNum = Number(dl.progress || 0);
+  const progressDisplay = progressNum >= 100 ? '100%' : `${progressNum.toFixed(1)}%`;
 
   return `
     <div class="download-item" id="dl-${dl.id}" style="background-color: var(--md-sys-color-surface-container-high); border-radius: var(--md-shape-corner-m); padding: 12px 16px; margin-bottom: 8px; border: 1px solid var(--md-sys-color-outline-variant);">
@@ -227,7 +233,7 @@ export function renderDownloadItem(dl) {
 
       <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--md-sys-color-on-surface-variant);">
         <div style="display: flex; gap: 12px;">
-          <span>${Math.round(dl.progress || 0)}%</span>
+          <span>${progressDisplay}</span>
           ${isDownloading ? `<span>${speedStr}</span>` : ''}
           ${sizeStr ? `<span>${sizeStr}</span>` : ''}
           ${dl.peers > 0 ? `<span>Peers: ${dl.peers}</span>` : ''}
@@ -250,6 +256,9 @@ function formatSpeed(bytesPerSec) {
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 MB';
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 

@@ -17,7 +17,7 @@ import {
   renderAddProfileCard,
   renderProfileDropdownItem,
   escapeHtml,
-} from './components.js?v=22';
+} from './components.js?v=23';
 
 class KodimiApp {
   constructor() {
@@ -39,6 +39,7 @@ class KodimiApp {
     this.featuredItem = null;
     this.player = null;
     this.eventSource = null;
+    this.downloadModalPollInterval = null;
     this.profiles = [];
     this.isManagingProfiles = false;
     this.selectedProfileColor = '#e50914';
@@ -221,7 +222,7 @@ class KodimiApp {
     // Ingest FAB & Modal
     this.fabIngest.addEventListener('click', () => this.openDownloadModal());
     document.getElementById('download-modal-close').addEventListener('click', () => {
-      this.downloadModal.classList.remove('open');
+      this.closeDownloadModal();
     });
 
     this.downloadForm.addEventListener('submit', (e) => this.handleStartDownload(e));
@@ -513,7 +514,11 @@ class KodimiApp {
       if (!modal) return;
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
-          modal.classList.remove('open');
+          if (modal === this.downloadModal) {
+            this.closeDownloadModal();
+          } else {
+            modal.classList.remove('open');
+          }
         }
       });
     });
@@ -1318,13 +1323,37 @@ class KodimiApp {
   openDownloadModal() {
     this.downloadModal.classList.add('open');
     this.loadDownloads();
+    this.startDownloadModalPolling();
   }
 
-  async loadDownloads() {
+  closeDownloadModal() {
+    this.downloadModal.classList.remove('open');
+    this.stopDownloadModalPolling();
+  }
+
+  startDownloadModalPolling() {
+    if (this.downloadModalPollInterval) return;
+    this.downloadModalPollInterval = setInterval(() => {
+      if (this.downloadModal && this.downloadModal.classList.contains('open')) {
+        this.loadDownloads(true);
+      } else {
+        this.stopDownloadModalPolling();
+      }
+    }, 2000);
+  }
+
+  stopDownloadModalPolling() {
+    if (this.downloadModalPollInterval) {
+      clearInterval(this.downloadModalPollInterval);
+      this.downloadModalPollInterval = null;
+    }
+  }
+
+  async loadDownloads(isSilent = false) {
     try {
       const res = await api.getDownloads();
       const list = res.downloads || [];
-      const activeCount = list.filter((d) => d.status === 'downloading' || d.status === 'uploading').length;
+      const activeCount = list.filter((d) => ['downloading', 'uploading', 'queued'].includes(d.status)).length;
 
       if (activeCount > 0) {
         this.downloadCountBadge.textContent = activeCount;
@@ -1342,10 +1371,24 @@ class KodimiApp {
           </div>
         `;
       } else {
-        this.downloadQueueList.innerHTML = list.map(renderDownloadItem).join('');
+        const existingItems = Array.from(this.downloadQueueList.querySelectorAll('.download-item'));
+        const existingIds = existingItems.map((el) => el.id.replace('dl-', ''));
+        const newIds = list.map((d) => d.id);
+        const idsMatch = existingIds.length === newIds.length && existingIds.every((id, idx) => id === newIds[idx]);
+
+        if (idsMatch) {
+          list.forEach((dl) => {
+            const itemEl = document.getElementById(`dl-${dl.id}`);
+            if (itemEl) {
+              itemEl.outerHTML = renderDownloadItem(dl);
+            }
+          });
+        } else {
+          this.downloadQueueList.innerHTML = list.map(renderDownloadItem).join('');
+        }
       }
     } catch (err) {
-      console.error('Failed to load downloads:', err);
+      if (!isSilent) console.error('Failed to load downloads:', err);
     }
   }
 
@@ -1531,7 +1574,7 @@ class KodimiApp {
         const update = JSON.parse(event.data);
         if (update && update.type === 'idle') {
           this.closeDownloadStream();
-          this.loadDownloads();
+          this.loadDownloads(true);
           return;
         }
         if (update && update.id) {
@@ -1539,14 +1582,14 @@ class KodimiApp {
           if (itemEl) {
             itemEl.outerHTML = renderDownloadItem(update);
           } else {
-            this.loadDownloads();
+            this.loadDownloads(true);
           }
 
           if (update.status === 'completed') {
             this.loadData();
-            this.loadDownloads();
+            this.loadDownloads(true);
           } else if (update.status === 'failed' || update.status === 'paused') {
-            this.loadDownloads();
+            this.loadDownloads(true);
           }
         }
       } catch (_) {}

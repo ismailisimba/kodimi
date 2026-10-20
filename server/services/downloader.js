@@ -369,7 +369,6 @@ async function processTorrentDownload(id, torrentSource, customName) {
         try { torrent.destroy({ destroyStore: true }); } catch (_) {}
         return;
       }
-      const peers = torrent.numPeers || 0;
       updateDownload(id, {
         peers,
         status_text: peers > 0

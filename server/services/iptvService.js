@@ -1,5 +1,6 @@
 import axios from 'axios';
 import crypto from 'crypto';
+import ffmpeg from 'fluent-ffmpeg';
 
 /**
  * Kodimi Live TV & EPG Service
@@ -783,6 +784,82 @@ export async function proxyHlsStream(streamUrl, req, res) {
   }
 }
 
+/**
+ * On-demand real-time live stream downscaling (720p, 480p, 360p).
+ * Streams fragmented MP4 directly to the client with immediate termination on socket close.
+ */
+export async function transcodeLiveStream(streamUrl, quality = '480p', req, res) {
+  const PROFILES = {
+    '720p': { height: 720, videoBitrate: '1500k', audioBitrate: '128k' },
+    '480p': { height: 480, videoBitrate: '800k', audioBitrate: '96k' },
+    '360p': { height: 360, videoBitrate: '450k', audioBitrate: '64k' },
+  };
+
+  const profile = PROFILES[quality] || PROFILES['480p'];
+
+  res.writeHead(200, {
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+
+  const command = ffmpeg(streamUrl)
+    .inputOptions([
+      '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\r\n',
+      '-probesize', '1000000',
+      '-analyzeduration', '1000000',
+      '-fflags', '+nobuffer',
+    ])
+    .format('mp4')
+    .outputOptions([
+      '-map', '0:v:0',
+      '-map', '0:a:0?',
+      '-c:v', 'libx264',
+      '-vf', `scale=-2:${profile.height}`,
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-b:v', profile.videoBitrate,
+      '-c:a', 'aac',
+      '-b:a', profile.audioBitrate,
+      '-ar', '48000',
+      '-ac', '2',
+      '-threads', '1',
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+      '-flush_packets', '1',
+    ]);
+
+  command.on('start', (cmdline) => {
+    console.log(`[Live Transcode Started (${quality})]: ${streamUrl}`);
+  });
+
+  command.on('stderr', (line) => {
+    if (line.includes('Error') || line.includes('Opening') || line.includes('Output')) {
+      console.log('[FFMPEG Stderr]:', line);
+    }
+  });
+
+  command.on('error', (err) => {
+    if (err.message && (err.message.includes('SIGKILL') || err.message.includes('Output stream closed') || err.message.includes('pipe:1: End of file'))) {
+      return;
+    }
+    console.warn(`[Live Transcode Error]: ${err.message}`);
+    if (!res.headersSent) {
+      res.status(500).end();
+    }
+  });
+
+  // Budget safeguard: instantly kill ffmpeg when client disconnects or switches
+  req.on('close', () => {
+    try {
+      command.kill('SIGKILL');
+      console.log(`[Live Transcode Terminated]: Client socket closed.`);
+    } catch (_) {}
+  });
+
+  command.pipe(res, { end: true });
+}
+
 function slugify(text) {
   return (text || '')
     .toString()
@@ -810,4 +887,5 @@ export default {
   getCategories,
   getChannelSchedule,
   proxyHlsStream,
+  transcodeLiveStream,
 };

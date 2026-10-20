@@ -48,6 +48,7 @@ class KodimiPlayer {
     this.controlsTimeout = null;
     this.progressInterval = null;
     this.hls = null;
+    this.liveTranscodeQuality = null;
 
     this.initEvents();
   }
@@ -112,13 +113,6 @@ class KodimiPlayer {
       this.qualityMenu.classList.toggle('open');
     });
 
-    document.querySelectorAll('.quality-option').forEach((opt) => {
-      opt.addEventListener('click', (e) => {
-        const quality = e.currentTarget.dataset.quality;
-        this.changeQuality(quality);
-      });
-    });
-
     document.addEventListener('click', () => {
       if (this.qualityMenu) this.qualityMenu.classList.remove('open');
       if (this.subtitlesMenu) this.subtitlesMenu.classList.remove('open');
@@ -137,9 +131,12 @@ class KodimiPlayer {
 
   open(media, initialTime = 0) {
     this.isLive = false;
+    this.liveTranscodeQuality = null;
+    this.liveTranscodeQuality = null;
     this.currentMedia = media;
     this.selectedQuality = 'original';
     this.qualityLabel.textContent = 'ORIGINAL (AAC)';
+    this.renderVodQualityMenu();
     this.titleDisplay.textContent = media.title;
     this.totalDuration = (media && media.duration > 0) ? media.duration : 0;
     this.seekTimeOffset = initialTime;
@@ -190,6 +187,7 @@ class KodimiPlayer {
 
   openLive(channel) {
     this.isLive = true;
+    this.liveTranscodeQuality = null;
     this.currentMedia = {
       ...channel,
       is_live: true,
@@ -197,6 +195,7 @@ class KodimiPlayer {
     };
     this.selectedQuality = 'live';
     this.qualityLabel.textContent = channel.resolution || 'LIVE';
+    this.renderLiveQualityMenu();
     this.titleDisplay.innerHTML = `
       <span class="live-badge" style="margin-right: 8px;">🔴 LIVE</span>
       <span>${channel.name}</span>
@@ -273,11 +272,21 @@ class KodimiPlayer {
       hls.attachMedia(this.video);
 
       hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-        console.log('[Live TV] HLS manifest parsed successfully');
+        console.log('[Live TV] HLS manifest parsed successfully with', this.hls?.levels?.length, 'levels');
+        this.renderLiveQualityMenu();
         this.hideLoader();
         this.video.play().catch((err) => {
           console.warn('[Live TV] Autoplay prevented:', err.message);
         });
+      });
+
+      hls.on(window.Hls.Events.LEVEL_SWITCHED, (event, data) => {
+        if (this.hls && this.hls.currentLevel === -1 && this.hls.levels && this.hls.levels[data.level]) {
+          const activeLevel = this.hls.levels[data.level];
+          if (activeLevel && activeLevel.height) {
+            this.qualityLabel.textContent = `AUTO (${activeLevel.height}P)`;
+          }
+        }
       });
 
       hls.on(window.Hls.Events.ERROR, (event, data) => {
@@ -357,6 +366,7 @@ class KodimiPlayer {
     }
 
     this.isLive = false;
+    this.liveTranscodeQuality = null;
 
     if (this.progressInterval) {
       clearInterval(this.progressInterval);
@@ -438,7 +448,7 @@ class KodimiPlayer {
   }
 
   changeQuality(quality) {
-    if (!this.currentMedia || quality === this.selectedQuality) return;
+    if (this.isLive || !this.currentMedia || quality === this.selectedQuality) return;
 
     const currentTime = this.getEffectiveCurrentTime();
     this.selectedQuality = quality;
@@ -455,13 +465,7 @@ class KodimiPlayer {
     this.qualityLabel.textContent = labelMap[quality] || quality.toUpperCase();
     this.qualityMenu.classList.remove('open');
 
-    document.querySelectorAll('.quality-option').forEach((opt) => {
-      if (opt.dataset.quality === quality) {
-        opt.classList.add('active');
-      } else {
-        opt.classList.remove('active');
-      }
-    });
+    this.renderVodQualityMenu();
 
     if (quality === 'direct') {
       this.seekTimeOffset = 0;
@@ -472,6 +476,174 @@ class KodimiPlayer {
       const newUrl = api.getStreamUrl(this.currentMedia.id, quality, currentTime);
       this.loadVideoSource(newUrl, currentTime);
     }
+  }
+
+  renderVodQualityMenu() {
+    if (!this.qualityMenu) return;
+
+    const vodOptions = [
+      { id: 'original', label: 'Original (Universal AAC)' },
+      { id: 'direct', label: 'Original (Direct Raw)' },
+      { id: '720p', label: '720p HD' },
+      { id: '480p', label: '480p SD' },
+      { id: '360p', label: '360p (Mobile)' },
+      { id: '240p', label: '240p (Low Bandwidth)' },
+      { id: '144p', label: '144p (Data Saver)' },
+    ];
+
+    let html = `
+      <div style="padding: 6px 16px; font-size: 11px; font-weight: 700; color: var(--md-sys-color-outline); text-transform: uppercase;">
+        Adaptive Resolutions
+      </div>
+    `;
+
+    vodOptions.forEach((opt) => {
+      const isSelected = this.selectedQuality === opt.id;
+      html += `
+        <button class="quality-option ${isSelected ? 'active' : ''}" data-quality="${opt.id}">
+          <span>${opt.label}</span>
+          ${isSelected ? '<span class="material-symbols-outlined" style="font-size: 16px;">check</span>' : ''}
+        </button>
+      `;
+    });
+
+    this.qualityMenu.innerHTML = html;
+
+    this.qualityMenu.querySelectorAll('.quality-option').forEach((opt) => {
+      opt.addEventListener('click', (e) => {
+        const quality = e.currentTarget.dataset.quality;
+        this.changeQuality(quality);
+      });
+    });
+  }
+
+  renderLiveQualityMenu() {
+    if (!this.qualityMenu) return;
+
+    const headerHtml = `
+      <div style="padding: 6px 16px; font-size: 11px; font-weight: 700; color: var(--md-sys-color-outline); text-transform: uppercase;">
+        Live Stream Resolution
+      </div>
+    `;
+
+    // Case 1: Multi-rendition HLS stream (e.g. beIN SPORTS XTRA with 360p, 480p, 720p, 1080p)
+    if (this.hls && this.hls.levels && this.hls.levels.length > 1) {
+      const currentLvl = this.hls.currentLevel; // -1 = Auto, or 0..N
+
+      let optionsHtml = `
+        ${headerHtml}
+        <button class="quality-option ${currentLvl === -1 ? 'active' : ''}" data-live-level="-1">
+          <span>Auto (Adaptive Bitrate)</span>
+          ${currentLvl === -1 ? '<span class="material-symbols-outlined" style="font-size: 16px;">check</span>' : ''}
+        </button>
+      `;
+
+      // Sort from highest height down to lowest
+      const indexedLevels = this.hls.levels
+        .map((lvl, idx) => ({ ...lvl, index: idx }))
+        .sort((a, b) => (b.height || 0) - (a.height || 0));
+
+      indexedLevels.forEach((lvl) => {
+        const isSelected = currentLvl === lvl.index;
+        const label = lvl.height ? `${lvl.height}p` : `Level ${lvl.index + 1}`;
+        const bitrateKbps = lvl.bitrate ? ` (${Math.round(lvl.bitrate / 1000)} kbps)` : '';
+        optionsHtml += `
+          <button class="quality-option ${isSelected ? 'active' : ''}" data-live-level="${lvl.index}">
+            <span>${label}${bitrateKbps}</span>
+            ${isSelected ? '<span class="material-symbols-outlined" style="font-size: 16px;">check</span>' : ''}
+          </button>
+        `;
+      });
+
+      this.qualityMenu.innerHTML = optionsHtml;
+
+      this.qualityMenu.querySelectorAll('.quality-option').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          const levelIdx = parseInt(e.currentTarget.dataset.liveLevel, 10);
+          this.setLiveQualityLevel(levelIdx);
+          this.qualityMenu.classList.remove('open');
+        });
+      });
+      return;
+    }
+
+    // Case 2: Fixed single-rendition feed (e.g. beIN Sports 1-9 FHD source feed)
+    const activeQuality = this.liveTranscodeQuality || 'source';
+    const sourceRes = this.currentMedia?.resolution || '1080P';
+
+    const transcodeOptions = [
+      { id: 'source', label: `${sourceRes} (Source Broadcast - Free)`, note: 'Native direct live feed' },
+      { id: '720p', label: '720p HD (Live Transcode)', note: 'Downscaled on-the-fly' },
+      { id: '480p', label: '480p SD (Live Transcode)', note: 'Low data usage' },
+      { id: '360p', label: '360p (Live Transcode)', note: 'Data saver' },
+    ];
+
+    let optionsHtml = headerHtml;
+    transcodeOptions.forEach((opt) => {
+      const isSelected = activeQuality === opt.id;
+      optionsHtml += `
+        <button class="quality-option ${isSelected ? 'active' : ''}" data-fixed-quality="${opt.id}">
+          <div style="display: flex; flex-direction: column; align-items: flex-start;">
+            <span>${opt.label}</span>
+            <span style="font-size: 10px; opacity: 0.65; margin-top: 1px;">${opt.note}</span>
+          </div>
+          ${isSelected ? '<span class="material-symbols-outlined" style="font-size: 16px;">check</span>' : ''}
+        </button>
+      `;
+    });
+
+    this.qualityMenu.innerHTML = optionsHtml;
+
+    this.qualityMenu.querySelectorAll('.quality-option').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const quality = e.currentTarget.dataset.fixedQuality;
+        this.setFixedLiveQuality(quality);
+        this.qualityMenu.classList.remove('open');
+      });
+    });
+  }
+
+  setLiveQualityLevel(levelIndex) {
+    if (!this.hls) return;
+
+    this.hls.currentLevel = levelIndex;
+
+    if (levelIndex === -1) {
+      this.qualityLabel.textContent = 'AUTO';
+    } else {
+      const lvl = this.hls.levels[levelIndex];
+      this.qualityLabel.textContent = lvl && lvl.height ? `${lvl.height}P` : `LVL ${levelIndex + 1}`;
+    }
+
+    this.renderLiveQualityMenu();
+  }
+
+  setFixedLiveQuality(quality) {
+    if (!this.currentMedia) return;
+
+    if (quality === 'source' || quality === '1080p') {
+      this.liveTranscodeQuality = null;
+      this.qualityLabel.textContent = this.currentMedia.resolution || '1080P';
+      this.renderLiveQualityMenu();
+      this.loadLiveSource(this.currentMedia.streamUrl);
+      return;
+    }
+
+    // Switch to on-demand real-time FFmpeg live transcode
+    this.liveTranscodeQuality = quality;
+    this.qualityLabel.textContent = `${quality.toUpperCase()} (LIVE)`;
+    this.renderLiveQualityMenu();
+
+    this.destroyHls();
+    this.video.pause();
+    this.showLoader(`Starting Live ${quality.toUpperCase()} Transcode...`);
+
+    const transcodeUrl = api.getLiveTranscodeUrl(this.currentMedia.streamUrl, quality);
+    this.video.src = transcodeUrl;
+    this.video.load();
+    this.video.play().catch((err) => {
+      console.warn('[Live Transcode Play Warning]:', err.message);
+    });
   }
 
   showLoader(text = 'Buffering Stream...') {

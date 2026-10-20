@@ -5,6 +5,7 @@ import {
   getCategories,
   getChannelSchedule,
   proxyHlsStream,
+  transcodeLiveStream,
 } from '../services/iptvService.js';
 
 const router = express.Router();
@@ -87,6 +88,19 @@ router.get('/proxy', async (req, res) => {
   }
 
   await proxyHlsStream(url, req, res);
+});
+
+/**
+ * GET /api/iptv/transcode
+ * Streams real-time downscaled live stream on-the-go (720p, 480p, 360p) for fixed feeds.
+ */
+router.get('/transcode', async (req, res) => {
+  const { url, quality } = req.query;
+  if (!url) {
+    return res.status(400).send('Stream URL parameter is required');
+  }
+
+  await transcodeLiveStream(url, quality || '480p', req, res);
 });
 
 export default router;

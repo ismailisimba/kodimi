@@ -196,6 +196,9 @@ export const api = {
 
   getLiveProxyUrl: (streamUrl) => `${API_BASE}/iptv/proxy?url=${encodeURIComponent(streamUrl)}`,
 
+  getLiveTranscodeUrl: (streamUrl, quality = '480p') =>
+    `${API_BASE}/iptv/transcode?url=${encodeURIComponent(streamUrl)}&quality=${quality}`,
+
   // Subtitle Tracks Probe
   getSubtitleTracks: (id) => request(`/stream/${id}/subtitles/tracks`),
 };

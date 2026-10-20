@@ -60,7 +60,7 @@ function checkAndEmitIdle() {
 function ensureWorkerKeepalive() {
   if (keepaliveActive || activeJobs.size === 0 || process.env.NODE_ENV !== 'production') return;
   keepaliveActive = true;
-  const serviceUrl = process.env.SERVICE_URL || 'https://kodimi-jzam6yvx3q-ez.a.run.app';
+  const serviceUrl = process.env.SERVICE_URL || 'https://kodimi.mnembo.com';
 
   (async () => {
     while (activeJobs.size > 0) {
@@ -355,10 +355,17 @@ async function processTorrentDownload(id, torrentSource, customName) {
         clearInterval(discoveryInterval);
         return;
       }
-      // Fail dead torrents that cannot find peers/metadata within 3 minutes so they don't burn CPU forever
-      if (Date.now() - discoveryStart > 180000) {
+      // Fail dead torrents only after 5 minutes with 0 peers, or 10 minutes max, so we don't prematurely abort healthy swarms
+      const peers = torrent.numPeers || 0;
+      if (peers === 0 && (Date.now() - discoveryStart > 300000)) {
         clearInterval(discoveryInterval);
-        failDownload(id, 'No active peers or metadata found within 3 minutes');
+        failDownload(id, 'No active peers or metadata found within 5 minutes');
+        try { torrent.destroy({ destroyStore: true }); } catch (_) {}
+        return;
+      }
+      if (Date.now() - discoveryStart > 600000) {
+        clearInterval(discoveryInterval);
+        failDownload(id, 'Metadata discovery timed out after 10 minutes');
         try { torrent.destroy({ destroyStore: true }); } catch (_) {}
         return;
       }

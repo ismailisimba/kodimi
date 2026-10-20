@@ -21,7 +21,7 @@ gcloud run deploy kodimi-worker `
   --min-instances 0 `
   --max-instances 1 `
   --concurrency 80 `
-  --cpu-throttling `
+  --no-cpu-throttling `
   --timeout 3600 `
   --set-env-vars "NODE_ENV=production,IS_WORKER=true,GCS_BUCKET_NAME=$BUCKET_NAME,GCP_PROJECT_ID=$PROJECT_ID,SERVICE_URL=$WORKER_URL" `
   --set-secrets "ADMIN_PASSWORD=KODIMI_ADMIN_PASSWORD:latest,PRIVATE_PIN=KODIMI_PRIVATE_PIN:latest,MONGO_URI=KODIMI_MONGO_URI:latest,GEMINI_API_KEY=KODIMI_GEMINI_API_KEY:latest,JWT_SECRET=KODIMI_JWT_SECRET:latest"

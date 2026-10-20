@@ -54,13 +54,22 @@ function checkAndEmitIdle() {
       webTorrentClient = null;
       console.log('[Downloader] All downloads finished. Destroyed WebTorrent client and released resources.');
     }
+    if (config.isWorker) {
+      console.log('[Worker] No active downloads remaining. Gracefully shutting down worker in 60s so Cloud Run scales to 0...');
+      setTimeout(() => {
+        if (activeJobs.size === 0) {
+          console.log('[Worker] Exiting worker container to scale to 0 ($0.00 cost).');
+          process.exit(0);
+        }
+      }, 60000);
+    }
   }
 }
 
 function ensureWorkerKeepalive() {
   if (keepaliveActive || activeJobs.size === 0 || process.env.NODE_ENV !== 'production') return;
   keepaliveActive = true;
-  const serviceUrl = process.env.SERVICE_URL || 'https://kodimi.mnembo.com';
+  const serviceUrl = process.env.SERVICE_URL || (config.isWorker ? (config.workerServiceUrl || 'https://kodimi-worker-902784200253.europe-west4.run.app') : 'https://kodimi.mnembo.com');
 
   (async () => {
     while (activeJobs.size > 0) {
@@ -355,17 +364,22 @@ async function processTorrentDownload(id, torrentSource, customName) {
         clearInterval(discoveryInterval);
         return;
       }
-      // Fail dead torrents only after 5 minutes with 0 peers, or 10 minutes max, so we don't prematurely abort healthy swarms
+      // Re-announce to trackers/DHT if 0 peers after 30s
       const peers = torrent.numPeers || 0;
-      if (peers === 0 && (Date.now() - discoveryStart > 300000)) {
+      if (peers === 0 && Date.now() - discoveryStart > 30000 && typeof torrent.discovery?.tracker?.announce === 'function') {
+        try { torrent.discovery.tracker.announce(); } catch (_) {}
+      }
+
+      // Do not abort active or recovering swarms prematurely; allow up to 15 minutes
+      if (peers === 0 && (Date.now() - discoveryStart > 900000)) {
         clearInterval(discoveryInterval);
-        failDownload(id, 'No active peers or metadata found within 5 minutes');
+        failDownload(id, 'No active peers or metadata found within 15 minutes');
         try { torrent.destroy({ destroyStore: true }); } catch (_) {}
         return;
       }
-      if (Date.now() - discoveryStart > 600000) {
+      if (Date.now() - discoveryStart > 1200000) {
         clearInterval(discoveryInterval);
-        failDownload(id, 'Metadata discovery timed out after 10 minutes');
+        failDownload(id, 'Metadata discovery timed out after 20 minutes');
         try { torrent.destroy({ destroyStore: true }); } catch (_) {}
         return;
       }

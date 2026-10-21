@@ -393,6 +393,26 @@ export const mediaDB = {
     return name;
   },
 
+  getSeriesInfo: (name) => {
+    if (!name) return null;
+    const key = normalizeSeriesKey(name);
+    if (!key) return null;
+    for (const item of mediaCache.values()) {
+      if (item.type === 'series' && item.series_name) {
+        if (normalizeSeriesKey(item.series_name) === key) {
+          return {
+            series_name: item.series_name,
+            year: item.year,
+            genres: item.genres,
+            poster_url: item.poster_url,
+            backdrop_url: item.backdrop_url,
+          };
+        }
+      }
+    }
+    return null;
+  },
+
   getAllGenres: () => {
     const genreSet = new Set();
     for (const item of mediaCache.values()) {
@@ -445,8 +465,13 @@ export const mediaDB = {
         s.title = rawSeriesName;
         s.series_name = rawSeriesName;
       }
-      if (item.plot && (!s.plot || s.plot.length < item.plot.length)) {
+      if (item.season === 1 && item.episode === 1 && item.plot) {
         s.plot = item.plot;
+      } else if (item.plot && (!s.plot || s.plot.length < item.plot.length)) {
+        s.plot = item.plot;
+      }
+      if (item.year && (!s.year || item.season === 1)) {
+        s.year = item.year;
       }
       if (item.poster_url && !s.poster_url) s.poster_url = item.poster_url;
       if (item.backdrop_url && !s.backdrop_url) s.backdrop_url = item.backdrop_url;

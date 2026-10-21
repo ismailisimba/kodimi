@@ -153,9 +153,18 @@ export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = 
   }
 
   try {
+    let existingSeries = null;
+    if (parsed.type === 'series' && parsed.series_name && mediaDB.getSeriesInfo) {
+      existingSeries = mediaDB.getSeriesInfo(parsed.series_name);
+    }
+
+    const existingSeriesNote = existingSeries?.year
+      ? `\nNOTE: This series is already indexed in the catalog as the ${existingSeries.year} show ("${existingSeries.series_name}"). You MUST match the ${existingSeries.year} show version, cast, and episode titles, NOT any older/different series with the same name.`
+      : '';
+
     const prompt = `You are an expert movie and TV media cataloger for a personal streaming platform named Kodimi.
 Analyze this video file name: "${filename}" ${contextHint ? `(from release: "${contextHint}")` : ''}.
-Detected Season: ${parsed.season || 'null'}, Episode: ${parsed.episode || 'null'}, Inferred Series: "${parsed.series_name || ''}", Inferred Episode Title: "${parsed.episode_title || ''}".
+Detected Season: ${parsed.season || 'null'}, Episode: ${parsed.episode || 'null'}, Inferred Series: "${parsed.series_name || ''}", Inferred Episode Title: "${parsed.episode_title || ''}".${existingSeriesNote}
 
 IMPORTANT RULES:
 1. If this is adult/pornographic/XXX/18+ explicit content, set "is_adult": true, "type": "movie", "series_name": null.
@@ -172,6 +181,8 @@ IMPORTANT RULES:
    - Set "series_name": null, "season": null, "episode": null, "episode_title": null
    - Set "title": Canonical movie title
    - Set "plot": Accurate 2-3 sentence synopsis of the movie.
+4. DISAMBIGUATION RULE:
+   If a title has multiple adaptations across different years (e.g. "Dark Matter" 2024 vs 2015, "Shogun" 2024 vs 1980), always default to the modern/recent release unless a specific past year is explicitly indicated in the filename or release context.
 
 Return a strictly valid JSON object with fields:
 {
@@ -258,7 +269,7 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
       series_name: finalType === 'series' ? seriesName : null,
       season: aiData.season ?? parsed.season,
       episode: aiData.episode ?? parsed.episode,
-      year: aiData.year ?? parsed.year,
+      year: aiData.year ?? existingSeries?.year ?? parsed.year,
       plot: aiData.plot || `Watch ${finalTitle} in high definition on Kodimi.`,
       genres: Array.isArray(aiData.genres) && aiData.genres.length > 0 ? aiData.genres : ['Entertainment'],
       tags: Array.isArray(aiData.tags) && aiData.tags.length > 0 ? aiData.tags : ['HD', parsed.resolution],

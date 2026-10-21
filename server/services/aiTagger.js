@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import crypto from 'crypto';
 import { config } from '../config/env.js';
+import { mediaDB } from '../db/database.js';
 
 let aiClient = null;
 
@@ -200,10 +201,10 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
     const cleanJson = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
     const aiData = JSON.parse(cleanJson);
 
+    // If filename has SxxExx and parsed.is_adult is false, never allow AI hallucination to mark it as adult
     const isAdultDetected = Boolean(
       parsed.is_adult ||
-      aiData.is_adult ||
-      (Array.isArray(aiData.genres) && aiData.genres.some((g) => /adult|erotic|xxx|porn/i.test(g)))
+      (!parsed.season && !parsed.episode && (aiData.is_adult || (Array.isArray(aiData.genres) && aiData.genres.some((g) => /adult|erotic|xxx|porn/i.test(g)))))
     );
 
     if (isAdultDetected) {
@@ -221,10 +222,19 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
       };
     }
 
+    let finalType = parsed.type === 'series' ? 'series' : (aiData.type || parsed.type);
     let seriesName = aiData.series_name || parsed.series_name;
+
+    if (finalType === 'series') {
+      // Reconcile with canonical series name if already in catalog (e.g. "Avatar: Seven Havens")
+      if (seriesName && mediaDB.getCanonicalSeriesName) {
+        seriesName = mediaDB.getCanonicalSeriesName(seriesName);
+      }
+    }
+
     let finalTitle = aiData.title || parsed.title;
 
-    if (parsed.type === 'series' || aiData.type === 'series') {
+    if (finalType === 'series') {
       const sNum = aiData.season ?? parsed.season;
       const epNum = aiData.episode ?? parsed.episode;
       const epTitle = aiData.episode_title || parsed.episode_title;
@@ -244,8 +254,8 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
       is_adult: false,
       size_bytes: fileSize,
       title: finalTitle,
-      type: aiData.type || parsed.type,
-      series_name: seriesName,
+      type: finalType,
+      series_name: finalType === 'series' ? seriesName : null,
       season: aiData.season ?? parsed.season,
       episode: aiData.episode ?? parsed.episode,
       year: aiData.year ?? parsed.year,

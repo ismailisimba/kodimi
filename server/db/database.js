@@ -100,6 +100,19 @@ let playbackCache = new Map();
 let downloadCache = new Map();
 let profileCache = new Map();
 let watchlistCache = new Map();
+let lastMediaRefreshTime = 0;
+
+export function normalizeSeriesKey(name) {
+  return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+export async function ensureMediaCacheFresh(force = false) {
+  const now = Date.now();
+  if (!force && now - lastMediaRefreshTime < 4000 && mediaCache.size > 0) {
+    return;
+  }
+  await refreshCache();
+}
 
 /**
  * Connect to MongoDB and sync in-memory cache
@@ -219,6 +232,7 @@ async function refreshCache() {
     downloadCache.clear();
     allDownloads.forEach((d) => downloadCache.set(d.id, d));
 
+    lastMediaRefreshTime = Date.now();
     console.log(`[DB] Cache populated with ${mediaCache.size} media items and ${profileCache.size} profile(s) from MongoDB.`);
   } catch (err) {
     console.error('[DB] Cache refresh error:', err.message);
@@ -335,7 +349,7 @@ export const mediaDB = {
     const heuristicCheck = heuristicParseFilename(item.filename || item.gcs_path || '');
     const enforcedAdult = allowVaultExit
       ? Boolean(item.is_adult)
-      : Boolean(item.is_adult || existing?.is_adult || heuristicCheck.is_adult);
+      : (heuristicCheck.is_adult ? true : Boolean(item.is_adult));
 
     const docData = {
       ...item,
@@ -365,6 +379,20 @@ export const mediaDB = {
     MediaModel.deleteOne({ id }).catch((err) => console.error('[DB Delete Error]:', err.message));
   },
 
+  getCanonicalSeriesName: (name) => {
+    if (!name) return name;
+    const key = normalizeSeriesKey(name);
+    if (!key) return name;
+    for (const item of mediaCache.values()) {
+      if (item.type === 'series' && item.series_name) {
+        if (normalizeSeriesKey(item.series_name) === key) {
+          return item.series_name;
+        }
+      }
+    }
+    return name;
+  },
+
   getAllGenres: () => {
     const genreSet = new Set();
     for (const item of mediaCache.values()) {
@@ -384,12 +412,14 @@ export const mediaDB = {
       if (!isAdult && item.is_adult) continue;
       if (isAdult && !item.is_adult) continue;
 
-      const seriesName = (item.series_name || item.title || 'Unknown').trim();
-      if (!seriesMap.has(seriesName)) {
-        seriesMap.set(seriesName, {
-          id: `series-${encodeURIComponent(seriesName.toLowerCase())}`,
-          title: seriesName,
-          series_name: seriesName,
+      const rawSeriesName = (item.series_name || item.title || 'Unknown').trim();
+      const seriesKey = normalizeSeriesKey(rawSeriesName) || rawSeriesName.toLowerCase();
+
+      if (!seriesMap.has(seriesKey)) {
+        seriesMap.set(seriesKey, {
+          id: `series-${encodeURIComponent(rawSeriesName.toLowerCase())}`,
+          title: rawSeriesName,
+          series_name: rawSeriesName,
           type: 'series',
           plot: item.plot,
           year: item.year,
@@ -406,9 +436,15 @@ export const mediaDB = {
         });
       }
 
-      const s = seriesMap.get(seriesName);
+      const s = seriesMap.get(seriesKey);
       s.episodes_count += 1;
       if (item.season) s.seasons.add(item.season);
+
+      // Prefer canonical title with colon or longer formatted title if available
+      if (rawSeriesName.includes(':') && !s.title.includes(':')) {
+        s.title = rawSeriesName;
+        s.series_name = rawSeriesName;
+      }
       if (item.plot && (!s.plot || s.plot.length < item.plot.length)) {
         s.plot = item.plot;
       }
@@ -440,16 +476,25 @@ export const mediaDB = {
 
   getSeriesSeasons: (seriesName, isAdult = false) => {
     const cleanName = (seriesName || '').trim().toLowerCase();
+    const targetKey = normalizeSeriesKey(seriesName);
     const seasonsMap = {};
     let matchedSeries = null;
 
     for (const item of mediaCache.values()) {
       if (item.type !== 'series') continue;
       if (!isAdult && item.is_adult) continue;
-      const curName = (item.series_name || item.title || '').trim().toLowerCase();
-      if (curName !== cleanName && !curName.includes(cleanName)) continue;
+      const curRaw = (item.series_name || item.title || '').trim().toLowerCase();
+      const curKey = normalizeSeriesKey(curRaw);
 
-      if (!matchedSeries) {
+      const matches = curKey === targetKey ||
+                      curRaw === cleanName ||
+                      (targetKey && curKey.includes(targetKey)) ||
+                      (curKey && targetKey.includes(curKey)) ||
+                      (cleanName && curRaw.includes(cleanName));
+
+      if (!matches) continue;
+
+      if (!matchedSeries || (item.series_name && item.series_name.includes(':') && !matchedSeries.series_name.includes(':'))) {
         matchedSeries = {
           series_name: item.series_name || item.title,
           title: item.series_name || item.title,

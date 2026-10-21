@@ -1,7 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { mediaDB, playbackDB } from '../db/database.js';
+import { mediaDB, playbackDB, ensureMediaCacheFresh } from '../db/database.js';
 import { scanAndIndexBucket, getScanStatus } from '../services/scanner.js';
 import { enrichMediaMetadata } from '../services/aiTagger.js';
 import { getThumbnailRedirectUrl, getOrGenerateThumbnail, getOrProbeDuration } from '../services/transcoder.js';
@@ -40,7 +40,8 @@ function getProfileId(req) {
 }
 
 // Public/Auth protected media listing
-router.get('/', requireAuth, (req, res) => {
+router.get('/', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
   const { type, genre, search, limit, offset, adult, is_adult } = req.query;
   const showAdult = adult === 'true' || is_adult === 'true';
 
@@ -73,12 +74,14 @@ router.get('/', requireAuth, (req, res) => {
   res.json({ items });
 });
 
-router.get('/genres', requireAuth, (req, res) => {
+router.get('/genres', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
   const genres = mediaDB.getAllGenres();
   res.json({ genres });
 });
 
-router.get('/continue-watching', requireAuth, (req, res) => {
+router.get('/continue-watching', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
   const profileId = getProfileId(req);
   const showAdult = req.query.adult === 'true' || req.query.is_adult === 'true';
   const allowAdult = showAdult && isVaultAuthorized(req);
@@ -87,7 +90,8 @@ router.get('/continue-watching', requireAuth, (req, res) => {
 });
 
 // Grouped TV Series catalog
-router.get('/series', requireAuth, (req, res) => {
+router.get('/series', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
   const { search, limit, adult, is_adult } = req.query;
   const showAdult = adult === 'true' || is_adult === 'true';
 
@@ -105,7 +109,8 @@ router.get('/series', requireAuth, (req, res) => {
 });
 
 // Get all seasons and episodes for a series
-router.get('/series/:name/seasons', requireAuth, (req, res) => {
+router.get('/series/:name/seasons', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
   const { adult, is_adult } = req.query;
   const showAdult = adult === 'true' || is_adult === 'true';
 

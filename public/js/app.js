@@ -1619,9 +1619,21 @@ class KodimiApp {
   }
 
   async loadLiveTvData() {
-    if (this.liveChannels.length > 0) {
+    if (this.liveChannels.length > 0 && this.liveCategories.length > 0) {
       this.renderLiveTv();
       return;
+    }
+
+    if (this.livetvEmptyState) {
+      this.livetvEmptyState.style.display = 'none';
+    }
+    if (this.livetvGrid) {
+      this.livetvGrid.innerHTML = `
+        <div style="grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 64px 0; gap: 14px; color: var(--md-sys-color-outline);">
+          <span class="material-symbols-outlined" style="font-size: 38px; color: var(--md-sys-color-primary); animation: spin 1s infinite linear;">progress_activity</span>
+          <span style="font-size: 14px;">Loading live television channels & EPG guide...</span>
+        </div>
+      `;
     }
 
     try {
@@ -1633,6 +1645,7 @@ class KodimiApp {
       this.liveCategories = catsRes.categories || [];
       this.liveCountries = catsRes.countries || [];
       this.liveChannels = channelsRes.channels || channelsRes.items || [];
+      this.liveTotalCount = channelsRes.total ?? catsRes.totalChannels ?? this.liveChannels.length;
       this.renderLiveTv();
     } catch (err) {
       console.error('Failed to load Live TV channels:', err);
@@ -1676,6 +1689,7 @@ class KodimiApp {
 
       const res = await api.getLiveChannels(params);
       this.liveChannels = res.channels || res.items || [];
+      this.liveTotalCount = res.total ?? this.liveChannels.length;
       this.renderLiveTvGrid();
     } catch (err) {
       console.error('Failed to fetch filtered live channels:', err);
@@ -1732,7 +1746,8 @@ class KodimiApp {
     const channels = this.liveChannels;
 
     if (this.livetvTotalBadge) {
-      this.livetvTotalBadge.textContent = `${channels.length} Channels`;
+      const badgeCount = this.liveTotalCount ?? channels.length;
+      this.livetvTotalBadge.textContent = `${badgeCount} Channels`;
     }
 
     if (channels.length === 0) {

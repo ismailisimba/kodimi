@@ -155,11 +155,11 @@ const CURATED_CHANNELS = [
   },
 ];
 
-// In-Memory cache of parsed channels
-let channelCache = [];
-let channelsById = new Map();
+// In-Memory cache of parsed channels (pre-seeded with verified curated channels)
+let channelCache = [...CURATED_CHANNELS];
+let channelsById = new Map(CURATED_CHANNELS.map((c) => [c.id, c]));
 let isInitialized = false;
-let isInitializing = false;
+let initPromise = null;
 let lastRefreshed = null;
 
 // EPG schedule patterns by genre
@@ -263,89 +263,108 @@ const GENRE_SCHEDULE_TEMPLATES = {
 
 /**
  * Initializes and caches IPTV channels from iptv-org playlists.
+ * Uses a shared promise lock so concurrent callers wait for the initial load to complete.
  */
 export async function initIptvService() {
-  if (isInitialized || isInitializing) return;
-  isInitializing = true;
+  if (isInitialized && channelCache.length > CURATED_CHANNELS.length) return;
+  if (initPromise) return initPromise;
 
-  try {
-    console.log('[Live TV] Fetching public channel playlists from iptv-org...');
+  initPromise = (async () => {
+    try {
+      console.log('[Live TV] Fetching public channel playlists from iptv-org...');
 
-    const combinedMap = new Map();
+      // 1. Fetch category playlists in parallel with timeout safety
+      const categoryPromises = CATEGORY_PLAYLISTS.map(async (cat) => {
+        try {
+          const res = await axios.get(cat.url, { timeout: 10000 });
+          return { cat, channels: parseM3u(res.data, cat.name) };
+        } catch (err) {
+          console.warn(`[Live TV] Failed to fetch category ${cat.name}:`, err.message);
+          return { cat, channels: [] };
+        }
+      });
 
-    // 1. Fetch category playlists in parallel with timeout safety
-    const categoryPromises = CATEGORY_PLAYLISTS.map(async (cat) => {
-      try {
-        const res = await axios.get(cat.url, { timeout: 8000 });
-        const channels = parseM3u(res.data, cat.name);
-        channels.forEach((ch) => {
+      // 2. Fetch country playlists (US, UK, CA, AU) in parallel
+      const countryTargets = COUNTRY_PLAYLISTS.filter((c) => c.id !== 'global');
+      const countryPromises = countryTargets.map(async (c) => {
+        try {
+          const res = await axios.get(c.url, { timeout: 10000 });
+          return { country: c, channels: parseM3u(res.data, 'General') };
+        } catch (err) {
+          console.warn(`[Live TV] Failed to fetch country ${c.name}:`, err.message);
+          return { country: c, channels: [] };
+        }
+      });
+
+      const [categoryResults, countryResults] = await Promise.all([
+        Promise.all(categoryPromises),
+        Promise.all(countryPromises),
+      ]);
+
+      const combinedMap = new Map();
+
+      // Merge category playlists first so canonical genre categories are preserved
+      for (const { cat, channels } of categoryResults) {
+        for (const ch of channels) {
           if (!combinedMap.has(ch.id)) {
             combinedMap.set(ch.id, { ...ch, category: cat.name });
           }
-        });
-      } catch (err) {
-        console.warn(`[Live TV] Failed to fetch category ${cat.name}:`, err.message);
-      }
-    });
-
-    // 2. Fetch US and UK curated playlists
-    const countryPromises = COUNTRY_PLAYLISTS.slice(0, 2).map(async (c) => {
-      try {
-        const res = await axios.get(c.url, { timeout: 8000 });
-        const channels = parseM3u(res.data, 'General');
-        channels.forEach((ch) => {
-          if (combinedMap.has(ch.id)) {
-            combinedMap.get(ch.id).country = c.name;
-          } else {
-            combinedMap.set(ch.id, { ...ch, country: c.name });
-          }
-        });
-      } catch (err) {
-        console.warn(`[Live TV] Failed to fetch country ${c.name}:`, err.message);
-      }
-    });
-
-    await Promise.allSettled([...categoryPromises, ...countryPromises]);
-
-    // Prioritize and inject verified curated channels
-    const finalMap = new Map();
-    for (const curated of CURATED_CHANNELS) {
-      finalMap.set(curated.id, curated);
-    }
-
-    // Add remaining channels from playlists, replacing any broken beIN links with curated streams
-    for (const [id, ch] of combinedMap.entries()) {
-      const lowerName = ch.name.toLowerCase();
-      const beinMatch = lowerName.match(/bein\s*sports?\s*([1-9])/i);
-      if (beinMatch) {
-        const num = parseInt(beinMatch[1], 10);
-        const curatedId = `bein-sports-${num}-hd`;
-        if (finalMap.has(curatedId)) {
-          continue; // Already using verified stream
         }
       }
-      if (lowerName.includes('bein') && lowerName.includes('xtra')) {
-        continue; // Already using verified CloudFront stream
+
+      // Merge country playlists and enrich existing channels with country metadata
+      for (const { country, channels } of countryResults) {
+        for (const ch of channels) {
+          if (combinedMap.has(ch.id)) {
+            combinedMap.get(ch.id).country = country.name;
+          } else {
+            combinedMap.set(ch.id, { ...ch, country: country.name });
+          }
+        }
       }
 
-      if (!finalMap.has(id)) {
-        finalMap.set(id, ch);
+      // Prioritize and inject verified curated channels
+      const finalMap = new Map();
+      for (const curated of CURATED_CHANNELS) {
+        finalMap.set(curated.id, curated);
       }
+
+      // Add remaining channels from playlists, replacing any broken beIN links with curated streams
+      for (const [id, ch] of combinedMap.entries()) {
+        const lowerName = ch.name.toLowerCase();
+        const beinMatch = lowerName.match(/bein\s*sports?\s*([1-9])/i);
+        if (beinMatch) {
+          const num = parseInt(beinMatch[1], 10);
+          const curatedId = `bein-sports-${num}-hd`;
+          if (finalMap.has(curatedId)) {
+            continue; // Already using verified stream
+          }
+        }
+        if (lowerName.includes('bein') && lowerName.includes('xtra')) {
+          continue; // Already using verified CloudFront stream
+        }
+
+        if (!finalMap.has(id)) {
+          finalMap.set(id, ch);
+        }
+      }
+
+      // Populate memory cache
+      channelCache = Array.from(finalMap.values());
+      channelsById.clear();
+      channelCache.forEach((c) => channelsById.set(c.id, c));
+
+      lastRefreshed = new Date();
+      isInitialized = channelCache.length > CURATED_CHANNELS.length;
+      console.log(`[Live TV] Successfully loaded and cached ${channelCache.length} live channels with EPG schedules!`);
+    } catch (err) {
+      console.error('[Live TV Init Error]:', err.message);
+    } finally {
+      initPromise = null;
     }
+  })();
 
-    // Populate memory cache
-    channelCache = Array.from(finalMap.values());
-    channelsById.clear();
-    channelCache.forEach((c) => channelsById.set(c.id, c));
-
-    lastRefreshed = new Date();
-    isInitialized = true;
-    console.log(`[Live TV] Successfully loaded and cached ${channelCache.length} live channels with EPG schedules!`);
-  } catch (err) {
-    console.error('[Live TV Init Error]:', err.message);
-  } finally {
-    isInitializing = false;
-  }
+  return initPromise;
 }
 
 /**
@@ -395,6 +414,13 @@ function parseM3u(content, fallbackCategory = 'Entertainment') {
         }
 
         const id = slugify(tvgId || cleanName);
+        const lowerTvg = tvgId.toLowerCase();
+        let country = 'Global';
+        if (lowerTvg.includes('.us')) country = 'United States';
+        else if (lowerTvg.includes('.uk') || lowerTvg.includes('.gb')) country = 'United Kingdom';
+        else if (lowerTvg.includes('.ca')) country = 'Canada';
+        else if (lowerTvg.includes('.au')) country = 'Australia';
+
         channels.push({
           id,
           name: cleanName,
@@ -404,7 +430,7 @@ function parseM3u(content, fallbackCategory = 'Entertainment') {
           resolution,
           streamUrl,
           tvgId,
-          country: tvgId.includes('.us') ? 'United States' : tvgId.includes('.uk') ? 'United Kingdom' : 'Global',
+          country,
         });
       }
     }
@@ -508,6 +534,33 @@ export function getChannelEpg(channel, targetDate = new Date()) {
 }
 
 /**
+ * Helper to match a channel's country against either a country ID ('us', 'uk', 'ca', 'au', 'global')
+ * or full country name ('United States', 'United Kingdom', 'Canada', 'Australia', 'English (Global)').
+ */
+function matchesCountryFilter(channel, countryQuery) {
+  if (!countryQuery || countryQuery === 'all') return true;
+  const q = countryQuery.toLowerCase().trim();
+  const chCountry = (channel.country || 'Global').toLowerCase();
+
+  if (q === 'us' || q === 'united states') {
+    return chCountry === 'united states';
+  }
+  if (q === 'uk' || q === 'gb' || q === 'united kingdom') {
+    return chCountry === 'united kingdom';
+  }
+  if (q === 'ca' || q === 'canada') {
+    return chCountry === 'canada';
+  }
+  if (q === 'au' || q === 'australia') {
+    return chCountry === 'australia';
+  }
+  if (q === 'global' || q.includes('global') || q === 'eng') {
+    return chCountry === 'global';
+  }
+  return chCountry.includes(q);
+}
+
+/**
  * Retrieves paginated channels with enriched real-time EPG data.
  */
 export async function getChannels(options = {}) {
@@ -565,8 +618,7 @@ export async function getChannels(options = {}) {
   }
 
   if (country && country !== 'all') {
-    const qCountry = country.toLowerCase();
-    list = list.filter((c) => c.country.toLowerCase().includes(qCountry));
+    list = list.filter((c) => matchesCountryFilter(c, country));
   }
 
   if (search) {
@@ -633,7 +685,7 @@ export async function getCategories() {
     id: cp.id,
     name: cp.name,
     flag: cp.flag,
-    count: channelCache.filter((c) => c.country.toLowerCase().includes(cp.name.toLowerCase())).length,
+    count: channelCache.filter((c) => matchesCountryFilter(c, cp.id)).length,
   }));
 
   return {

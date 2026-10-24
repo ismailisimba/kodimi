@@ -7,6 +7,7 @@ import config from './config/env.js';
 import { mediaDB, initDatabase } from './db/database.js';
 import { scanAndIndexBucket } from './services/scanner.js';
 import { initDownloader } from './services/downloader.js';
+import { initIptvService } from './services/iptvService.js';
 
 import authRoutes from './routes/auth.js';
 import mediaRoutes from './routes/media.js';
@@ -72,6 +73,11 @@ async function start() {
       console.log('👷 Mode: Dedicated On-Demand Torrent Downloader Worker');
     }
     console.log('==============================================');
+
+    // Warm up Live TV channel cache in the background for streaming instances
+    if (!config.isWorker) {
+      initIptvService().catch((err) => console.warn('[Live TV Startup Warning]:', err.message));
+    }
 
     // Initial auto-sync of bucket if catalog is empty or on startup
     const existingItems = mediaDB.getAll({ limit: 1 });

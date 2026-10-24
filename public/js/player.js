@@ -390,7 +390,10 @@ class KodimiPlayer {
 
   togglePlay() {
     if (this.video.paused) {
-      this.video.play();
+      const p = this.video.play();
+      if (p !== undefined) {
+        p.catch(() => {});
+      }
     } else {
       this.video.pause();
     }
@@ -643,6 +646,7 @@ class KodimiPlayer {
     this.video.load();
     this.video.play().catch((err) => {
       console.warn('[Live Transcode Play Warning]:', err.message);
+      this.showLoader('Live stream temporarily unavailable');
     });
   }
 

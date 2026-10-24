@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=22';
-import KodimiPlayer from './player.js?v=22';
+import { api, authState, vaultState, profileState } from './api.js?v=25';
+import KodimiPlayer from './player.js?v=25';
 import {
   renderHeroBanner,
   renderMediaCard,

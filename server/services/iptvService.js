@@ -33,112 +33,13 @@ const COUNTRY_PLAYLISTS = [
 // Verified high-definition live channels with resilient, working streams
 const CURATED_CHANNELS = [
   {
-    id: 'bein-sports-1-hd',
-    name: 'beIN Sports 1 HD',
-    fullName: 'beIN Sports 1 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd11/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports1.qa',
-  },
-  {
-    id: 'bein-sports-2-hd',
-    name: 'beIN Sports 2 HD',
-    fullName: 'beIN Sports 2 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd22/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports2.qa',
-  },
-  {
-    id: 'bein-sports-3-hd',
-    name: 'beIN Sports 3 HD',
-    fullName: 'beIN Sports 3 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd33/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports3.qa',
-  },
-  {
-    id: 'bein-sports-4-hd',
-    name: 'beIN Sports 4 HD',
-    fullName: 'beIN Sports 4 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd44/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports4.qa',
-  },
-  {
-    id: 'bein-sports-5-hd',
-    name: 'beIN Sports 5 HD',
-    fullName: 'beIN Sports 5 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd55/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports5.qa',
-  },
-  {
-    id: 'bein-sports-6-hd',
-    name: 'beIN Sports 6 HD',
-    fullName: 'beIN Sports 6 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd66/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports6.qa',
-  },
-  {
-    id: 'bein-sports-7-hd',
-    name: 'beIN Sports 7 HD',
-    fullName: 'beIN Sports 7 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd77/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports7.qa',
-  },
-  {
-    id: 'bein-sports-8-hd',
-    name: 'beIN Sports 8 HD',
-    fullName: 'beIN Sports 8 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd88/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports8.qa',
-  },
-  {
-    id: 'bein-sports-9-hd',
-    name: 'beIN Sports 9 HD',
-    fullName: 'beIN Sports 9 HD (1080p)',
-    category: 'Sports',
-    resolution: '1080P',
-    streamUrl: 'http://primetv.cc.cd/beinfhd99/tracks-v1a1/mono.tbin.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
-    country: 'Global',
-    tvgId: 'beINSports9.qa',
-  },
-  {
     id: 'bein-sports-xtra',
-    name: 'beIN SPORTS XTRA',
+    name: 'beIN SPORTS XTRA HD',
     fullName: 'beIN SPORTS XTRA (1080p)',
     category: 'Sports',
     resolution: '1080P',
     streamUrl: 'https://d9ssxzmclhfo4.cloudfront.net/bein_sports.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    logo: 'https://placehold.co/120x120/5c2d91/white?text=beIN',
     country: 'United States',
     tvgId: 'beINSPORTSXTRA.us',
   },
@@ -149,9 +50,130 @@ const CURATED_CHANNELS = [
     category: 'Sports',
     resolution: '1080P',
     streamUrl: 'https://dc1644a9jazgj.cloudfront.net/beIN_Sports_Xtra_Espanol.m3u8',
-    logo: 'https://i.imgur.com/kS5Wd3v.png',
+    logo: 'https://placehold.co/120x120/5c2d91/white?text=beIN',
     country: 'United States',
     tvgId: 'beINSPORTSXTRAenEspanol.us',
+  },
+  {
+    id: 'espn-hd-us',
+    name: 'ESPN HD',
+    fullName: 'ESPN (United States) HD (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'http://85.237.89.160:9590/usa-s/ESPN-HD/index.m3u8',
+    logo: 'https://placehold.co/120x120/d00000/white?text=ESPN',
+    country: 'United States',
+    tvgId: 'ESPN.us',
+  },
+  {
+    id: 'espn-2-hd-us',
+    name: 'ESPN 2 HD',
+    fullName: 'ESPN 2 (United States) HD (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'http://85.237.89.160:9590/usa-s/ESPN-2-HD/index.m3u8',
+    logo: 'https://placehold.co/120x120/d00000/white?text=ESPN2',
+    country: 'United States',
+    tvgId: 'ESPN2.us',
+  },
+  {
+    id: 'espnu-hd-us',
+    name: 'ESPNU HD',
+    fullName: 'ESPNU HD (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'http://85.237.89.160:9590/usa-s/ESPN-U-HD/index.m3u8',
+    logo: 'https://placehold.co/120x120/d00000/white?text=ESPNU',
+    country: 'United States',
+    tvgId: 'ESPNU.us',
+  },
+  {
+    id: 'espn8-the-ocho',
+    name: 'ESPN8: The Ocho',
+    fullName: 'ESPN8: The Ocho (1080p)',
+    category: 'Sports',
+    resolution: '1080P',
+    streamUrl: 'https://d3b6q2ou5kp8ke.cloudfront.net/ESPNTheOcho.m3u8',
+    logo: 'https://placehold.co/120x120/d00000/white?text=OCHO',
+    country: 'United States',
+    tvgId: 'ESPN8TheOcho.us',
+  },
+  {
+    id: 'fox-sports-1-hd',
+    name: 'Fox Sports 1 HD',
+    fullName: 'Fox Sports 1 (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'http://85.237.89.160:9590/usa-s/FOX-SPORTS-1/index.m3u8',
+    logo: 'https://placehold.co/120x120/002868/white?text=FS1',
+    country: 'United States',
+    tvgId: 'FoxSports1.us',
+  },
+  {
+    id: 'fox-sports-2-hd',
+    name: 'Fox Sports 2 HD',
+    fullName: 'Fox Sports 2 (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'https://tvsen7.aynascope.net/foxsports2/index.m3u8',
+    logo: 'https://placehold.co/120x120/002868/white?text=FS2',
+    country: 'United States',
+    tvgId: 'FoxSports2.us',
+  },
+  {
+    id: 'eurosport-hd',
+    name: 'Eurosport HD',
+    fullName: 'Eurosport (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'https://drk6xq0vhn.gpcdn.net/live/euro_sports_hd_abr/index.m3u8',
+    logo: 'https://placehold.co/120x120/001a4d/white?text=EURO',
+    country: 'Global',
+    tvgId: 'Eurosport1.fr',
+  },
+  {
+    id: 'real-madrid-tv-hd',
+    name: 'Real Madrid TV HD',
+    fullName: 'Real Madrid TV (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'https://rmtv.akamaized.net/hls/live/2043153/rmtv-es-web/master.m3u8',
+    logo: 'https://placehold.co/120x120/1a3151/white?text=RMTV',
+    country: 'Global',
+    tvgId: 'RealMadridTV.es',
+  },
+  {
+    id: 'nba-tv-hd',
+    name: 'NBA TV HD',
+    fullName: 'NBA TV (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'http://23.237.104.106:8080/USA_NBA/index.m3u8',
+    logo: 'https://placehold.co/120x120/1d428a/white?text=NBA',
+    country: 'United States',
+    tvgId: 'NBATV.us',
+  },
+  {
+    id: 'nfl-network-hd',
+    name: 'NFL Network HD',
+    fullName: 'NFL Network (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'http://198.58.104.90:8989/nfl/index.m3u8',
+    logo: 'https://placehold.co/120x120/013369/white?text=NFL',
+    country: 'United States',
+    tvgId: 'NFLNetwork.us',
+  },
+  {
+    id: 'fifa-plus-live',
+    name: 'FIFA+ Live HD',
+    fullName: 'FIFA+ United States (720p)',
+    category: 'Sports',
+    resolution: '720P',
+    streamUrl: 'https://d2w9q46ikgrcwx.cloudfront.net/v1/master/3722c60a815c199d9c0ef36c5b73da68a62b09d1/cc-of5cbk3sav3w5/v1/sysdata_s_p_a_fifa_7/samsungheadend_us/latest/main/hls/playlist.m3u8',
+    logo: 'https://placehold.co/120x120/00529b/white?text=FIFA+',
+    country: 'United States',
+    tvgId: 'FIFAPlus.us',
   },
 ];
 
@@ -406,6 +428,12 @@ function parseM3u(content, fallbackCategory = 'Entertainment') {
       }
 
       if (cleanName && streamUrl && (streamUrl.startsWith('http://') || streamUrl.startsWith('https://'))) {
+        // Exclude known dead/Cloudflare-blocked stream hosts
+        const lowerUrl = streamUrl.toLowerCase();
+        if (lowerUrl.includes('primetv.cc.cd') || lowerUrl.includes('andro.mangeinde4.lat')) {
+          continue;
+        }
+
         // Exclude adult channels from public Live TV
         const lowerCat = category.toLowerCase();
         const lowerName = cleanName.toLowerCase();
@@ -421,11 +449,15 @@ function parseM3u(content, fallbackCategory = 'Entertainment') {
         else if (lowerTvg.includes('.ca')) country = 'Canada';
         else if (lowerTvg.includes('.au')) country = 'Australia';
 
+        const safeLogo = (logo && !logo.includes('paste.pics'))
+          ? logo
+          : `https://placehold.co/120x120/1e1e1e/white?text=${encodeURIComponent(cleanName.slice(0, 4))}`;
+
         channels.push({
           id,
           name: cleanName,
           fullName: rawTitle,
-          logo: logo || `https://placehold.co/120x120/1e1e1e/white?text=${encodeURIComponent(cleanName.slice(0, 4))}`,
+          logo: safeLogo,
           category,
           resolution,
           streamUrl,
@@ -849,13 +881,6 @@ export async function transcodeLiveStream(streamUrl, quality = '480p', req, res)
 
   const profile = PROFILES[quality] || PROFILES['480p'];
 
-  res.writeHead(200, {
-    'Content-Type': 'video/mp4',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-  });
-
   const command = ffmpeg(streamUrl)
     .inputOptions([
       '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\r\n',
@@ -871,17 +896,22 @@ export async function transcodeLiveStream(streamUrl, quality = '480p', req, res)
       '-vf', `scale=-2:${profile.height}`,
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
+      '-g', '48',
+      '-keyint_min', '24',
+      '-sc_threshold', '0',
+      '-pix_fmt', 'yuv420p',
       '-b:v', profile.videoBitrate,
       '-c:a', 'aac',
       '-b:a', profile.audioBitrate,
       '-ar', '48000',
       '-ac', '2',
       '-threads', '1',
+      '-max_muxing_queue_size', '1024',
       '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
       '-flush_packets', '1',
     ]);
 
-  command.on('start', (cmdline) => {
+  command.on('start', () => {
     console.log(`[Live Transcode Started (${quality})]: ${streamUrl}`);
   });
 
@@ -897,7 +927,9 @@ export async function transcodeLiveStream(streamUrl, quality = '480p', req, res)
     }
     console.warn(`[Live Transcode Error]: ${err.message}`);
     if (!res.headersSent) {
-      res.status(500).end();
+      res.status(502).json({ error: 'Live stream offline or unreachable for transcoding' });
+    } else {
+      res.end();
     }
   });
 
@@ -909,7 +941,28 @@ export async function transcodeLiveStream(streamUrl, quality = '480p', req, res)
     } catch (_) {}
   });
 
-  command.pipe(res, { end: true });
+  const ffStream = command.pipe();
+  let headerWritten = false;
+  ffStream.on('data', (chunk) => {
+    if (!headerWritten && !res.headersSent) {
+      headerWritten = true;
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+    }
+    res.write(chunk);
+  });
+
+  ffStream.on('end', () => {
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'Live stream produced no output' });
+    } else {
+      res.end();
+    }
+  });
 }
 
 function slugify(text) {

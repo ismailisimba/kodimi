@@ -653,7 +653,7 @@ export async function getOrProbeDuration(mediaId, gcsPath) {
     });
 
     if (duration > 0 && existing) {
-      mediaDB.upsert({
+      await mediaDB.upsert({
         ...existing,
         duration,
       });

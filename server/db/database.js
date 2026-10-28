@@ -360,23 +360,27 @@ export const mediaDB = {
     // Update in-memory cache immediately
     mediaCache.set(item.id, docData);
 
-    // Persist to MongoDB
-    try {
-      await MediaModel.findOneAndUpdate(
-        { gcs_path: item.gcs_path },
-        { $set: docData },
-        { upsert: true, returnDocument: 'after' }
-      );
-    } catch (err) {
-      console.error('[DB Upsert Error]:', err.message);
+    // Persist to MongoDB when connected
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await MediaModel.findOneAndUpdate(
+          { gcs_path: item.gcs_path },
+          { $set: docData },
+          { upsert: true, returnDocument: 'after' }
+        );
+      } catch (err) {
+        console.error('[DB Upsert Error]:', err.message);
+      }
     }
 
     return docData;
   },
 
-  delete: (id) => {
+  delete: async (id) => {
     mediaCache.delete(id);
-    MediaModel.deleteOne({ id }).catch((err) => console.error('[DB Delete Error]:', err.message));
+    if (mongoose.connection.readyState === 1) {
+      await MediaModel.deleteOne({ id }).catch((err) => console.error('[DB Delete Error]:', err.message));
+    }
   },
 
   getCanonicalSeriesName: (name) => {

@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=25';
-import KodimiPlayer from './player.js?v=25';
+import { api, authState, vaultState, profileState } from './api.js?v=26';
+import KodimiPlayer from './player.js?v=26';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -132,6 +132,8 @@ class KodimiApp {
     this.detailGcsPath = document.getElementById('detail-gcs-path');
     this.detailPlayBtn = document.getElementById('detail-play-btn');
     this.detailRetagBtn = document.getElementById('detail-retag-btn');
+    this.detailSubtitleBtn = document.getElementById('detail-subtitle-btn');
+    this.detailSubtitleBtnText = document.getElementById('detail-subtitle-btn-text');
     this.detailDeleteBtn = document.getElementById('detail-delete-btn');
     this.detailVaultBtn = document.getElementById('detail-vault-btn');
     this.detailVaultIcon = document.getElementById('detail-vault-icon');
@@ -316,6 +318,41 @@ class KodimiApp {
 
     this.detailRetagBtn.addEventListener('click', () => this.handleRetagMedia());
     this.detailDeleteBtn.addEventListener('click', () => this.handleDeleteMedia());
+
+    if (this.detailSubtitleBtn) {
+      const detailSubInput = document.createElement('input');
+      detailSubInput.type = 'file';
+      detailSubInput.accept = '.srt,.vtt,.ass,.ssa';
+      detailSubInput.style.display = 'none';
+      document.body.appendChild(detailSubInput);
+
+      this.detailSubtitleBtn.addEventListener('click', () => {
+        if (!this.activeMedia) return;
+        detailSubInput.click();
+      });
+
+      detailSubInput.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0];
+        detailSubInput.value = '';
+        if (!file || !this.activeMedia) return;
+
+        try {
+          this.detailSubtitleBtn.disabled = true;
+          if (this.detailSubtitleBtnText) this.detailSubtitleBtnText.textContent = 'Uploading to GCS...';
+          const res = await this.player.handleManualSubtitleFile(file, this.activeMedia);
+          if (res && res.success) {
+            if (this.detailSubtitleBtnText) this.detailSubtitleBtnText.textContent = '✓ Subtitle Saved!';
+            setTimeout(() => {
+              if (this.detailSubtitleBtnText) this.detailSubtitleBtnText.textContent = 'Add Subtitle';
+            }, 2500);
+          } else if (this.detailSubtitleBtnText) {
+            this.detailSubtitleBtnText.textContent = 'Add Subtitle';
+          }
+        } finally {
+          this.detailSubtitleBtn.disabled = false;
+        }
+      });
+    }
 
     if (this.detailVaultBtn) {
       this.detailVaultBtn.addEventListener('click', async () => {

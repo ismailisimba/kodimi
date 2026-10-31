@@ -18,6 +18,18 @@ const __dirname = path.dirname(__filename);
 // Mongoose Schemas & Models
 // ==========================================
 
+const CustomSubtitleSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    label: { type: String, required: true },
+    language: { type: String, default: 'und' },
+    gcs_path: { type: String, required: true },
+    format: { type: String, default: 'vtt' },
+    created_at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const MediaSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   gcs_path: { type: String, required: true, unique: true, index: true },
@@ -35,9 +47,11 @@ const MediaSchema = new mongoose.Schema({
   backdrop_url: String,
   duration: { type: Number, default: 0 },
   size_bytes: { type: Number, default: 0 },
+  bitrate_kbps: { type: Number, default: 0 },
   resolution: String,
   video_codec: String,
   audio_codec: String,
+  custom_subtitles: { type: [CustomSubtitleSchema], default: [] },
   is_adult: { type: Boolean, default: false },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
@@ -352,7 +366,13 @@ export const mediaDB = {
       : (heuristicCheck.is_adult ? true : Boolean(item.is_adult));
 
     const docData = {
+      ...(existing || {}),
       ...item,
+      duration: item.duration > 0 ? item.duration : (existing?.duration || 0),
+      bitrate_kbps: item.bitrate_kbps > 0 ? item.bitrate_kbps : (existing?.bitrate_kbps || 0),
+      custom_subtitles: Array.isArray(item.custom_subtitles)
+        ? item.custom_subtitles
+        : (existing?.custom_subtitles || []),
       is_adult: enforcedAdult,
       updated_at: new Date(),
     };

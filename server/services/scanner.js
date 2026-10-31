@@ -33,8 +33,9 @@ export async function scanAndIndexBucket() {
     console.log('[Scanner] Fetching files from GCS bucket...');
     const allFiles = await listFiles();
     
-    // Filter video files
+    // Filter video files (excluding hidden system prefixes like .thumbnails/ and .subtitles/)
     const videoFiles = allFiles.filter((f) => {
+      if (f.name.startsWith('.')) return false;
       const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase();
       return VIDEO_EXTENSIONS.has(ext);
     });

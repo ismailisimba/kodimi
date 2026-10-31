@@ -933,13 +933,15 @@ export async function transcodeLiveStream(streamUrl, quality = '480p', req, res)
     }
   });
 
-  // Budget safeguard: instantly kill ffmpeg when client disconnects or switches
-  req.on('close', () => {
+  // Budget safeguard: instantly kill ffmpeg when client disconnects or switches (use res.on('close') for Node 22 GET compatibility)
+  const killLiveTranscode = () => {
     try {
       command.kill('SIGKILL');
       console.log(`[Live Transcode Terminated]: Client socket closed.`);
     } catch (_) {}
-  });
+  };
+  res.on('close', killLiveTranscode);
+  res.on('error', killLiveTranscode);
 
   const ffStream = command.pipe();
   let headerWritten = false;

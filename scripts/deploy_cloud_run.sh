@@ -16,8 +16,11 @@ gcloud run deploy "$SERVICE_NAME" \
   --region "$REGION" \
   --platform managed \
   --allow-unauthenticated \
-  --memory 4Gi \
+  --memory 2Gi \
   --cpu 2 \
+  --min-instances 0 \
+  --max-instances 6 \
+  --concurrency 80 \
   --timeout 3600 \
   --set-env-vars "NODE_ENV=production,GCS_BUCKET_NAME=$BUCKET_NAME,GCP_PROJECT_ID=$PROJECT_ID" \
   --set-secrets "ADMIN_PASSWORD=KODIMI_ADMIN_PASSWORD:latest,PRIVATE_PIN=KODIMI_PRIVATE_PIN:latest,MONGO_URI=KODIMI_MONGO_URI:latest,GEMINI_API_KEY=KODIMI_GEMINI_API_KEY:latest,JWT_SECRET=KODIMI_JWT_SECRET:latest"

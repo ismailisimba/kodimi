@@ -178,27 +178,47 @@ export const api = {
       body: JSON.stringify({ mediaId, currentTime, duration, completed }),
     }),
 
-  // Stream URL Generator with auth token & vault pin
-  getStreamUrl: (id, quality = 'original', time = 0) => {
+  // Stream URL Generator with auth token, vault pin, codec negotiation & session ID
+  getStreamUrl: (id, quality = 'original', time = 0, opts = {}) => {
     const token = authState.getToken();
     const pin = vaultState.getPin();
     const pinParam = pin ? `&pin=${encodeURIComponent(pin)}` : '';
+    const sidParam = opts.sid ? `&sid=${encodeURIComponent(opts.sid)}` : '';
+    const codecParam = opts.codec ? `&codec=${encodeURIComponent(opts.codec)}` : '';
+    const capParam = `${opts.av1 ? '&av1=1' : ''}${opts.hevc ? '&hevc=1' : ''}`;
+    const roundedTime = Math.max(0, Number(time || 0)).toFixed(2);
+
     if (quality === 'direct') {
-      return `${API_BASE}/stream/${id}?direct=true&time=${time}&token=${token}${pinParam}`;
+      return `${API_BASE}/stream/${id}?direct=true&time=${roundedTime}&token=${token}${pinParam}${sidParam}`;
     }
     if (quality === 'original') {
-      return `${API_BASE}/stream/${id}?time=${time}&token=${token}${pinParam}`;
+      return `${API_BASE}/stream/${id}?time=${roundedTime}&token=${token}${pinParam}${sidParam}`;
     }
-    return `${API_BASE}/stream/${id}/transcode?quality=${quality}&time=${time}&token=${token}${pinParam}`;
+    return `${API_BASE}/stream/${id}/transcode?quality=${encodeURIComponent(quality)}&time=${roundedTime}${codecParam}${capParam}${sidParam}&token=${token}${pinParam}`;
   },
 
-  // Subtitle URL Generator
-  getSubtitleUrl: (id, track = 0) => {
+  // Subtitle URL Generator (v=2 invalidates any legacy truncated WebVTT browser caches)
+  getSubtitleUrl: (id, trackOrOptions = 0) => {
     const token = authState.getToken();
     const pin = vaultState.getPin();
     const pinParam = pin ? `&pin=${encodeURIComponent(pin)}` : '';
-    return `${API_BASE}/stream/${id}/subtitles?track=${track}&token=${token}${pinParam}`;
+    if (trackOrOptions && typeof trackOrOptions === 'object' && trackOrOptions.customId) {
+      return `${API_BASE}/stream/${id}/subtitles?customId=${encodeURIComponent(trackOrOptions.customId)}&v=2&token=${token}${pinParam}`;
+    }
+    const trackIdx = typeof trackOrOptions === 'object' ? (trackOrOptions.trackIndex ?? 0) : trackOrOptions;
+    return `${API_BASE}/stream/${id}/subtitles?track=${trackIdx}&v=2&token=${token}${pinParam}`;
   },
+
+  uploadCustomSubtitle: (id, { filename, label, language, content }) =>
+    request(`/stream/${id}/subtitles/custom`, {
+      method: 'POST',
+      body: JSON.stringify({ filename, label, language, content }),
+    }),
+
+  deleteCustomSubtitle: (id, subId) =>
+    request(`/stream/${id}/subtitles/custom/${encodeURIComponent(subId)}`, {
+      method: 'DELETE',
+    }),
 
   // Series & Seasons
   getSeries: (params = {}) => {

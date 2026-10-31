@@ -21,7 +21,7 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 
   <!-- Custom Material Design Stylesheet -->
-  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/style.css?v=26" />
 </head>
 <body>
 
@@ -273,7 +273,7 @@
           <span class="material-symbols-outlined">close</span>
         </button>
 
-        <div style="position: absolute; bottom: 20px; left: 24px; display: flex; align-items: center; gap: 12px;">
+        <div style="position: absolute; bottom: 20px; left: 24px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
           <button class="btn-filled" id="detail-play-btn">
             <span class="material-symbols-outlined fill">play_arrow</span>
             <span>Play Now</span>
@@ -281,6 +281,10 @@
           <button class="btn-tonal" id="detail-retag-btn">
             <span class="material-symbols-outlined">auto_awesome</span>
             <span>Re-tag with AI</span>
+          </button>
+          <button class="btn-tonal" id="detail-subtitle-btn" title="Upload .srt, .vtt, or .ass subtitle to GCS">
+            <span class="material-symbols-outlined">closed_caption_add</span>
+            <span id="detail-subtitle-btn-text">Add Subtitle</span>
           </button>
           <button class="btn-tonal" id="detail-vault-btn">
             <span class="material-symbols-outlined" id="detail-vault-icon">lock</span>
@@ -605,17 +609,32 @@
             <button class="icon-btn" id="player-subtitles-btn" title="Subtitles (C)">
               <span class="material-symbols-outlined" id="player-subtitles-icon">subtitles</span>
             </button>
-            <div class="quality-dropdown" id="player-subtitles-menu" style="min-width: 200px; max-height: 280px; overflow-y: auto;">
+            <div class="quality-dropdown" id="player-subtitles-menu" style="min-width: 256px; max-height: 380px; overflow-y: auto;">
               <div style="padding: 6px 16px; font-size: 11px; font-weight: 700; color: var(--md-sys-color-outline); text-transform: uppercase;">
                 Subtitle Tracks
               </div>
               <div id="player-subtitles-options">
-                <button class="quality-option active" data-track="-1">
+                <button class="quality-option active" data-track-id="off">
                   <span>Off</span>
                   <span class="material-symbols-outlined" style="font-size: 16px;">check</span>
                 </button>
               </div>
+              <div class="subtitle-menu-footer">
+                <div class="subtitle-offset-row">
+                  <span class="subtitle-offset-label">Timing</span>
+                  <div class="subtitle-offset-controls">
+                    <button type="button" class="subtitle-mini-btn" id="player-sub-offset-minus" title="Earlier (-0.5s)">-0.5s</button>
+                    <button type="button" class="subtitle-mini-btn" id="player-sub-offset-reset" title="Reset timing">0.0s</button>
+                    <button type="button" class="subtitle-mini-btn" id="player-sub-offset-plus" title="Later (+0.5s)">+0.5s</button>
+                  </div>
+                </div>
+                <button type="button" class="subtitle-upload-btn" id="player-subtitle-upload-btn">
+                  <span class="material-symbols-outlined" style="font-size: 16px;">upload_file</span>
+                  <span id="player-subtitle-upload-text">Upload .SRT / .VTT / .ASS</span>
+                </button>
+              </div>
             </div>
+            <input type="file" id="player-subtitle-file-input" accept=".srt,.vtt,.ass,.ssa" style="display: none;" />
           </div>
 
           <!-- Quality Dropdown Button -->
@@ -692,6 +711,6 @@
   </nav>
 
   <!-- Application Entrypoint Module -->
-  <script type="module" src="/js/app.js?v=25"></script>
+  <script type="module" src="/js/app.js?v=26"></script>
 </body>
 </html>

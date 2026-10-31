@@ -925,6 +925,114 @@ body {
   font-weight: 700;
 }
 
+.subtitle-track-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.subtitle-track-row .quality-option {
+  flex: 1;
+  min-width: 0;
+}
+
+.subtitle-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--md-sys-color-outline);
+  padding: 6px 10px 6px 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.subtitle-delete-btn:hover {
+  color: #ff5252;
+}
+
+.subtitle-menu-footer,
+.codec-menu-footer {
+  margin-top: 6px;
+  padding: 8px 12px 4px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subtitle-offset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.subtitle-offset-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--md-sys-color-outline);
+  text-transform: uppercase;
+}
+
+.subtitle-offset-controls,
+.codec-pill-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.subtitle-mini-btn,
+.codec-pill-btn {
+  background-color: var(--md-sys-color-surface-container);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--md-sys-color-on-surface);
+  border-radius: var(--md-shape-corner-s);
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.subtitle-mini-btn:hover,
+.codec-pill-btn:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.codec-pill-btn.active {
+  background-color: rgba(229, 9, 20, 0.18);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-primary);
+}
+
+.codec-pill-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.subtitle-upload-btn {
+  width: 100%;
+  background-color: rgba(229, 9, 20, 0.14);
+  border: 1px dashed rgba(229, 9, 20, 0.5);
+  color: #ffffff;
+  border-radius: var(--md-shape-corner-s);
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.subtitle-upload-btn:hover {
+  background-color: rgba(229, 9, 20, 0.26);
+}
+
 /* Material Video Player Loading Spinner */
 .player-loader {
   position: absolute;

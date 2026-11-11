@@ -3,7 +3,7 @@
  * Enhanced with AV1/HEVC Low-Bandwidth Codec Negotiation, Smart 1080p-Low,
  * Debounced Zero-429 Seeking, and Persistent GCS Manual Subtitles (.SRT / .VTT / .ASS)
  */
-import { api } from './api.js?v=26';
+import { api } from './api.js?v=27';
 
 /**
  * Parses WebVTT (.vtt), SubRip (.srt), or SubStation Alpha (.ass / .ssa) text into sorted cues:
@@ -94,7 +94,8 @@ export function parseSubtitleText(rawText, filename = '') {
       }
     }
 
-    cues.sort((a, b) => a.start - b.start);
+    cues.sort((a, b) => a.start - b.start || a.end - b.end);
+    indexCuePrefixMaxEnd(cues);
     return cues;
   }
 
@@ -134,7 +135,213 @@ export function parseSubtitleText(rawText, filename = '') {
     }
   }
 
+  cues.sort((a, b) => a.start - b.start || a.end - b.end);
+  indexCuePrefixMaxEnd(cues);
   return cues;
+}
+
+function indexCuePrefixMaxEnd(cues) {
+  if (!Array.isArray(cues)) return [];
+  const maxEnds = new Array(cues.length);
+  let runningMax = -Infinity;
+  for (let i = 0; i < cues.length; i++) {
+    if (cues[i].end > runningMax) runningMax = cues[i].end;
+    maxEnds[i] = runningMax;
+  }
+  Object.defineProperty(cues, '_prefixMaxEnd', {
+    value: maxEnds,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+  return maxEnds;
+}
+
+/**
+ * O(log N) binary-search subtitle lookup supporting arbitrary overlapping dialogue cues.
+ */
+export function findActiveSubtitleCues(cues, timeSec) {
+  if (!Array.isArray(cues) || cues.length === 0 || !Number.isFinite(timeSec)) {
+    return [];
+  }
+
+  const maxEnds = cues._prefixMaxEnd && cues._prefixMaxEnd.length === cues.length
+    ? cues._prefixMaxEnd
+    : indexCuePrefixMaxEnd(cues);
+
+  // Upper-bound binary search: last cue index with start <= timeSec
+  let lo = 0;
+  let hi = cues.length - 1;
+  let upperIdx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    if (cues[mid].start <= timeSec) {
+      upperIdx = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  if (upperIdx === -1) return [];
+
+  const matched = [];
+  for (let idx = upperIdx; idx >= 0; idx--) {
+    if (maxEnds[idx] < timeSec) break;
+    const c = cues[idx];
+    if (timeSec >= c.start && timeSec <= c.end) {
+      matched.push(c);
+    }
+  }
+
+  if (matched.length > 1) matched.reverse();
+  return matched;
+}
+
+function formatVttTimestamp(totalSeconds) {
+  const clamped = Math.max(0, Number(totalSeconds) || 0);
+  const totalMs = Math.round(clamped * 1000);
+  const h = Math.floor(totalMs / 3600000);
+  const m = Math.floor((totalMs % 3600000) / 60000);
+  const s = Math.floor((totalMs % 60000) / 1000);
+  const ms = totalMs % 1000;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+}
+
+/**
+ * Builds a shifted WebVTT document for attaching to a native <track> element
+ * (accounting for server-side remux/transcode seek offsets and manual subtitle timing offset).
+ */
+export function buildShiftedWebVtt(cues, shiftSec = 0) {
+  let out = 'WEBVTT\n\n';
+  if (!Array.isArray(cues) || cues.length === 0) return out;
+
+  for (let i = 0; i < cues.length; i++) {
+    const c = cues[i];
+    const start = c.start + shiftSec;
+    const end = c.end + shiftSec;
+    if (end <= 0.02) continue;
+    const clampedStart = Math.max(0, start);
+    if (end <= clampedStart) continue;
+    out += `${formatVttTimestamp(clampedStart)} --> ${formatVttTimestamp(end)}\n${c.text}\n\n`;
+  }
+  return out;
+}
+
+export function isSmartTvUserAgent(ua = '') {
+  if (!ua || typeof ua !== 'string') return false;
+  return /\b(VIDAA|Hisense|SmartTV|SMART-TV|Tizen|Web0S|WebOS|NetCast|HbbTV|Viera|Bravia|AFT[A-Z0-9]+|CrKey)\b/i.test(ua);
+}
+
+export function canDirectPlayNativeMp4(media) {
+  if (!media) return false;
+  const pathStr = String(media.gcs_path || media.filename || '').toLowerCase();
+  if (!pathStr.endsWith('.mp4') && !pathStr.endsWith('.m4v')) return false;
+  const vCodec = String(media.video_codec || '').toLowerCase();
+  const aCodec = String(media.audio_codec || '').toLowerCase();
+  const isNativeVideo = !vCodec || /^(h264|x264|avc1)$/i.test(vCodec);
+  const isNativeAudio = /^(aac|mp4a|mp3)$/i.test(aCodec);
+  return isNativeVideo && isNativeAudio;
+}
+
+/**
+ * Hybrid Monotonic Playback Clock for Smart TV resilience (Hisense VIDAA / Tizen / webOS).
+ * Tracks `video.currentTime` natively whenever it advances, and smoothly extrapolates via
+ * wall-clock `Date.now()` if the TV's hardware overlay freezes `video.currentTime` (>900ms)
+ * on progressive `empty_moov` fMP4 streams while audio/video playback continues.
+ */
+export class HybridPlaybackClock {
+  constructor(nowFn = () => Date.now(), stallThresholdMs = 900) {
+    this.nowFn = nowFn;
+    this.stallThresholdMs = stallThresholdMs;
+    this.reset();
+  }
+
+  reset({ seekOffsetSec = 0, isDirectMode = false, initialRawSec = 0, durationSec = 0 } = {}) {
+    const now = this.nowFn();
+    this.seekOffsetSec = Math.max(0, Number(seekOffsetSec) || 0);
+    this.isDirectMode = Boolean(isDirectMode);
+    this.anchorMediaSec = Math.max(0, Number(initialRawSec) || 0);
+    this.anchorWallMs = now;
+    this.lastRawVideoSec = this.anchorMediaSec;
+    this.lastRawAdvanceWallMs = now;
+    this.hasRawSample = false;
+    this.isPlaying = false;
+    this.wasExtrapolating = false;
+    this.playbackRate = 1;
+    this.durationSec = Math.max(0, Number(durationSec) || 0);
+  }
+
+  setDuration(durationSec) {
+    if (Number.isFinite(durationSec) && durationSec > 0) {
+      this.durationSec = durationSec;
+    }
+  }
+
+  onRawTimeSample(rawSec, nowMs = this.nowFn()) {
+    if (!Number.isFinite(rawSec) || rawSec < 0) return false;
+    const advanced = !this.hasRawSample || Math.abs(rawSec - this.lastRawVideoSec) > 0.015;
+    if (advanced) {
+      this.hasRawSample = true;
+      this.lastRawVideoSec = rawSec;
+      this.lastRawAdvanceWallMs = nowMs;
+      this.anchorMediaSec = rawSec;
+      this.anchorWallMs = nowMs;
+      this.wasExtrapolating = false;
+      return true;
+    }
+    return false;
+  }
+
+  isExtrapolating(nowMs = this.nowFn()) {
+    if (!this.isPlaying) return this.wasExtrapolating;
+    return this.wasExtrapolating || (nowMs - this.lastRawAdvanceWallMs > this.stallThresholdMs);
+  }
+
+  getStreamMediaTime(rawSec, nowMs = this.nowFn()) {
+    this.onRawTimeSample(rawSec, nowMs);
+
+    if (!this.isPlaying) {
+      return this.anchorMediaSec;
+    }
+
+    if (this.isExtrapolating(nowMs)) {
+      this.wasExtrapolating = true;
+      const elapsedSec = Math.max(0, (nowMs - this.anchorWallMs) / 1000) * (this.playbackRate || 1);
+      return this.anchorMediaSec + elapsedSec;
+    }
+
+    return this.anchorMediaSec;
+  }
+
+  getEffectiveTime(rawSec, nowMs = this.nowFn()) {
+    const streamSec = this.getStreamMediaTime(rawSec, nowMs);
+    const effective = this.isDirectMode ? streamSec : this.seekOffsetSec + streamSec;
+    if (this.durationSec > 0) {
+      return Math.min(this.durationSec, Math.max(0, effective));
+    }
+    return Math.max(0, effective);
+  }
+
+  onPlaying(rawSec, playbackRate = 1, nowMs = this.nowFn()) {
+    const rawMoved = this.onRawTimeSample(rawSec, nowMs);
+    this.playbackRate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1;
+    this.anchorWallMs = nowMs;
+    if (!rawMoved && this.wasExtrapolating) {
+      // Preserve monotonic anchor across pause/resume when TV's video.currentTime remains frozen
+      this.lastRawAdvanceWallMs = nowMs - this.stallThresholdMs - 1;
+    } else if (!rawMoved) {
+      this.lastRawAdvanceWallMs = nowMs;
+    }
+    this.isPlaying = true;
+  }
+
+  onPauseOrWait(rawSec, nowMs = this.nowFn()) {
+    const frozenStreamSec = this.getStreamMediaTime(rawSec, nowMs);
+    this.anchorMediaSec = frozenStreamSec;
+    this.anchorWallMs = nowMs;
+    this.isPlaying = false;
+  }
 }
 
 /**
@@ -183,6 +390,8 @@ class KodimiPlayer {
     this.subOffsetMinusBtn = document.getElementById('player-sub-offset-minus');
     this.subOffsetResetBtn = document.getElementById('player-sub-offset-reset');
     this.subOffsetPlusBtn = document.getElementById('player-sub-offset-plus');
+    this.subModeOverlayBtn = document.getElementById('player-sub-mode-overlay');
+    this.subModeNativeBtn = document.getElementById('player-sub-mode-native');
     this.loader = document.getElementById('player-loader');
     this.loaderText = document.querySelector('.player-loader-text');
     this.backBtn = document.getElementById('player-back-btn');
@@ -201,8 +410,18 @@ class KodimiPlayer {
     this.retryTimer = null;
     this.hasRetriedCurrentLoad = false;
 
+    this.isSmartTv = isSmartTvUserAgent(typeof navigator !== 'undefined' ? navigator.userAgent : '');
+    this.playbackClock = new HybridPlaybackClock();
+    this.syncHeartbeatTimer = null;
+    this.rvfcHandle = null;
+    this.wakeLockSentinel = null;
+    this.nativeTrackBlobUrl = null;
+    this._lastSubtitleHtml = null;
+    this._lastTimeText = '';
+
     this.supportedCodecs = this.detectSupportedCodecs();
     this.codecPreference = localStorage.getItem('kodimi_codec_pref') || 'auto';
+    this.useNativeSubtitles = localStorage.getItem('kodimi_native_subtitles') === '1';
 
     this.currentVolume = 1;
     this.isMuted = false;
@@ -216,6 +435,7 @@ class KodimiPlayer {
     this.hls = null;
     this.liveTranscodeQuality = null;
 
+    this.updateSubtitleModeButtons();
     this.initEvents();
   }
 
@@ -288,8 +508,29 @@ class KodimiPlayer {
       this.updatePlayIcon(true);
       this.hideLoader();
     });
-    this.video.addEventListener('pause', () => this.updatePlayIcon(false));
-    this.video.addEventListener('timeupdate', () => this.onTimeUpdate());
+    this.video.addEventListener('pause', () => {
+      this.playbackClock.onPauseOrWait(this.video.currentTime);
+      this.stopPlaybackSyncLoop();
+      this.releaseWakeLock();
+      this.updatePlayIcon(false);
+      this.onTimeUpdate(true);
+    });
+    this.video.addEventListener('ended', () => {
+      this.playbackClock.onPauseOrWait(this.video.currentTime);
+      this.stopPlaybackSyncLoop();
+      this.releaseWakeLock();
+      this.updatePlayIcon(false);
+      this.onTimeUpdate(true);
+    });
+    this.video.addEventListener('timeupdate', () => {
+      this.playbackClock.onRawTimeSample(this.video.currentTime);
+      this.onTimeUpdate();
+    });
+    this.video.addEventListener('ratechange', () => {
+      if (!this.video.paused) {
+        this.playbackClock.onPlaying(this.video.currentTime, this.video.playbackRate || 1);
+      }
+    });
     this.video.addEventListener('loadedmetadata', () => {
       this.isPendingSeek = false;
       this.hasRetriedCurrentLoad = false;
@@ -299,9 +540,23 @@ class KodimiPlayer {
     this.video.addEventListener('click', () => this.togglePlay());
 
     // Video Buffering & Loading Listeners
-    this.video.addEventListener('loadstart', () => this.showLoader('Loading stream...'));
-    this.video.addEventListener('waiting', () => this.showLoader('Buffering...'));
-    this.video.addEventListener('seeking', () => this.showLoader('Seeking...'));
+    this.video.addEventListener('loadstart', () => {
+      this.playbackClock.onPauseOrWait(0);
+      this.showLoader('Loading stream...');
+    });
+    this.video.addEventListener('waiting', () => {
+      this.playbackClock.onPauseOrWait(this.video.currentTime);
+      this.showLoader('Buffering...');
+    });
+    this.video.addEventListener('stalled', () => {
+      if (this.video.readyState < 3) {
+        this.playbackClock.onPauseOrWait(this.video.currentTime);
+      }
+    });
+    this.video.addEventListener('seeking', () => {
+      this.playbackClock.onPauseOrWait(this.video.currentTime);
+      this.showLoader('Seeking...');
+    });
     this.video.addEventListener('canplay', () => {
       this.isPendingSeek = false;
       this.hideLoader();
@@ -309,18 +564,43 @@ class KodimiPlayer {
     this.video.addEventListener('playing', () => {
       this.isPendingSeek = false;
       this.hasRetriedCurrentLoad = false;
+      this.playbackClock.onPlaying(this.video.currentTime, this.video.playbackRate || 1);
+      this.startPlaybackSyncLoop();
+      this.requestWakeLock();
       this.hideLoader();
+      this.onTimeUpdate();
     });
-    this.video.addEventListener('seeked', () => this.hideLoader());
+    this.video.addEventListener('seeked', () => {
+      this.playbackClock.onRawTimeSample(this.video.currentTime);
+      if (!this.video.paused) {
+        this.playbackClock.onPlaying(this.video.currentTime, this.video.playbackRate || 1);
+      }
+      this.hideLoader();
+      this.onTimeUpdate(true);
+    });
 
     // Graceful Codec Fallback & Transient Network Retry
     this.video.addEventListener('error', () => {
+      this.playbackClock.onPauseOrWait(this.video.currentTime);
+      this.stopPlaybackSyncLoop();
       if (this.isLive || !this.currentMedia || this.isPendingSeek) return;
       const mediaErr = this.video.error;
       if (!mediaErr) return;
 
       const cur = this.getEffectiveCurrentTime();
       const activeCodec = this.getEffectiveCodec();
+
+      // If Smart TV auto-selected Direct mode and container/audio failed, fall back seamlessly to Universal AAC Remux
+      if ((mediaErr.code === 3 || mediaErr.code === 4) && this.selectedQuality === 'direct') {
+        console.warn('[Player] Direct Raw MP4 playback failed, falling back to Universal AAC Remux...');
+        this.selectedQuality = 'original';
+        this.seekTimeOffset = cur;
+        this.updateQualityBadgeLabel();
+        this.renderVodQualityMenu();
+        const retryUrl = this.buildVodStreamUrl('original', cur);
+        this.loadVideoSource(retryUrl, cur);
+        return;
+      }
 
       // Decode / format unsupported fallback: AV1 -> HEVC -> H.264
       if (
@@ -353,6 +633,16 @@ class KodimiPlayer {
           const retryUrl = this.buildVodStreamUrl(this.selectedQuality, cur);
           this.loadVideoSource(retryUrl, cur);
         }, 1500);
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && this.currentMedia && !this.container.classList.contains('player-hidden')) {
+        if (!this.video.paused) {
+          this.requestWakeLock();
+          this.startPlaybackSyncLoop();
+        }
+        this.onTimeUpdate(true);
       }
     });
 
@@ -414,6 +704,12 @@ class KodimiPlayer {
     if (this.subOffsetPlusBtn) {
       this.subOffsetPlusBtn.addEventListener('click', () => this.adjustSubtitleOffset(0.5));
     }
+    if (this.subModeOverlayBtn) {
+      this.subModeOverlayBtn.addEventListener('click', () => this.setNativeSubtitleMode(false));
+    }
+    if (this.subModeNativeBtn) {
+      this.subModeNativeBtn.addEventListener('click', () => this.setNativeSubtitleMode(true));
+    }
 
     // Quality Menu
     this.qualityBtn.addEventListener('click', (e) => {
@@ -443,23 +739,39 @@ class KodimiPlayer {
 
   open(media, initialTime = 0) {
     this.cancelPendingTimers();
+    this.stopPlaybackSyncLoop();
     this.isLive = false;
     this.liveTranscodeQuality = null;
     this.currentMedia = media;
     this.streamSessionId = `sid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    this.selectedQuality = 'original';
+
+    // On Smart TVs (Hisense VIDAA / Tizen / webOS), prefer HTTP 206 Direct MP4 when the file is already native H.264+AAC MP4
+    const preferDirectOnTv = this.isSmartTv && canDirectPlayNativeMp4(media);
+    this.selectedQuality = preferDirectOnTv ? 'direct' : 'original';
+
     this.updateQualityBadgeLabel();
     this.renderVodQualityMenu();
     this.titleDisplay.textContent = media.title;
     this.totalDuration = (media && media.duration > 0) ? media.duration : 0;
-    this.seekTimeOffset = initialTime;
+    this.seekTimeOffset = this.selectedQuality === 'direct' ? 0 : initialTime;
     this.isPendingSeek = false;
     this.pendingSeekTarget = initialTime;
     this.hasRetriedCurrentLoad = false;
     this.subtitlesEnabled = false;
     this.activeSubtitleId = 'off';
     this.subtitleOffsetSec = 0;
+    this._lastSubtitleHtml = null;
+    this._lastTimeText = '';
+
+    this.playbackClock.reset({
+      seekOffsetSec: this.seekTimeOffset,
+      isDirectMode: this.selectedQuality === 'direct',
+      initialRawSec: this.selectedQuality === 'direct' ? initialTime : 0,
+      durationSec: this.totalDuration,
+    });
+
     this.updateSubtitleOffsetLabel();
+    this.updateSubtitleModeButtons();
     this.updateSubtitlesIcon(false);
 
     // If total duration is unknown, probe it asynchronously
@@ -468,7 +780,8 @@ class KodimiPlayer {
         if (res && res.duration > 0 && this.currentMedia && this.currentMedia.id === media.id) {
           this.totalDuration = res.duration;
           this.currentMedia.duration = res.duration;
-          this.onTimeUpdate();
+          this.playbackClock.setDuration(res.duration);
+          this.onTimeUpdate(true);
         }
       }).catch(() => {});
     }
@@ -482,8 +795,8 @@ class KodimiPlayer {
     this.container.classList.remove('player-hidden');
     document.body.style.overflow = 'hidden';
 
-    // Start with Universal AAC Original Stream
-    const url = this.buildVodStreamUrl('original', initialTime);
+    // Start VOD stream
+    const url = this.buildVodStreamUrl(this.selectedQuality, initialTime);
     this.loadVideoSource(url, initialTime);
 
     this.onUserActivity();
@@ -505,6 +818,7 @@ class KodimiPlayer {
 
   openLive(channel) {
     this.cancelPendingTimers();
+    this.stopPlaybackSyncLoop();
     this.isLive = true;
     this.liveTranscodeQuality = null;
     this.currentMedia = {
@@ -525,6 +839,14 @@ class KodimiPlayer {
     this.isPendingSeek = false;
     this.subtitlesEnabled = false;
     this.activeSubtitleId = 'off';
+    this._lastSubtitleHtml = null;
+    this._lastTimeText = '';
+    this.playbackClock.reset({
+      seekOffsetSec: 0,
+      isDirectMode: false,
+      initialRawSec: 0,
+      durationSec: 0,
+    });
     this.updateSubtitlesIcon(false);
     this.clearSubtitleTracks();
 
@@ -540,6 +862,70 @@ class KodimiPlayer {
 
     this.loadLiveSource(channel.streamUrl);
     this.onUserActivity();
+  }
+
+  startPlaybackSyncLoop() {
+    this.stopPlaybackSyncLoop();
+
+    // Driver 1: 250ms heartbeat timer (continues when rAF/timeupdate stalls on Smart TV overlays)
+    this.syncHeartbeatTimer = setInterval(() => {
+      if (!this.currentMedia || this.isLive || this.video.paused) return;
+      this.onTimeUpdate();
+    }, 250);
+
+    // Driver 2: requestVideoFrameCallback tied directly to decoded video frames where supported
+    if (this.video && typeof this.video.requestVideoFrameCallback === 'function') {
+      let lastRvfcMs = 0;
+      const onVideoFrame = (now) => {
+        this.rvfcHandle = null;
+        if (!this.currentMedia || this.isLive || this.video.paused) return;
+        if (now - lastRvfcMs >= 110) {
+          lastRvfcMs = now;
+          this.onTimeUpdate();
+        }
+        if (!this.video.paused && typeof this.video.requestVideoFrameCallback === 'function') {
+          this.rvfcHandle = this.video.requestVideoFrameCallback(onVideoFrame);
+        }
+      };
+      this.rvfcHandle = this.video.requestVideoFrameCallback(onVideoFrame);
+    }
+  }
+
+  stopPlaybackSyncLoop() {
+    if (this.syncHeartbeatTimer) {
+      clearInterval(this.syncHeartbeatTimer);
+      this.syncHeartbeatTimer = null;
+    }
+    if (this.rvfcHandle !== null && this.video && typeof this.video.cancelVideoFrameCallback === 'function') {
+      try {
+        this.video.cancelVideoFrameCallback(this.rvfcHandle);
+      } catch (_) {}
+      this.rvfcHandle = null;
+    } else {
+      this.rvfcHandle = null;
+    }
+  }
+
+  async requestWakeLock() {
+    try {
+      if (this.wakeLockSentinel) return;
+      if (typeof navigator !== 'undefined' && navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
+        this.wakeLockSentinel = await navigator.wakeLock.request('screen');
+        this.wakeLockSentinel.addEventListener('release', () => {
+          this.wakeLockSentinel = null;
+        });
+      }
+    } catch (_) {
+      // Screen Wake Lock may be unsupported or disallowed over plain HTTP LAN
+    }
+  }
+
+  async releaseWakeLock() {
+    if (!this.wakeLockSentinel) return;
+    try {
+      await this.wakeLockSentinel.release();
+    } catch (_) {}
+    this.wakeLockSentinel = null;
   }
 
   cancelPendingTimers() {
@@ -675,7 +1061,16 @@ class KodimiPlayer {
 
   loadVideoSource(url, startTime = 0) {
     this.destroyHls();
+    this.stopPlaybackSyncLoop();
     this.abortVideoStream();
+
+    this.playbackClock.reset({
+      seekOffsetSec: this.seekTimeOffset,
+      isDirectMode: this.selectedQuality === 'direct',
+      initialRawSec: this.selectedQuality === 'direct' ? startTime : 0,
+      durationSec: this.totalDuration,
+    });
+
     this.video.src = url;
 
     // Preserve audio settings
@@ -683,14 +1078,21 @@ class KodimiPlayer {
     this.video.muted = this.isMuted;
 
     if (this.selectedQuality === 'direct' && startTime > 0) {
-      this.video.currentTime = startTime;
+      try {
+        this.video.currentTime = startTime;
+      } catch (_) {}
     }
+
+    // Re-attach shifted <track> so cuechange wakeups / TV Native Captions match the new seek offset
+    this.syncNativeTextTrack();
 
     this.video.play().catch(() => {});
   }
 
   close() {
     this.cancelPendingTimers();
+    this.stopPlaybackSyncLoop();
+    this.releaseWakeLock();
     this.destroyHls();
 
     if (this.currentMedia && !this.isLive) {
@@ -740,13 +1142,10 @@ class KodimiPlayer {
   }
 
   getEffectiveCurrentTime() {
-    if (this.selectedQuality === 'direct') {
-      return this.video.currentTime || 0;
-    }
     if (this.isPendingSeek) {
       return this.pendingSeekTarget;
     }
-    return this.seekTimeOffset + (this.video.currentTime || 0);
+    return this.playbackClock.getEffectiveTime(this.video ? this.video.currentTime : 0);
   }
 
   getEffectiveDuration() {
@@ -756,6 +1155,7 @@ class KodimiPlayer {
     const rawDur = this.video.duration;
     if (this.selectedQuality === 'direct' && Number.isFinite(rawDur) && rawDur > 0) {
       this.totalDuration = rawDur;
+      this.playbackClock.setDuration(rawDur);
       return rawDur;
     }
     return this.totalDuration || 1;
@@ -783,8 +1183,17 @@ class KodimiPlayer {
     if (!this.currentMedia) return;
 
     if (this.selectedQuality === 'direct') {
+      this.playbackClock.reset({
+        seekOffsetSec: 0,
+        isDirectMode: true,
+        initialRawSec: targetTime,
+        durationSec: this.totalDuration,
+      });
+      if (!this.video.paused) {
+        this.playbackClock.onPlaying(targetTime, this.video.playbackRate || 1);
+      }
       this.video.currentTime = targetTime;
-      this.onTimeUpdate();
+      this.onTimeUpdate(true);
       return;
     }
 
@@ -794,7 +1203,7 @@ class KodimiPlayer {
     this.seekTimeOffset = targetTime;
     this.hasRetriedCurrentLoad = false;
     this.showLoader(`Seeking to ${this.formatTime(targetTime)}...`);
-    this.onTimeUpdate();
+    this.onTimeUpdate(true);
 
     if (this.seekDebounceTimer) {
       clearTimeout(this.seekDebounceTimer);
@@ -1185,7 +1594,9 @@ class KodimiPlayer {
     this.renderSubtitleTracksList();
 
     const targetMediaId = this.currentMedia.id;
-    this.updateSubtitleDisplay('<i>Loading full subtitle track...</i>');
+    if (!this.useNativeSubtitles) {
+      this.updateSubtitleDisplay('<i>Loading full subtitle track...</i>');
+    }
 
     try {
       const subUrl = track.isCustom
@@ -1201,6 +1612,7 @@ class KodimiPlayer {
         const vttText = await res.text();
         this.subtitleCues = parseSubtitleText(vttText, 'track.vtt');
         console.log(`[Subtitles] Loaded ${this.subtitleCues.length} full-episode cues for ${track.label}`);
+        this.syncNativeTextTrack();
         this.updateSubtitles();
       } else {
         this.updateSubtitleDisplay('');
@@ -1232,6 +1644,7 @@ class KodimiPlayer {
         this.activeSubtitleId = tempId;
         this.subtitlesEnabled = true;
         this.updateSubtitlesIcon(true);
+        this.syncNativeTextTrack();
         this.updateSubtitles();
         if (this.subtitleUploadText) {
           this.subtitleUploadText.textContent = 'Saving to GCS...';
@@ -1282,6 +1695,7 @@ class KodimiPlayer {
       this.subtitleOffsetSec = Math.round((this.subtitleOffsetSec + deltaSec) * 10) / 10;
     }
     this.updateSubtitleOffsetLabel();
+    this.syncNativeTextTrack();
     this.updateSubtitles();
   }
 
@@ -1292,15 +1706,87 @@ class KodimiPlayer {
     this.subOffsetResetBtn.textContent = `${sign}${val.toFixed(1)}s`;
   }
 
+  setNativeSubtitleMode(enabled) {
+    this.useNativeSubtitles = Boolean(enabled);
+    try {
+      localStorage.setItem('kodimi_native_subtitles', this.useNativeSubtitles ? '1' : '0');
+    } catch (_) {}
+    this.updateSubtitleModeButtons();
+    this.syncNativeTextTrack();
+    this.updateSubtitles();
+  }
+
+  updateSubtitleModeButtons() {
+    if (this.subModeOverlayBtn) {
+      this.subModeOverlayBtn.classList.toggle('active', !this.useNativeSubtitles);
+    }
+    if (this.subModeNativeBtn) {
+      this.subModeNativeBtn.classList.toggle('active', Boolean(this.useNativeSubtitles));
+    }
+  }
+
+  revokeNativeTrackBlob() {
+    if (this.nativeTrackBlobUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+      try {
+        URL.revokeObjectURL(this.nativeTrackBlobUrl);
+      } catch (_) {}
+    }
+    this.nativeTrackBlobUrl = null;
+  }
+
+  syncNativeTextTrack() {
+    const existing = document.getElementById('kodimi-sub-track');
+    if (existing) existing.remove();
+    this.revokeNativeTrackBlob();
+
+    if (!this.video || this.isLive || !this.subtitlesEnabled || this.subtitleCues.length === 0) {
+      return;
+    }
+    if (typeof Blob === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+      return;
+    }
+
+    // Shift episode timestamps to match raw video.currentTime coordinates (+ manual offset)
+    const streamShiftSec = this.subtitleOffsetSec - (this.selectedQuality === 'direct' ? 0 : this.seekTimeOffset);
+    const vttText = buildShiftedWebVtt(this.subtitleCues, streamShiftSec);
+    const blob = new Blob([vttText], { type: 'text/vtt' });
+    this.nativeTrackBlobUrl = URL.createObjectURL(blob);
+
+    const trackEl = document.createElement('track');
+    trackEl.id = 'kodimi-sub-track';
+    trackEl.kind = 'subtitles';
+    trackEl.label = 'Kodimi Subtitles';
+    trackEl.srclang = 'en';
+    trackEl.default = true;
+    trackEl.src = this.nativeTrackBlobUrl;
+
+    const applyTrackMode = () => {
+      try {
+        if (!trackEl.track) return;
+        trackEl.track.mode = (this.subtitlesEnabled && this.useNativeSubtitles) ? 'showing' : 'hidden';
+        // Driver 3: C++ media pipeline cuechange event wakes JS on cue boundaries even when timers are throttled
+        trackEl.track.oncuechange = () => {
+          if (!this.currentMedia || this.isLive) return;
+          this.playbackClock.onRawTimeSample(this.video.currentTime);
+          this.onTimeUpdate();
+        };
+      } catch (_) {}
+    };
+
+    trackEl.addEventListener('load', applyTrackMode);
+    this.video.appendChild(trackEl);
+    applyTrackMode();
+  }
+
   updateSubtitles() {
-    if (!this.subtitlesEnabled || this.subtitleCues.length === 0) {
+    if (!this.subtitlesEnabled || this.subtitleCues.length === 0 || this.useNativeSubtitles) {
       this.updateSubtitleDisplay('');
       return;
     }
 
     // Positive offset delays subtitles (shows them later), negative shows them earlier
     const cur = this.getEffectiveCurrentTime() - this.subtitleOffsetSec;
-    const activeCues = this.subtitleCues.filter((c) => cur >= c.start && cur <= c.end);
+    const activeCues = findActiveSubtitleCues(this.subtitleCues, cur);
 
     if (activeCues.length > 0) {
       const combinedText = activeCues.map((c) => c.text).join('\n');
@@ -1312,8 +1798,12 @@ class KodimiPlayer {
 
   updateSubtitleDisplay(safeHtml) {
     if (!this.subtitleDisplay) return;
-    if (safeHtml) {
-      this.subtitleDisplay.innerHTML = safeHtml;
+    const normalized = safeHtml || '';
+    if (this._lastSubtitleHtml === normalized) return;
+    this._lastSubtitleHtml = normalized;
+
+    if (normalized) {
+      this.subtitleDisplay.innerHTML = normalized;
       this.subtitleDisplay.style.display = 'block';
     } else {
       this.subtitleDisplay.innerHTML = '';
@@ -1333,6 +1823,7 @@ class KodimiPlayer {
   clearSubtitleTracks() {
     const existing = document.getElementById('kodimi-sub-track');
     if (existing) existing.remove();
+    this.revokeNativeTrackBlob();
     this.subtitleCues = [];
     this.updateSubtitleDisplay('');
   }
@@ -1377,30 +1868,45 @@ class KodimiPlayer {
     }
   }
 
-  onTimeUpdate() {
+  onTimeUpdate(forceControlsDom = false) {
     if (this.isLive) {
-      if (this.timeDisplay) {
+      if (this.timeDisplay && this._lastTimeText !== 'LIVE') {
+        this._lastTimeText = 'LIVE';
         this.timeDisplay.innerHTML = `<span style="color: #ff3b30; font-weight: 800;">🔴 LIVE</span>`;
       }
+      return;
+    }
+
+    // Always keep subtitles synchronized on every tick
+    this.updateSubtitles();
+
+    // Avoid unnecessary layout/paint reflows on Smart TV CPUs while the bottom bar is auto-hidden
+    const controlsHidden = !forceControlsDom && this.overlayBottom && this.overlayBottom.classList.contains('player-hidden');
+    if (controlsHidden) {
       return;
     }
 
     const cur = this.getEffectiveCurrentTime();
     const dur = this.getEffectiveDuration();
     const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
-    this.progressFill.style.width = `${pct}%`;
-    this.timeDisplay.textContent = `${this.formatTime(cur)} / ${this.formatTime(dur)}`;
+    if (this.progressFill) {
+      this.progressFill.style.width = `${pct.toFixed(2)}%`;
+    }
+
+    const formattedTime = `${this.formatTime(cur)} / ${this.formatTime(dur)}`;
+    if (this.timeDisplay && this._lastTimeText !== formattedTime) {
+      this._lastTimeText = formattedTime;
+      this.timeDisplay.textContent = formattedTime;
+    }
 
     if (!this.isPendingSeek && this.progressBuffer && this.video.buffered && this.video.buffered.length > 0 && dur > 0) {
       try {
         const bufferedEnd = this.video.buffered.end(this.video.buffered.length - 1);
         const effectiveBuffered = this.selectedQuality === 'direct' ? bufferedEnd : this.seekTimeOffset + bufferedEnd;
         const bufPct = Math.min(100, Math.max(0, (effectiveBuffered / dur) * 100));
-        this.progressBuffer.style.width = `${bufPct}%`;
+        this.progressBuffer.style.width = `${bufPct.toFixed(2)}%`;
       } catch (_) {}
     }
-
-    this.updateSubtitles();
   }
 
   onMetadataLoaded() {
@@ -1408,9 +1914,10 @@ class KodimiPlayer {
       const rawDur = this.video.duration;
       if (Number.isFinite(rawDur) && rawDur > 0) {
         this.totalDuration = rawDur;
+        this.playbackClock.setDuration(rawDur);
       }
     }
-    this.onTimeUpdate();
+    this.onTimeUpdate(true);
   }
 
   formatTime(secs) {
@@ -1425,12 +1932,20 @@ class KodimiPlayer {
   }
 
   onUserActivity() {
+    const wasHidden = this.overlayBottom && this.overlayBottom.classList.contains('player-hidden');
     this.overlayTop.classList.remove('player-hidden');
     this.overlayBottom.classList.remove('player-hidden');
 
+    if (wasHidden) {
+      this.onTimeUpdate(true);
+    }
+
     if (this.controlsTimeout) clearTimeout(this.controlsTimeout);
     this.controlsTimeout = setTimeout(() => {
-      if (!this.video.paused) {
+      const menuOpen =
+        (this.qualityMenu && this.qualityMenu.classList.contains('open')) ||
+        (this.subtitlesMenu && this.subtitlesMenu.classList.contains('open'));
+      if (!this.video.paused && !menuOpen) {
         this.overlayTop.classList.add('player-hidden');
         this.overlayBottom.classList.add('player-hidden');
       }
@@ -1441,26 +1956,57 @@ class KodimiPlayer {
     if (this.container.classList.contains('player-hidden')) return;
     if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
 
-    if (e.key === ' ' || e.key === 'k') {
+    const key = e.key;
+    const isInteractiveFocus =
+      e.target && ['BUTTON', 'A', 'SELECT'].includes(e.target.tagName);
+
+    // Wake player overlay on Smart TV D-pad or media remote keys
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'MediaPlayPause', 'MediaPlay', 'MediaPause', 'MediaFastForward', 'MediaRewind'].includes(key)) {
+      this.onUserActivity();
+    }
+
+    if (key === ' ' || key === 'k' || key === 'MediaPlayPause') {
+      if (key === ' ' && isInteractiveFocus) return;
       e.preventDefault();
       this.togglePlay();
-    } else if (e.key === 'ArrowLeft') {
+    } else if (key === 'MediaPlay') {
+      e.preventDefault();
+      if (this.video.paused) this.togglePlay();
+    } else if (key === 'MediaPause') {
+      e.preventDefault();
+      if (!this.video.paused) this.togglePlay();
+    } else if (key === 'Enter' && !isInteractiveFocus) {
+      e.preventDefault();
+      this.togglePlay();
+    } else if (key === 'ArrowLeft' || key === 'MediaRewind') {
+      if (key === 'ArrowLeft' && isInteractiveFocus) return;
       e.preventDefault();
       this.skip(-10);
-    } else if (e.key === 'ArrowRight') {
+    } else if (key === 'ArrowRight' || key === 'MediaFastForward') {
+      if (key === 'ArrowRight' && isInteractiveFocus) return;
       e.preventDefault();
       this.skip(10);
-    } else if (e.key === 'c') {
+    } else if (key === 'c') {
       e.preventDefault();
       this.toggleSubtitles();
-    } else if (e.key === 'f') {
+    } else if (key === 'f') {
       e.preventDefault();
       this.toggleFullscreen();
-    } else if (e.key === 'm') {
+    } else if (key === 'm') {
       e.preventDefault();
       this.toggleMute();
-    } else if (e.key === 'Escape') {
+    } else if (key === 'Escape' || key === 'Backspace' || key === 'GoBack' || key === 'XF86Back') {
+      const menuOpen =
+        (this.qualityMenu && this.qualityMenu.classList.contains('open')) ||
+        (this.subtitlesMenu && this.subtitlesMenu.classList.contains('open'));
+      if (menuOpen) {
+        e.preventDefault();
+        if (this.qualityMenu) this.qualityMenu.classList.remove('open');
+        if (this.subtitlesMenu) this.subtitlesMenu.classList.remove('open');
+        return;
+      }
       if (!document.fullscreenElement) {
+        e.preventDefault();
         this.close();
       }
     }

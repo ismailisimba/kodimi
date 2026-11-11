@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import config from './config/env.js';
 import { mediaDB, initDatabase } from './db/database.js';
-import { scanAndIndexBucket } from './services/scanner.js';
+import { scanAndIndexBucket, syncGcsTimestampsOnly } from './services/scanner.js';
 import { initDownloader } from './services/downloader.js';
 import { initIptvService } from './services/iptvService.js';
 
@@ -79,13 +79,16 @@ async function start() {
       initIptvService().catch((err) => console.warn('[Live TV Startup Warning]:', err.message));
     }
 
-    // Initial auto-sync of bucket if catalog is empty or on startup
+    // Initial auto-sync of bucket if catalog is empty or sync authoritative GCS timestamps on startup
     const existingItems = mediaDB.getAll({ limit: 1 });
     if (existingItems.length === 0) {
       console.log('[Startup] Media catalog is empty. Initiating automatic GCS bucket scan...');
       scanAndIndexBucket();
     } else {
       console.log(`[Startup] Media catalog contains ${mediaDB.getAll({ limit: 1000 }).length} indexed files. Ready to stream.`);
+      if (!config.isWorker) {
+        syncGcsTimestampsOnly().catch((err) => console.warn('[Startup GCS Timestamp Sync Warning]:', err.message));
+      }
     }
   });
 }

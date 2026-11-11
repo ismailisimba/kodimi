@@ -1,14 +1,22 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { mediaDB, playbackDB, ensureMediaCacheFresh } from '../db/database.js';
-import { scanAndIndexBucket, getScanStatus } from '../services/scanner.js';
-import { enrichMediaMetadata } from '../services/aiTagger.js';
+import { mediaDB, playbackDB, ensureMediaCacheFresh, normalizeSeriesKey } from '../db/database.js';
+import { scanAndIndexBucket, syncGcsTimestampsOnly, getScanStatus } from '../services/scanner.js';
+import { enrichMediaMetadata, isPlaceholderOrGenericPlot } from '../services/aiTagger.js';
 import { getThumbnailRedirectUrl, getOrGenerateThumbnail, getOrProbeDuration } from '../services/transcoder.js';
 import { requireAuth } from '../services/auth.js';
 import config from '../config/env.js';
 
 const router = express.Router();
+
+let retagBatchState = {
+  inProgress: false,
+  total: 0,
+  processed: 0,
+  updated: 0,
+  timestampsSynced: 0,
+};
 
 const DEFAULT_SVG_THUMB = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
   <defs>
@@ -42,7 +50,7 @@ function getProfileId(req) {
 // Public/Auth protected media listing
 router.get('/', requireAuth, async (req, res) => {
   await ensureMediaCacheFresh();
-  const { type, genre, search, limit, offset, adult, is_adult } = req.query;
+  const { type, genre, search, limit, offset, adult, is_adult, sort } = req.query;
   const showAdult = adult === 'true' || is_adult === 'true';
 
   if (showAdult) {
@@ -54,6 +62,7 @@ router.get('/', requireAuth, async (req, res) => {
       type,
       genre,
       search,
+      sort: sort || 'recent',
       limit: limit ? parseInt(limit, 10) : 500,
       offset: offset ? parseInt(offset, 10) : 0,
       isAdult: true,
@@ -66,6 +75,7 @@ router.get('/', requireAuth, async (req, res) => {
     type,
     genre,
     search,
+    sort: sort || 'recent',
     limit: limit ? parseInt(limit, 10) : 500,
     offset: offset ? parseInt(offset, 10) : 0,
     isAdult: false,
@@ -121,6 +131,131 @@ router.get('/series/:name/seasons', requireAuth, async (req, res) => {
   const seriesName = decodeURIComponent(req.params.name);
   const data = mediaDB.getSeriesSeasons(seriesName, showAdult);
   res.json(data);
+});
+
+// Re-tag all episodes of a TV series with optional disambiguation matchHint
+router.post('/series/:name/retag', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
+  const seriesName = decodeURIComponent(req.params.name);
+  const matchHint = typeof req.body?.matchHint === 'string' ? req.body.matchHint.trim() : '';
+  const showAdult = req.body?.adult === true || req.query.adult === 'true';
+
+  if (showAdult && !isVaultAuthorized(req)) {
+    return res.status(403).json({ error: 'Vault PIN required', vaultRequired: true });
+  }
+
+  const targetKey = normalizeSeriesKey(seriesName);
+  const allItems = mediaDB.getAll({ limit: 2000, isAdult: showAdult });
+  const episodes = allItems.filter(
+    (m) => m.type === 'series' && normalizeSeriesKey(m.series_name || m.title || '') === targetKey
+  );
+
+  if (episodes.length === 0) {
+    return res.status(404).json({ error: `No episodes found for series "${seriesName}"` });
+  }
+
+  // Sort chronologically so S01E01 enriches first and seeds canonical series_plot / year
+  episodes.sort((a, b) => (a.season || 0) - (b.season || 0) || (a.episode || 0) - (b.episode || 0));
+
+  let updatedCount = 0;
+  let finalSeriesName = seriesName;
+
+  for (let i = 0; i < episodes.length; i++) {
+    const ep = episodes[i];
+    try {
+      const updatedMeta = await enrichMediaMetadata(ep.filename || ep.gcs_path, ep.size_bytes, '', {
+        matchHint: matchHint || seriesName,
+      });
+      const saved = await mediaDB.upsert({
+        ...ep,
+        ...updatedMeta,
+        id: ep.id,
+        gcs_path: ep.gcs_path,
+        gcs_created_at: ep.gcs_created_at,
+        created_at: ep.created_at,
+        is_adult: Boolean(ep.is_adult || updatedMeta.is_adult),
+      });
+      if (saved.series_name) {
+        finalSeriesName = saved.series_name;
+      }
+      updatedCount++;
+      if (i < episodes.length - 1) {
+        await new Promise((r) => setTimeout(r, 450));
+      }
+    } catch (err) {
+      console.warn(`[Series Retag] Failed on ${ep.filename}:`, err.message);
+    }
+  }
+
+  const seriesData = mediaDB.getSeriesSeasons(finalSeriesName, showAdult);
+  res.json({ success: true, updatedCount, seriesName: finalSeriesName, data: seriesData });
+});
+
+router.get('/retag-status', requireAuth, (req, res) => {
+  res.json(retagBatchState);
+});
+
+router.post('/retag-inaccurate', requireAuth, async (req, res) => {
+  if (retagBatchState.inProgress) {
+    return res.json({ message: 'Synopsis backfill already in progress', status: retagBatchState });
+  }
+
+  const forceAll = Boolean(req.body?.forceAll);
+  const maxItems = Math.min(1000, Math.max(1, parseInt(req.body?.limit || '250', 10)));
+
+  retagBatchState = {
+    inProgress: true,
+    total: 0,
+    processed: 0,
+    updated: 0,
+    timestampsSynced: 0,
+  };
+
+  // Run non-blocking in background so Cloud Run / HTTP clients never time out
+  (async () => {
+    try {
+      await ensureMediaCacheFresh(true);
+      retagBatchState.timestampsSynced = await syncGcsTimestampsOnly();
+
+      const publicItems = mediaDB.getAll({ limit: 2000, isAdult: false });
+      const candidates = publicItems
+        .filter(
+          (item) =>
+            forceAll ||
+            isPlaceholderOrGenericPlot(item.plot) ||
+            (item.type === 'series' && isPlaceholderOrGenericPlot(item.series_plot))
+        )
+        .slice(0, maxItems);
+
+      retagBatchState.total = candidates.length;
+
+      for (const item of candidates) {
+        try {
+          const enriched = await enrichMediaMetadata(item.filename || item.gcs_path, item.size_bytes);
+          await mediaDB.upsert({
+            ...item,
+            ...enriched,
+            id: item.id,
+            gcs_path: item.gcs_path,
+            gcs_created_at: item.gcs_created_at,
+            created_at: item.created_at,
+            is_adult: Boolean(item.is_adult),
+          });
+          retagBatchState.updated++;
+        } catch (err) {
+          console.warn(`[Backfill Retag] Failed for ${item.filename}:`, err.message);
+        }
+        retagBatchState.processed++;
+        await new Promise((r) => setTimeout(r, 900));
+      }
+    } catch (err) {
+      console.error('[Backfill Retag] Error:', err.message);
+    } finally {
+      retagBatchState.inProgress = false;
+    }
+  })();
+
+  res.json({ message: 'GCS timestamp sync & synopsis backfill initiated in background', status: retagBatchState });
 });
 
 router.get('/sync-status', requireAuth, (req, res) => {
@@ -224,11 +359,17 @@ router.post('/:id/retag', requireAuth, async (req, res) => {
   }
 
   try {
-    const updatedMeta = await enrichMediaMetadata(item.filename, item.size_bytes);
+    const matchHint = typeof req.body?.matchHint === 'string' ? req.body.matchHint.trim() : '';
+    const updatedMeta = await enrichMediaMetadata(item.filename || item.gcs_path, item.size_bytes, '', {
+      matchHint,
+    });
     const updated = await mediaDB.upsert({
+      ...item,
       ...updatedMeta,
       id: item.id,
       gcs_path: item.gcs_path,
+      gcs_created_at: item.gcs_created_at,
+      created_at: item.created_at,
       is_adult: Boolean(item.is_adult || updatedMeta.is_adult),
     });
     res.json({ success: true, item: updated });

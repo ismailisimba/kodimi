@@ -41,6 +41,7 @@ const MediaSchema = new mongoose.Schema({
   episode: Number,
   year: Number,
   plot: String,
+  series_plot: String,
   genres: [String],
   tags: [String],
   poster_url: String,
@@ -53,6 +54,7 @@ const MediaSchema = new mongoose.Schema({
   audio_codec: String,
   custom_subtitles: { type: [CustomSubtitleSchema], default: [] },
   is_adult: { type: Boolean, default: false },
+  gcs_created_at: { type: Date, index: true },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
 });
@@ -118,6 +120,28 @@ let lastMediaRefreshTime = 0;
 
 export function normalizeSeriesKey(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+export function toValidDate(val) {
+  if (!val) return null;
+  const d = val instanceof Date ? val : new Date(val);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+export function getEffectiveAddedTime(item) {
+  if (!item) return 0;
+  const d =
+    toValidDate(item.gcs_created_at) ||
+    toValidDate(item.created_at) ||
+    toValidDate(item.updated_at);
+  return d ? d.getTime() : 0;
+}
+
+function isGenericFallbackPlot(text) {
+  if (!text || typeof text !== 'string') return true;
+  const t = text.trim();
+  if (!t) return true;
+  return /^(Enjoy|Watch)\s+.+\s+(streaming|in high definition)\s+on\s+(your personal\s+)?Kodimi/i.test(t);
 }
 
 export async function ensureMediaCacheFresh(force = false) {
@@ -313,7 +337,7 @@ async function migrateFromSqlite() {
 // Media Catalog DB Methods
 export const mediaDB = {
   getAll: (options = {}) => {
-    const { type, genre, search, limit = 500, offset = 0, isAdult = false } = options;
+    const { type, genre, search, limit = 500, offset = 0, isAdult = false, sort = 'recent' } = options;
     let list = Array.from(mediaCache.values());
 
     if (!isAdult) {
@@ -335,14 +359,29 @@ export const mediaDB = {
       list = list.filter((m) => {
         const inTitle = m.title?.toLowerCase().includes(q);
         const inSeries = m.series_name?.toLowerCase().includes(q);
-        const inPlot = m.plot?.toLowerCase().includes(q);
+        const inPlot = m.plot?.toLowerCase().includes(q) || m.series_plot?.toLowerCase().includes(q);
         const inTags = m.tags?.some((t) => t.toLowerCase().includes(q));
         return inTitle || inSeries || inPlot || inTags;
       });
     }
 
-    // Sort newest first
-    list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    if (sort === 'year') {
+      list.sort(
+        (a, b) =>
+          (b.year || 0) - (a.year || 0) ||
+          getEffectiveAddedTime(b) - getEffectiveAddedTime(a) ||
+          (a.title || '').localeCompare(b.title || '')
+      );
+    } else if (sort === 'title') {
+      list.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+    } else {
+      // Sort newest first using NaN-safe authoritative GCS upload time -> created_at -> updated_at
+      list.sort(
+        (a, b) =>
+          getEffectiveAddedTime(b) - getEffectiveAddedTime(a) ||
+          (a.title || '').localeCompare(b.title || '')
+      );
+    }
 
     return list.slice(offset, offset + limit);
   },
@@ -365,15 +404,28 @@ export const mediaDB = {
       ? Boolean(item.is_adult)
       : (heuristicCheck.is_adult ? true : Boolean(item.is_adult));
 
+    const resolvedGcsCreated =
+      toValidDate(item.gcs_created_at) ||
+      toValidDate(existing?.gcs_created_at) ||
+      null;
+    const resolvedCreated =
+      toValidDate(item.created_at) ||
+      toValidDate(existing?.created_at) ||
+      resolvedGcsCreated ||
+      new Date();
+
     const docData = {
       ...(existing || {}),
       ...item,
+      series_plot: item.series_plot || existing?.series_plot || undefined,
       duration: item.duration > 0 ? item.duration : (existing?.duration || 0),
       bitrate_kbps: item.bitrate_kbps > 0 ? item.bitrate_kbps : (existing?.bitrate_kbps || 0),
       custom_subtitles: Array.isArray(item.custom_subtitles)
         ? item.custom_subtitles
         : (existing?.custom_subtitles || []),
       is_adult: enforcedAdult,
+      gcs_created_at: resolvedGcsCreated,
+      created_at: resolvedCreated,
       updated_at: new Date(),
     };
 
@@ -421,20 +473,35 @@ export const mediaDB = {
     if (!name) return null;
     const key = normalizeSeriesKey(name);
     if (!key) return null;
+    let info = null;
     for (const item of mediaCache.values()) {
-      if (item.type === 'series' && item.series_name) {
-        if (normalizeSeriesKey(item.series_name) === key) {
-          return {
+      if (item.type === 'series' && item.series_name && normalizeSeriesKey(item.series_name) === key) {
+        if (!info) {
+          info = {
             series_name: item.series_name,
-            year: item.year,
-            genres: item.genres,
-            poster_url: item.poster_url,
-            backdrop_url: item.backdrop_url,
+            year: item.year || null,
+            series_plot: !isGenericFallbackPlot(item.series_plot) ? item.series_plot : null,
+            genres: Array.isArray(item.genres) && item.genres.length > 0 ? item.genres : null,
+            poster_url: item.poster_url || null,
+            backdrop_url: item.backdrop_url || null,
           };
+        } else {
+          if (item.series_name.includes(':') && !info.series_name.includes(':')) {
+            info.series_name = item.series_name;
+          }
+          if (!info.year && item.year) info.year = item.year;
+          if (!info.series_plot && !isGenericFallbackPlot(item.series_plot)) {
+            info.series_plot = item.series_plot;
+          }
+          if (!info.genres && Array.isArray(item.genres) && item.genres.length > 0) {
+            info.genres = item.genres;
+          }
+          if (!info.poster_url && item.poster_url) info.poster_url = item.poster_url;
+          if (!info.backdrop_url && item.backdrop_url) info.backdrop_url = item.backdrop_url;
         }
       }
     }
-    return null;
+    return info;
   },
 
   getAllGenres: () => {
@@ -458,14 +525,18 @@ export const mediaDB = {
 
       const rawSeriesName = (item.series_name || item.title || 'Unknown').trim();
       const seriesKey = normalizeSeriesKey(rawSeriesName) || rawSeriesName.toLowerCase();
+      const itemAddedTs = getEffectiveAddedTime(item);
 
       if (!seriesMap.has(seriesKey)) {
+        const initialSeriesPlot = !isGenericFallbackPlot(item.series_plot) ? item.series_plot : null;
         seriesMap.set(seriesKey, {
           id: `series-${encodeURIComponent(rawSeriesName.toLowerCase())}`,
           title: rawSeriesName,
           series_name: rawSeriesName,
           type: 'series',
-          plot: item.plot,
+          is_series_group: true,
+          series_plot: initialSeriesPlot,
+          plot: initialSeriesPlot || item.plot,
           year: item.year,
           genres: item.genres || [],
           tags: item.tags || [],
@@ -473,7 +544,9 @@ export const mediaDB = {
           backdrop_url: item.backdrop_url,
           resolution: item.resolution,
           is_adult: Boolean(item.is_adult),
-          created_at: item.created_at,
+          gcs_created_at: item.gcs_created_at || null,
+          created_at: item.created_at || null,
+          _added_ts: itemAddedTs,
           seasons: new Set(),
           episodes_count: 0,
           sample_media_id: item.id,
@@ -489,37 +562,61 @@ export const mediaDB = {
         s.title = rawSeriesName;
         s.series_name = rawSeriesName;
       }
-      if (item.season === 1 && item.episode === 1 && item.plot) {
-        s.plot = item.plot;
-      } else if (item.plot && (!s.plot || s.plot.length < item.plot.length)) {
-        s.plot = item.plot;
+
+      // Series overview synopsis priority: dedicated series_plot -> S01E01 plot -> longest non-generic plot
+      if (!isGenericFallbackPlot(item.series_plot)) {
+        if (!s.series_plot || item.series_plot.length > s.series_plot.length) {
+          s.series_plot = item.series_plot;
+          s.plot = item.series_plot;
+        }
+      } else if (!s.series_plot) {
+        if (item.season === 1 && item.episode === 1 && item.plot && !isGenericFallbackPlot(item.plot)) {
+          s.plot = item.plot;
+        } else if (
+          item.plot &&
+          (!s.plot ||
+            (isGenericFallbackPlot(s.plot) && !isGenericFallbackPlot(item.plot)) ||
+            (!isGenericFallbackPlot(item.plot) && item.plot.length > s.plot.length))
+        ) {
+          s.plot = item.plot;
+        }
       }
+
       if (item.year && (!s.year || item.season === 1)) {
         s.year = item.year;
       }
       if (item.poster_url && !s.poster_url) s.poster_url = item.poster_url;
       if (item.backdrop_url && !s.backdrop_url) s.backdrop_url = item.backdrop_url;
-      if (new Date(item.created_at) > new Date(s.created_at)) {
-        s.created_at = item.created_at;
+      if (itemAddedTs > s._added_ts) {
+        s._added_ts = itemAddedTs;
+        if (item.gcs_created_at) s.gcs_created_at = item.gcs_created_at;
+        if (item.created_at) s.created_at = item.created_at;
       }
     }
 
-    let list = Array.from(seriesMap.values()).map((s) => ({
+    let list = Array.from(seriesMap.values()).map(({ seasons, _added_ts, ...s }) => ({
       ...s,
-      seasons_count: Math.max(1, s.seasons.size),
-      seasons_list: Array.from(s.seasons).sort((a, b) => a - b),
+      added_timestamp: _added_ts,
+      seasons_count: Math.max(1, seasons.size),
+      seasons_list: Array.from(seasons).sort((a, b) => a - b),
     }));
 
     if (search) {
       const q = search.toLowerCase();
-      list = list.filter((s) =>
-        s.title.toLowerCase().includes(q) ||
-        s.plot?.toLowerCase().includes(q) ||
-        s.genres?.some((g) => g.toLowerCase().includes(q))
+      list = list.filter(
+        (s) =>
+          s.title.toLowerCase().includes(q) ||
+          s.plot?.toLowerCase().includes(q) ||
+          s.series_plot?.toLowerCase().includes(q) ||
+          s.genres?.some((g) => g.toLowerCase().includes(q))
       );
     }
 
-    list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    list.sort(
+      (a, b) =>
+        b.added_timestamp - a.added_timestamp ||
+        (a.title || '').localeCompare(b.title || '')
+    );
     return list.slice(0, limit);
   },
 
@@ -535,19 +632,22 @@ export const mediaDB = {
       const curRaw = (item.series_name || item.title || '').trim().toLowerCase();
       const curKey = normalizeSeriesKey(curRaw);
 
-      const matches = curKey === targetKey ||
-                      curRaw === cleanName ||
-                      (targetKey && curKey.includes(targetKey)) ||
-                      (curKey && targetKey.includes(curKey)) ||
-                      (cleanName && curRaw.includes(cleanName));
+      const matches =
+        curKey === targetKey ||
+        curRaw === cleanName ||
+        (targetKey && curKey.includes(targetKey)) ||
+        (curKey && targetKey.includes(curKey)) ||
+        (cleanName && curRaw.includes(cleanName));
 
       if (!matches) continue;
 
-      if (!matchedSeries || (item.series_name && item.series_name.includes(':') && !matchedSeries.series_name.includes(':'))) {
+      if (!matchedSeries) {
+        const initialSeriesPlot = !isGenericFallbackPlot(item.series_plot) ? item.series_plot : null;
         matchedSeries = {
           series_name: item.series_name || item.title,
           title: item.series_name || item.title,
-          plot: item.plot,
+          series_plot: initialSeriesPlot,
+          plot: initialSeriesPlot || item.plot,
           year: item.year,
           genres: item.genres,
           poster_url: item.poster_url,
@@ -555,6 +655,33 @@ export const mediaDB = {
           is_adult: item.is_adult,
           sample_media_id: item.id,
         };
+      } else {
+        if (item.series_name && item.series_name.includes(':') && !matchedSeries.series_name.includes(':')) {
+          matchedSeries.series_name = item.series_name;
+          matchedSeries.title = item.series_name;
+        }
+        if (!isGenericFallbackPlot(item.series_plot)) {
+          if (!matchedSeries.series_plot || item.series_plot.length > matchedSeries.series_plot.length) {
+            matchedSeries.series_plot = item.series_plot;
+            matchedSeries.plot = item.series_plot;
+          }
+        } else if (!matchedSeries.series_plot) {
+          if (item.season === 1 && item.episode === 1 && item.plot && !isGenericFallbackPlot(item.plot)) {
+            matchedSeries.plot = item.plot;
+          } else if (
+            item.plot &&
+            (!matchedSeries.plot ||
+              (isGenericFallbackPlot(matchedSeries.plot) && !isGenericFallbackPlot(item.plot)))
+          ) {
+            matchedSeries.plot = item.plot;
+          }
+        }
+        if (!matchedSeries.year && item.year) matchedSeries.year = item.year;
+        if ((!matchedSeries.genres || matchedSeries.genres.length === 0) && item.genres?.length) {
+          matchedSeries.genres = item.genres;
+        }
+        if (!matchedSeries.poster_url && item.poster_url) matchedSeries.poster_url = item.poster_url;
+        if (!matchedSeries.backdrop_url && item.backdrop_url) matchedSeries.backdrop_url = item.backdrop_url;
       }
 
       const sNum = item.season || 1;

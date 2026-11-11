@@ -806,7 +806,8 @@ body {
   position: absolute;
   bottom: 90px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate3d(-50%, 0, 0);
+  will-change: contents;
   max-width: 82%;
   text-align: center;
   font-size: 24px;
@@ -821,6 +822,14 @@ body {
   z-index: 20;
   transition: opacity 0.1s ease;
   white-space: pre-line;
+}
+
+.player-video::cue {
+  background-color: rgba(0, 0, 0, 0.72);
+  color: #ffffff;
+  font-family: 'Roboto', sans-serif;
+  font-weight: 600;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.95);
 }
 
 @media (max-width: 768px) {
@@ -2352,5 +2361,117 @@ input:checked + .slider:before {
 .slider.round:before {
   border-radius: 50%;
 }
+
+/* ==========================================================================
+   Movies Sort Chips, Fix Match Bar & Smart TV D-Pad Focus Styles
+   ========================================================================== */
+
+.grid-header-row {
+  padding: 0 48px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.grid-sort-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.grid-sort-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--md-sys-color-outline);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-right: 4px;
+}
+
+.fix-match-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-corner-m);
+}
+
+.fix-match-input {
+  flex: 1;
+  min-width: 0;
+  background-color: var(--md-sys-color-surface-container-highest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-corner-s);
+  padding: 8px 12px;
+  color: #ffffff;
+  font-size: 13px;
+}
+
+.fix-match-input:focus {
+  outline: none;
+  border-color: var(--md-sys-color-primary);
+}
+
+.series-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.episode-info-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--md-sys-color-on-surface-variant);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.episode-info-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+/* High-contrast Smart TV remote D-pad focus indicators */
+.icon-btn:focus-visible,
+.btn-filled:focus-visible,
+.btn-tonal:focus-visible,
+.quality-option:focus-visible,
+.codec-pill-btn:focus-visible,
+.subtitle-mini-btn:focus-visible,
+.subtitle-upload-btn:focus-visible,
+.filter-chip:focus-visible,
+.nav-item:focus-visible,
+.season-tab-btn:focus-visible,
+.episode-play-overlay:focus-visible,
+.episode-info-btn:focus-visible,
+.media-card:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 768px) {
+  .grid-header-row {
+    padding: 0 16px;
+  }
+  .fix-match-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 
 

@@ -21,7 +21,7 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 
   <!-- Custom Material Design Stylesheet -->
-  <link rel="stylesheet" href="/css/style.css?v=26" />
+  <link rel="stylesheet" href="/css/style.css?v=27" />
 </head>
 <body>
 
@@ -117,8 +117,14 @@
 
     <!-- Grid View Container (Search / Categorized) -->
     <div id="grid-container" style="display: none; padding-top: 84px;">
-      <div style="padding: 0 48px; margin-bottom: 8px;">
-        <h1 id="grid-title" style="font-size: 24px; font-weight: 700;">All Titles</h1>
+      <div class="grid-header-row">
+        <h1 id="grid-title" style="font-size: 24px; font-weight: 700; margin: 0;">All Titles</h1>
+        <div id="grid-sort-bar" class="grid-sort-bar" style="display: none;">
+          <span class="grid-sort-label">Order by</span>
+          <button type="button" class="filter-chip movie-sort-chip active" data-movie-sort="recent">Recently Added</button>
+          <button type="button" class="filter-chip movie-sort-chip" data-movie-sort="year">Release Year</button>
+          <button type="button" class="filter-chip movie-sort-chip" data-movie-sort="title">Title A–Z</button>
+        </div>
       </div>
       <div id="grid-content" class="media-grid"></div>
     </div>
@@ -262,7 +268,7 @@
   </div>
 
   <!-- Media Details Modal Dialog -->
-  <div class="modal-backdrop" id="detail-modal">
+  <div class="modal-backdrop" id="detail-modal" style="z-index: 1050;">
     <div class="modal-card" style="max-width: 760px;">
       <!-- Banner Header -->
       <div style="position: relative; width: 100%; height: 260px; background-color: var(--md-sys-color-surface-container-highest);">
@@ -273,14 +279,18 @@
           <span class="material-symbols-outlined">close</span>
         </button>
 
-        <div style="position: absolute; bottom: 20px; left: 24px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div style="position: absolute; bottom: 20px; left: 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; right: 24px;">
           <button class="btn-filled" id="detail-play-btn">
             <span class="material-symbols-outlined fill">play_arrow</span>
             <span>Play Now</span>
           </button>
-          <button class="btn-tonal" id="detail-retag-btn">
+          <button class="btn-tonal" id="detail-retag-btn" title="Re-enrich synopsis & metadata with Gemini Search Grounding">
             <span class="material-symbols-outlined">auto_awesome</span>
             <span>Re-tag with AI</span>
+          </button>
+          <button class="btn-tonal" id="detail-fix-match-btn" title="Specify exact title, year, or network to fix synopsis">
+            <span class="material-symbols-outlined">edit_note</span>
+            <span>Fix Match</span>
           </button>
           <button class="btn-tonal" id="detail-subtitle-btn" title="Upload .srt, .vtt, or .ass subtitle to GCS">
             <span class="material-symbols-outlined">closed_caption_add</span>
@@ -295,6 +305,19 @@
 
       <!-- Details Content -->
       <div class="modal-body" style="display: flex; flex-direction: column; gap: 16px;">
+        <div id="detail-fix-match-row" class="fix-match-bar" style="display: none;">
+          <input
+            type="text"
+            id="detail-fix-match-input"
+            class="fix-match-input"
+            placeholder="Exact match hint (e.g. &quot;The Wrecking Crew (2026 film)&quot; or &quot;Dark Matter (2024 Apple TV+)&quot;)"
+          />
+          <button type="button" class="btn-filled" id="detail-fix-match-apply" style="padding: 8px 16px; font-size: 13px; white-space: nowrap;">
+            <span class="material-symbols-outlined" style="font-size: 16px;">travel_explore</span>
+            <span>Match &amp; Re-tag</span>
+          </button>
+        </div>
+
         <div style="display: flex; align-items: flex-start; justify-content: space-between;">
           <div>
             <h2 id="detail-title" style="font-size: 24px; font-weight: 900; margin-bottom: 4px;"></h2>
@@ -628,6 +651,13 @@
                     <button type="button" class="subtitle-mini-btn" id="player-sub-offset-plus" title="Later (+0.5s)">+0.5s</button>
                   </div>
                 </div>
+                <div class="subtitle-offset-row">
+                  <span class="subtitle-offset-label">Display</span>
+                  <div class="codec-pill-row">
+                    <button type="button" class="codec-pill-btn active" id="player-sub-mode-overlay" title="Kodimi HTML overlay captions">Overlay</button>
+                    <button type="button" class="codec-pill-btn" id="player-sub-mode-native" title="Hardware Smart TV native &lt;track&gt; captions">TV Native</button>
+                  </div>
+                </div>
                 <button type="button" class="subtitle-upload-btn" id="player-subtitle-upload-btn">
                   <span class="material-symbols-outlined" style="font-size: 16px;">upload_file</span>
                   <span id="player-subtitle-upload-text">Upload .SRT / .VTT / .ASS</span>
@@ -711,6 +741,6 @@
   </nav>
 
   <!-- Application Entrypoint Module -->
-  <script type="module" src="/js/app.js?v=26"></script>
+  <script type="module" src="/js/app.js?v=27"></script>
 </body>
 </html>

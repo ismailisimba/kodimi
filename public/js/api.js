@@ -125,7 +125,25 @@ export const api = {
 
   getContinueWatching: () => request('/media/continue-watching'),
 
-  retagMedia: (id) => request(`/media/${id}/retag`, { method: 'POST' }),
+  retagMedia: (id, matchHint = '') =>
+    request(`/media/${id}/retag`, {
+      method: 'POST',
+      body: JSON.stringify(matchHint ? { matchHint } : {}),
+    }),
+
+  retagSeries: (name, matchHint = '') =>
+    request(`/media/series/${encodeURIComponent(name)}/retag`, {
+      method: 'POST',
+      body: JSON.stringify(matchHint ? { matchHint } : {}),
+    }),
+
+  retagInaccurate: (options = {}) =>
+    request('/media/retag-inaccurate', {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
+
+  getRetagStatus: () => request('/media/retag-status'),
 
   deleteMedia: (id) => request(`/media/${id}`, { method: 'DELETE' }),
 

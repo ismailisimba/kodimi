@@ -52,7 +52,8 @@ export async function getFileMetadata(filename) {
   return {
     size: parseInt(metadata.size, 10) || 0,
     contentType: metadata.contentType || 'application/octet-stream',
-    updated: metadata.updated,
+    timeCreated: metadata.timeCreated || metadata.updated || null,
+    updated: metadata.updated || null,
   };
 }
 
@@ -92,7 +93,8 @@ export async function listFiles(prefix = '') {
     name: f.name,
     size: parseInt(f.metadata?.size || '0', 10),
     contentType: f.metadata?.contentType,
-    updated: f.metadata?.updated,
+    timeCreated: f.metadata?.timeCreated || f.metadata?.updated || null,
+    updated: f.metadata?.updated || null,
   }));
 }
 

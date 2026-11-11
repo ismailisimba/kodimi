@@ -1435,15 +1435,17 @@ export async function getOrProbeDuration(mediaId, gcsPath) {
         ])
         .ffprobe((err, data) => {
           if (err || !data || !data.format || !data.format.duration) {
-            return resolve({ duration: 0, bitrateKbps: 0, videoCodec: '' });
+            return resolve({ duration: 0, bitrateKbps: 0, videoCodec: '', audioCodec: '' });
           }
           const dur = Math.round(parseFloat(data.format.duration));
           const br = data.format.bit_rate ? Math.round(parseInt(data.format.bit_rate, 10) / 1000) : 0;
           const vStream = (data.streams || []).find((s) => s.codec_type === 'video');
+          const aStream = (data.streams || []).find((s) => s.codec_type === 'audio');
           resolve({
             duration: dur > 0 ? dur : 0,
             bitrateKbps: br > 0 ? br : 0,
             videoCodec: vStream?.codec_name || '',
+            audioCodec: aStream?.codec_name || '',
           });
         });
     });
@@ -1457,6 +1459,7 @@ export async function getOrProbeDuration(mediaId, gcsPath) {
         duration: probeResult.duration,
         bitrate_kbps: computedKbps,
         video_codec: existing.video_codec || probeResult.videoCodec || undefined,
+        audio_codec: existing.audio_codec || probeResult.audioCodec || undefined,
       });
       console.log(
         `[Duration Cached]: ${existing.title} -> ${probeResult.duration}s (${Math.floor(probeResult.duration / 60)}m ${probeResult.duration % 60}s, ~${computedKbps} kbps)`

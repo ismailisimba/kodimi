@@ -2,10 +2,181 @@
  * Kodimi Material 3 UI Component Generators
  */
 
+function getVaultPinSafe() {
+  try {
+    return typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('kodimi_vault_pin') : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeSeriesGroupKey(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function getItemAddedMs(item) {
+  if (!item || typeof item !== 'object') return 0;
+  const candidates = [item.gcs_created_at, item.created_at, item.added_timestamp, item.updated_at];
+  for (const val of candidates) {
+    if (val === null || val === undefined || val === '') continue;
+    if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+      return val;
+    }
+    const parsed = Date.parse(String(val));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+export function sortMoviesList(movies, sortOrder = 'recent') {
+  if (!Array.isArray(movies)) return [];
+  const copy = [...movies];
+  const mode = String(sortOrder || 'recent').toLowerCase();
+
+  if (mode === 'title') {
+    copy.sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+    return copy;
+  }
+
+  if (mode === 'year') {
+    copy.sort((a, b) => {
+      const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0);
+      if (yearDiff !== 0) return yearDiff;
+      const addedDiff = getItemAddedMs(b) - getItemAddedMs(a);
+      if (addedDiff !== 0) return addedDiff;
+      return String(a.title || '').localeCompare(String(b.title || ''));
+    });
+    return copy;
+  }
+
+  // Default: 'recent' (Newest GCS upload timestamp first)
+  copy.sort((a, b) => {
+    const addedDiff = getItemAddedMs(b) - getItemAddedMs(a);
+    if (addedDiff !== 0) return addedDiff;
+    const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0);
+    if (yearDiff !== 0) return yearDiff;
+    return String(a.title || '').localeCompare(String(b.title || ''));
+  });
+  return copy;
+}
+
+/**
+ * Builds the Home "Recently Added to GCS" feed:
+ * - Sorts all catalog items by newest GCS upload time (`gcs_created_at || created_at`).
+ * - Collapses multiple episodes of the same TV series into a single Series card
+ *   (so uploading a 10-episode season pack doesn't push every other title out of the carousel).
+ * - Preserves chronological interleaving between newly uploaded Series and Movies.
+ */
+export function buildRecentlyAddedFeed(mediaItems, seriesList = [], limit = 18) {
+  if (!Array.isArray(mediaItems) || mediaItems.length === 0) return [];
+
+  const seriesByKey = new Map();
+  if (Array.isArray(seriesList)) {
+    for (const s of seriesList) {
+      const key = normalizeSeriesGroupKey(s.series_name || s.title);
+      if (key && !seriesByKey.has(key)) {
+        seriesByKey.set(key, s);
+      }
+    }
+  }
+
+  // Count seasons & episodes across mediaItems as fallback when seriesList isn't populated
+  const fallbackSeriesStats = new Map();
+  for (const m of mediaItems) {
+    const isEp = m && (m.type === 'series' || Boolean(m.series_name));
+    if (!isEp) continue;
+    const rawName = m.series_name || String(m.title || '').replace(/\s*-\s*[sS]\d+[eE]\d+.*$/, '').trim();
+    const key = normalizeSeriesGroupKey(rawName);
+    if (!key) continue;
+    if (!fallbackSeriesStats.has(key)) {
+      fallbackSeriesStats.set(key, {
+        displayName: rawName || m.title,
+        seasons: new Set(),
+        episodesCount: 0,
+        sample: m,
+      });
+    }
+    const st = fallbackSeriesStats.get(key);
+    st.seasons.add(m.season || 1);
+    st.episodesCount += 1;
+  }
+
+  const sortedMedia = [...mediaItems].sort((a, b) => {
+    const diff = getItemAddedMs(b) - getItemAddedMs(a);
+    if (diff !== 0) return diff;
+    return String(a.title || '').localeCompare(String(b.title || ''));
+  });
+
+  const seenSeriesKeys = new Set();
+  const feed = [];
+
+  for (const item of sortedMedia) {
+    if (!item) continue;
+    const addedMs = getItemAddedMs(item);
+    const isEpisode = item.type === 'series' || Boolean(item.series_name);
+
+    if (isEpisode) {
+      const rawSeriesName = item.series_name || String(item.title || '').replace(/\s*-\s*[sS]\d+[eE]\d+.*$/, '').trim();
+      const key = normalizeSeriesGroupKey(rawSeriesName);
+      if (key) {
+        if (seenSeriesKeys.has(key)) {
+          continue;
+        }
+        seenSeriesKeys.add(key);
+
+        const existingSeries = seriesByKey.get(key);
+        const stats = fallbackSeriesStats.get(key);
+        const seriesCardObj = existingSeries
+          ? {
+              ...existingSeries,
+              is_series_group: true,
+              added_timestamp: Math.max(addedMs, getItemAddedMs(existingSeries)),
+            }
+          : {
+              id: `series-${key.replace(/\s+/g, '-')}`,
+              type: 'series',
+              is_series_group: true,
+              series_name: stats?.displayName || rawSeriesName,
+              title: stats?.displayName || rawSeriesName,
+              year: item.year,
+              plot: item.series_plot || item.plot,
+              genres: item.genres || [],
+              poster_url: item.poster_url || '',
+              backdrop_url: item.backdrop_url || '',
+              seasons_count: stats ? stats.seasons.size : 1,
+              episodes_count: stats ? stats.episodesCount : 1,
+              sample_media_id: item.id,
+              is_adult: Boolean(item.is_adult),
+              gcs_created_at: item.gcs_created_at || item.created_at || null,
+              added_timestamp: addedMs,
+            };
+
+        feed.push(seriesCardObj);
+      } else {
+        feed.push(item);
+      }
+    } else {
+      feed.push(item);
+    }
+
+    if (limit > 0 && feed.length >= limit) {
+      break;
+    }
+  }
+
+  return feed;
+}
+
 export function renderHeroBanner(item) {
   if (!item) return '';
 
-  const pin = sessionStorage.getItem('kodimi_vault_pin');
+  const pin = getVaultPinSafe();
   const pinParam = (item.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
   const thumbMediaId = item.sample_media_id || item.id;
   const heroThumb = `/api/media/${thumbMediaId}/thumbnail?variant=69${pinParam}`;
@@ -63,7 +234,7 @@ export function renderHeroBanner(item) {
 
 export function renderMediaCard(item) {
   let poster = item.poster_url;
-  const pin = sessionStorage.getItem('kodimi_vault_pin');
+  const pin = getVaultPinSafe();
   const pinParam = (item.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
   // Intersect randomly between 42% and 69% shots for cinematic variety
   const variant = Math.random() < 0.5 ? '42' : '69';
@@ -263,7 +434,7 @@ function formatBytes(bytes) {
 }
 
 export function renderSeriesCard(series) {
-  const pin = sessionStorage.getItem('kodimi_vault_pin');
+  const pin = getVaultPinSafe();
   const pinParam = (series.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
   const fallbackThumb = series.sample_media_id ? `/api/media/${series.sample_media_id}/thumbnail?variant=69${pinParam}` : '';
   let poster = series.poster_url || fallbackThumb;
@@ -295,6 +466,13 @@ export function renderSeriesCard(series) {
       </div>
     </div>
   `;
+}
+
+export function renderCatalogCard(item) {
+  if (item && (item.is_series_group || String(item.id || '').startsWith('series-'))) {
+    return renderSeriesCard(item);
+  }
+  return renderMediaCard(item);
 }
 
 export function renderLiveChannelCard(ch) {
@@ -413,8 +591,9 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1) {
   const series = seriesData.series || {};
   const seasonsMap = seriesData.seasons || {};
   const seasonNumbers = seriesData.seasonNumbers || [1];
+  const canonicalSeriesName = series.series_name || series.title || '';
 
-  const pin = sessionStorage.getItem('kodimi_vault_pin');
+  const pin = getVaultPinSafe();
   const pinParam = (series.is_adult && pin) ? `&pin=${encodeURIComponent(pin)}` : '';
   const fallbackThumb = series.sample_media_id ? `/api/media/${series.sample_media_id}/thumbnail?variant=69${pinParam}` : '';
   let backdrop = series.backdrop_url || series.poster_url || fallbackThumb;
@@ -456,6 +635,9 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1) {
             <span class="episode-number">Episode ${ep.episode || 1}</span>
             <span class="episode-title">${escapeHtml(ep.title.replace(/^.*?[sS]\d+[eE]\d+:?\s*/, ''))}</span>
             <span class="episode-dur">${durStr}</span>
+            <button type="button" class="episode-info-btn" data-id="${ep.id}" title="Episode Details / Re-tag Synopsis">
+              <span class="material-symbols-outlined" style="font-size: 16px;">info</span>
+            </button>
           </div>
           <p class="episode-plot">${escapeHtml(ep.plot || 'Stream this episode in full high definition on Kodimi.')}</p>
         </div>
@@ -477,7 +659,7 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1) {
           <span class="chip">${Object.values(seasonsMap).flat().length} Episodes</span>
         </div>
         <h1 class="series-title">${escapeHtml(series.title || series.series_name)}</h1>
-        <p class="series-plot">${escapeHtml(series.plot || 'Browse all seasons and episodes below.')}</p>
+        <p class="series-plot">${escapeHtml(series.series_plot || series.plot || 'Browse all seasons and episodes below.')}</p>
         <div class="series-actions">
           ${episodes[0] ? `
             <button class="btn-filled episode-play-btn" data-id="${episodes[0].id}">
@@ -485,6 +667,26 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1) {
               <span>Play S${activeSeason} E01</span>
             </button>
           ` : ''}
+          <button type="button" class="btn-tonal" id="series-retag-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" title="Re-enrich series & episode synopses with Gemini Search Grounding">
+            <span class="material-symbols-outlined">auto_awesome</span>
+            <span>Re-tag Series</span>
+          </button>
+          <button type="button" class="btn-tonal" id="series-fix-match-toggle-btn" title="Specify exact show title, year, or network to fix synopses">
+            <span class="material-symbols-outlined">edit_note</span>
+            <span>Fix Match</span>
+          </button>
+        </div>
+        <div id="series-fix-match-row" class="fix-match-bar" style="display: none; margin-top: 12px; max-width: 680px;">
+          <input
+            type="text"
+            id="series-fix-match-input"
+            class="fix-match-input"
+            placeholder="Exact show hint (e.g. &quot;Dark Matter (2024 Apple TV+ series)&quot; or &quot;Succession (HBO)&quot;)"
+          />
+          <button type="button" class="btn-filled" id="series-fix-match-apply-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" style="padding: 8px 16px; font-size: 13px; white-space: nowrap;">
+            <span class="material-symbols-outlined" style="font-size: 16px;">travel_explore</span>
+            <span>Match &amp; Re-tag All</span>
+          </button>
         </div>
       </div>
     </div>

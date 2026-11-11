@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import path from 'path';
 import axios from 'axios';
-import { createWriteStream, fileExists } from '../config/gcs.js';
+import { createWriteStream, fileExists, getFileMetadata } from '../config/gcs.js';
 import { downloadsDB, mediaDB } from '../db/database.js';
 import { enrichMediaMetadata } from './aiTagger.js';
 import { getOrProbeDuration, getOrGenerateThumbnail } from './transcoder.js';
@@ -279,6 +279,17 @@ export function registerDirectUpload(filename, size = 0) {
   return downloadRecord;
 }
 
+async function resolveGcsTimestamp(gcsPath) {
+  try {
+    const meta = await getFileMetadata(gcsPath);
+    if (meta?.timeCreated) {
+      const d = new Date(meta.timeCreated);
+      if (Number.isFinite(d.getTime())) return d;
+    }
+  } catch (_) {}
+  return new Date();
+}
+
 /**
  * Marks direct file upload as complete and indexes it into the media catalog.
  */
@@ -306,10 +317,13 @@ export async function completeDirectUpload(id, filename, size = 0) {
 
   // Auto-enrich and index into media catalog
   try {
+    const gcsCreatedAt = await resolveGcsTimestamp(filename);
     const metadata = await enrichMediaMetadata(filename, size);
     const saved = await mediaDB.upsert({
       ...metadata,
       gcs_path: filename,
+      gcs_created_at: gcsCreatedAt,
+      created_at: gcsCreatedAt,
     });
     getOrProbeDuration(saved.id, filename)
       .then(() => getOrGenerateThumbnail(saved.id, filename, '42'))
@@ -657,10 +671,13 @@ async function processTorrentDownload(id, torrentSource, customName) {
 
                 // Immediately enrich and index this completed file into Kodimi media catalog!
                 try {
+                  const gcsCreatedAt = await resolveGcsTimestamp(cleanFilename);
                   const metadata = await enrichMediaMetadata(cleanFilename, fileBytes, torrent.name);
                   const saved = await mediaDB.upsert({
                     ...metadata,
                     gcs_path: cleanFilename,
+                    gcs_created_at: gcsCreatedAt,
+                    created_at: gcsCreatedAt,
                   });
                   getOrProbeDuration(saved.id, cleanFilename)
                     .then(() => getOrGenerateThumbnail(saved.id, cleanFilename, '42'))
@@ -821,10 +838,13 @@ async function completeDownload(id, gcsPath, totalBytes, isMultiFile = false) {
   // Auto-enrich and index into media catalog only for single files (multi-file items are indexed per file)
   if (!isMultiFile) {
     try {
+      const gcsCreatedAt = await resolveGcsTimestamp(gcsPath);
       const metadata = await enrichMediaMetadata(gcsPath, totalBytes, job.name || '');
       const saved = await mediaDB.upsert({
         ...metadata,
         gcs_path: gcsPath,
+        gcs_created_at: gcsCreatedAt,
+        created_at: gcsCreatedAt,
       });
       getOrProbeDuration(saved.id, gcsPath)
         .then(() => getOrGenerateThumbnail(saved.id, gcsPath, '42'))

@@ -2,11 +2,12 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=26';
-import KodimiPlayer from './player.js?v=26';
+import { api, authState, vaultState, profileState } from './api.js?v=27';
+import KodimiPlayer from './player.js?v=27';
 import {
   renderHeroBanner,
   renderMediaCard,
+  renderCatalogCard,
   renderCarousel,
   renderDownloadItem,
   renderSeriesCard,
@@ -16,8 +17,10 @@ import {
   renderProfileCard,
   renderAddProfileCard,
   renderProfileDropdownItem,
+  buildRecentlyAddedFeed,
+  sortMoviesList,
   escapeHtml,
-} from './components.js?v=23';
+} from './components.js?v=27';
 
 class KodimiApp {
   constructor() {
@@ -34,6 +37,7 @@ class KodimiApp {
     this.currentSeriesData = null;
     this.activeSeason = 1;
     this.activeFilter = 'all';
+    this.movieSortOrder = 'recent';
     this.searchTerm = '';
     this.activeMedia = null;
     this.featuredItem = null;
@@ -66,6 +70,7 @@ class KodimiApp {
     this.carouselsContainer = document.getElementById('carousels-container');
     this.gridContainer = document.getElementById('grid-container');
     this.gridTitle = document.getElementById('grid-title');
+    this.gridSortBar = document.getElementById('grid-sort-bar');
     this.gridContent = document.getElementById('grid-content');
     this.emptyState = document.getElementById('empty-state');
     this.loadingIndicator = document.getElementById('loading-indicator');
@@ -132,6 +137,10 @@ class KodimiApp {
     this.detailGcsPath = document.getElementById('detail-gcs-path');
     this.detailPlayBtn = document.getElementById('detail-play-btn');
     this.detailRetagBtn = document.getElementById('detail-retag-btn');
+    this.detailFixMatchBtn = document.getElementById('detail-fix-match-btn');
+    this.detailFixMatchRow = document.getElementById('detail-fix-match-row');
+    this.detailFixMatchInput = document.getElementById('detail-fix-match-input');
+    this.detailFixMatchApply = document.getElementById('detail-fix-match-apply');
     this.detailSubtitleBtn = document.getElementById('detail-subtitle-btn');
     this.detailSubtitleBtnText = document.getElementById('detail-subtitle-btn-text');
     this.detailDeleteBtn = document.getElementById('detail-delete-btn');
@@ -317,6 +326,30 @@ class KodimiApp {
     });
 
     this.detailRetagBtn.addEventListener('click', () => this.handleRetagMedia());
+    if (this.detailFixMatchBtn && this.detailFixMatchRow) {
+      this.detailFixMatchBtn.addEventListener('click', () => {
+        const isHidden = this.detailFixMatchRow.style.display === 'none';
+        this.detailFixMatchRow.style.display = isHidden ? 'flex' : 'none';
+        if (isHidden && this.detailFixMatchInput) {
+          this.detailFixMatchInput.focus();
+          this.detailFixMatchInput.select();
+        }
+      });
+    }
+    if (this.detailFixMatchApply) {
+      this.detailFixMatchApply.addEventListener('click', () => {
+        const hint = this.detailFixMatchInput ? this.detailFixMatchInput.value.trim() : '';
+        this.handleRetagMedia(hint);
+      });
+    }
+    if (this.detailFixMatchInput) {
+      this.detailFixMatchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this.handleRetagMedia(this.detailFixMatchInput.value.trim());
+        }
+      });
+    }
     this.detailDeleteBtn.addEventListener('click', () => this.handleDeleteMedia());
 
     if (this.detailSubtitleBtn) {
@@ -437,6 +470,56 @@ class KodimiApp {
         return;
       }
 
+      // 3b. Episode Info / Synopsis Fix Button in Series Modal
+      const epInfoBtn = e.target.closest('.episode-info-btn');
+      if (epInfoBtn) {
+        const epId = epInfoBtn.dataset.id;
+        const ep = this.findMediaById(epId);
+        if (ep) {
+          this.openDetailModal(ep);
+        } else if (epId) {
+          api.getMediaById(epId).then((item) => {
+            if (item) this.openDetailModal(item);
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      // 3c. Series Fix Match Toggle & Series Re-tag Buttons
+      const seriesFixToggle = e.target.closest('#series-fix-match-toggle-btn');
+      if (seriesFixToggle) {
+        const row = document.getElementById('series-fix-match-row');
+        const input = document.getElementById('series-fix-match-input');
+        if (row) {
+          const isHidden = row.style.display === 'none';
+          row.style.display = isHidden ? 'flex' : 'none';
+          if (isHidden && input) input.focus();
+        }
+        return;
+      }
+
+      const seriesRetagBtn = e.target.closest('#series-retag-btn, #series-fix-match-apply-btn');
+      if (seriesRetagBtn) {
+        const seriesName = seriesRetagBtn.dataset.seriesName;
+        const input = document.getElementById('series-fix-match-input');
+        const hint = seriesRetagBtn.id === 'series-fix-match-apply-btn' && input ? input.value.trim() : '';
+        if (seriesName) {
+          this.handleRetagSeries(seriesName, hint);
+        }
+        return;
+      }
+
+      // 3d. Movies Sort Chips
+      const movieSortChip = e.target.closest('.movie-sort-chip');
+      if (movieSortChip) {
+        const nextSort = movieSortChip.dataset.movieSort || 'recent';
+        if (this.movieSortOrder !== nextSort) {
+          this.movieSortOrder = nextSort;
+          this.renderView();
+        }
+        return;
+      }
+
       // 4. Live TV Play Button
       const livePlayBtn = e.target.closest('.live-play-btn');
       if (livePlayBtn) {
@@ -543,6 +626,17 @@ class KodimiApp {
         if (itemEl) itemEl.remove();
         api.deleteDownload(dlId).then(() => this.loadDownloads());
         return;
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target && e.target.id === 'series-fix-match-input') {
+        e.preventDefault();
+        const applyBtn = document.getElementById('series-fix-match-apply-btn');
+        const seriesName = applyBtn ? applyBtn.dataset.seriesName : '';
+        if (seriesName) {
+          this.handleRetagSeries(seriesName, e.target.value.trim());
+        }
       }
     });
 
@@ -1137,14 +1231,17 @@ class KodimiApp {
         html += renderCarousel('continue', 'Continue Watching', this.continueWatching);
       }
 
-      const recentPublic = this.mediaItems.slice(0, 18);
-      html += renderCarousel('recent', 'Recently Added to GCS', recentPublic);
+      const recentFeed = buildRecentlyAddedFeed(this.mediaItems, this.seriesList, 18);
+      html += renderCarousel('recent', 'Recently Added to GCS', recentFeed, renderCatalogCard);
 
       if (this.seriesList.length > 0) {
         html += renderCarousel('series', 'TV Series & Shows', this.seriesList, renderSeriesCard);
       }
 
-      const movies = this.mediaItems.filter((m) => m.type === 'movie');
+      const movies = sortMoviesList(
+        this.mediaItems.filter((m) => m.type === 'movie'),
+        'recent'
+      );
       if (movies.length > 0) {
         html += renderCarousel('movies', 'Movies', movies);
       }
@@ -1165,6 +1262,14 @@ class KodimiApp {
       this.heroSection.style.display = 'none';
       this.carouselsContainer.style.display = 'none';
       this.gridContainer.style.display = 'block';
+      if (this.gridSortBar) {
+        this.gridSortBar.style.display = this.activeFilter === 'movie' ? 'flex' : 'none';
+        if (this.activeFilter === 'movie') {
+          this.gridSortBar.querySelectorAll('.movie-sort-chip').forEach((chip) => {
+            chip.classList.toggle('active', chip.dataset.movieSort === this.movieSortOrder);
+          });
+        }
+      }
 
       if (this.activeFilter === 'series') {
         let filteredSeries = this.seriesList;
@@ -1222,7 +1327,10 @@ class KodimiApp {
           }
         }, 0);
       } else if (this.activeFilter === 'movie') {
-        filtered = filtered.filter((m) => m.type === 'movie');
+        filtered = sortMoviesList(
+          filtered.filter((m) => m.type === 'movie'),
+          this.movieSortOrder
+        );
         this.gridTitle.textContent = `Movies (${filtered.length})`;
       } else if (this.activeFilter === 'continue') {
         filtered = this.continueWatching;
@@ -1314,33 +1422,82 @@ class KodimiApp {
       }
     }
 
+    if (this.detailFixMatchRow) {
+      this.detailFixMatchRow.style.display = 'none';
+    }
+    if (this.detailFixMatchInput) {
+      this.detailFixMatchInput.value = '';
+    }
+
     this.detailModal.classList.add('open');
   }
 
-  async handleRetagMedia() {
+  async handleRetagMedia(matchHint = '') {
     if (!this.activeMedia) return;
 
+    const cleanHint = typeof matchHint === 'string' ? matchHint.trim() : '';
     this.detailRetagBtn.disabled = true;
+    if (this.detailFixMatchApply) this.detailFixMatchApply.disabled = true;
     this.detailRetagBtn.innerHTML = `
       <span class="material-symbols-outlined" style="animation: spin 1s infinite linear;">refresh</span>
-      <span>Gemini Thinking...</span>
+      <span>Searching &amp; Grounding...</span>
     `;
 
     try {
-      const res = await api.retagMedia(this.activeMedia.id);
+      const res = await api.retagMedia(this.activeMedia.id, cleanHint);
       if (res.item) {
         this.activeMedia = res.item;
         this.openDetailModal(res.item);
-        this.loadData();
+        await this.loadData();
+        if (this.seriesModal && this.seriesModal.classList.contains('open') && this.currentSeriesData?.series) {
+          const targetSeries = res.item.series_name || this.currentSeriesData.series.series_name || this.currentSeriesData.series.title;
+          if (targetSeries) {
+            await this.openSeriesModal(targetSeries);
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to retag:', err);
+      alert(`Re-tag failed: ${err.message}`);
     } finally {
       this.detailRetagBtn.disabled = false;
+      if (this.detailFixMatchApply) this.detailFixMatchApply.disabled = false;
       this.detailRetagBtn.innerHTML = `
         <span class="material-symbols-outlined">auto_awesome</span>
         <span>Re-tag with AI</span>
       `;
+    }
+  }
+
+  async handleRetagSeries(seriesName, matchHint = '') {
+    if (!seriesName) return;
+    const retagBtn = document.getElementById('series-retag-btn');
+    const applyBtn = document.getElementById('series-fix-match-apply-btn');
+    if (retagBtn) {
+      retagBtn.disabled = true;
+      retagBtn.innerHTML = `
+        <span class="material-symbols-outlined" style="animation: spin 1s infinite linear;">refresh</span>
+        <span>Grounding All Episodes...</span>
+      `;
+    }
+    if (applyBtn) applyBtn.disabled = true;
+
+    try {
+      const res = await api.retagSeries(seriesName, typeof matchHint === 'string' ? matchHint.trim() : '');
+      await this.loadData();
+      const updatedSeriesName = res?.seriesName || seriesName;
+      await this.openSeriesModal(updatedSeriesName);
+    } catch (err) {
+      console.error('Failed to re-tag series:', err);
+      alert(`Series re-tag failed: ${err.message}`);
+      if (retagBtn) {
+        retagBtn.disabled = false;
+        retagBtn.innerHTML = `
+          <span class="material-symbols-outlined">auto_awesome</span>
+          <span>Re-tag Series</span>
+        `;
+      }
+      if (applyBtn) applyBtn.disabled = false;
     }
   }
 

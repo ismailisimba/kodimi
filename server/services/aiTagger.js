@@ -49,15 +49,23 @@ export function heuristicParseFilename(filename, contextHint = '') {
     'avi love', 'harley jade', 'pigtail facefuck', 'sluts love', 'split scenes', 'wicked pictures'
   ];
 
+  const sePattern = /\bS(\d{1,2})[\s-]*E(\d{1,3})\b/i;
+  const seasonEpWordsPattern = /\bSeason[\s-]*(\d{1,2})[\s-]*(?:Episode|Ep)[\s-]*(\d{1,3})\b/i;
+  const xFormatPattern = /\b(\d{1,2})x(\d{1,3})\b/i;
+  const hasEpisodeCode =
+    sePattern.test(combinedText) ||
+    seasonEpWordsPattern.test(combinedText) ||
+    xFormatPattern.test(combinedText);
+
   const wordRegex = new RegExp(`\\b(${ADULT_WORD_PATTERNS.join('|')})\\b`, 'i');
   const phraseRegex = new RegExp(`(${ADULT_PHRASE_PATTERNS.join('|')}|fuck|porn|xxx|creampie|blowjob|dickdrainer|puretaboo|swallowed|realwifestories|fakehostel|diabolic|ahasss|symmetrical|assaholic|sextury|brazzers|bangbros|blacked|tushy)`, 'i');
-  const scenePattern = /\bscene\s+\d+\b/i.test(combinedText) && /\b(1080p|720p|2160p|4k)\b/i.test(combinedText) && !/\bS\d{1,2}E\d{1,2}\b/i.test(combinedText);
+  const scenePattern = /\bscene\s+\d+\b/i.test(combinedText) && /\b(1080p|720p|2160p|4k)\b/i.test(combinedText) && !hasEpisodeCode;
   const genericPrivatePattern = /^(0*\d{1,4}|testvid\d*|vid_?\d+|clip_?\d+|private_?.*)$/i.test(base.trim());
 
   const isAdult = wordRegex.test(combinedText) || phraseRegex.test(combinedText) || scenePattern || genericPrivatePattern;
 
-  // Detect Season & Episode (e.g. S01E02 or 1x02)
-  const seMatch = clean.match(/\bS(\d{1,2})E(\d{1,2})\b/i) || clean.match(/\b(\d{1,2})x(\d{1,2})\b/i);
+  // Detect Season & Episode (e.g. S01E02, S05 E05, S05-E05, Season 5 Episode 5, or 1x02)
+  const seMatch = clean.match(sePattern) || clean.match(seasonEpWordsPattern) || clean.match(xFormatPattern);
   let season = null;
   let episode = null;
   let type = 'movie';
@@ -68,10 +76,6 @@ export function heuristicParseFilename(filename, contextHint = '') {
     type = 'series';
   }
 
-  // Detect Year
-  const yearMatch = clean.match(/\b(19\d\d|20\d\d)\b/);
-  const year = yearMatch ? parseInt(yearMatch[1], 10) : null;
-
   // Detect Resolution
   const resMatch = clean.match(/\b(2160p|4k|1080p|720p|480p|360p)\b/i);
   const resolution = resMatch ? resMatch[1].toLowerCase() : '1080p';
@@ -80,31 +84,88 @@ export function heuristicParseFilename(filename, contextHint = '') {
   const codecMatch = clean.match(/\b(x265|hevc|h265|x264|h264|av1)\b/i);
   const video_codec = codecMatch ? codecMatch[1].toLowerCase() : 'x264';
 
+  // Smarter Release-Year Detection:
+  // Inspect only the portion before SxxExx or technical release tags so numbers inside titles
+  // like "1917 (2019)", "2001 A Space Odyssey (1968)", or "Blade Runner 2049 (2017)" never truncate the title.
+  const maxPlausibleYear = Math.max(2028, new Date().getFullYear() + 2);
+  const techTagBoundaryRegex =
+    /\b(2160p|4k|1080p|720p|480p|360p|WEBRip|BluRay|BDRip|BRRip|HDRip|DVDRip|AMZN|NF|ATVP|DSNP|HMAX|WEB-DL|WEBDL|HDTV|REMUX|x265|hevc|h265|x264|h264|av1)\b/i;
+
+  const seBoundaryIdx = seMatch ? (seMatch.index ?? clean.indexOf(seMatch[0])) : -1;
+  const techMatch = clean.match(techTagBoundaryRegex);
+  const techBoundaryIdx = techMatch ? (techMatch.index ?? clean.indexOf(techMatch[0])) : -1;
+
+  let yearSearchLimit = clean.length;
+  if (seBoundaryIdx > 0) yearSearchLimit = Math.min(yearSearchLimit, seBoundaryIdx);
+  if (techBoundaryIdx > 0) yearSearchLimit = Math.min(yearSearchLimit, techBoundaryIdx);
+
+  const prefixForYear = clean.substring(0, yearSearchLimit);
+  let year = null;
+  let yearCutoffIdx = -1;
+
+  // 1. Prefer explicit parenthesized/bracketed year e.g. "(2019)" or "[2024]" after the first word
+  const parenYearMatches = [...prefixForYear.matchAll(/[\(\[]\s*(19\d\d|20\d\d)\s*[\)\]]/g)].filter(
+    (m) => parseInt(m[1], 10) <= maxPlausibleYear && (m.index ?? 0) > 0
+  );
+  if (parenYearMatches.length > 0) {
+    const chosen = parenYearMatches[parenYearMatches.length - 1];
+    year = parseInt(chosen[1], 10);
+    yearCutoffIdx = chosen.index;
+  } else {
+    // 2. Otherwise pick the last plausible 4-digit release year at index > 0 (so leading numeric titles like "1917" stay intact)
+    const bareYearMatches = [...prefixForYear.matchAll(/\b(19\d\d|20\d\d)\b/g)].filter(
+      (m) => parseInt(m[1], 10) <= maxPlausibleYear && (m.index ?? 0) > 0
+    );
+    if (bareYearMatches.length > 0) {
+      const chosen = bareYearMatches[bareYearMatches.length - 1];
+      year = parseInt(chosen[1], 10);
+      yearCutoffIdx = chosen.index;
+    }
+  }
+
   // Extract clean title by taking words before year or season
   let title = clean;
   let episodeTitle = null;
   if (seMatch) {
-    const idx = clean.search(/\bS\d{1,2}E\d{1,2}\b/i);
-    if (idx > 0) title = clean.substring(0, idx);
+    const idx = seBoundaryIdx;
+    if (idx > 0) {
+      // If a trailing release year sits immediately before SxxExx (e.g. "Dark Matter 2024 S01E01"), strip it cleanly
+      const rawSeriesPrefix = clean.substring(0, idx);
+      if (yearCutoffIdx > 0 && rawSeriesPrefix.substring(yearCutoffIdx).replace(/[\s\(\)\[\]\-–—:|0-9]/g, '').length === 0) {
+        title = rawSeriesPrefix.substring(0, yearCutoffIdx);
+      } else {
+        title = rawSeriesPrefix;
+      }
+    }
 
-    // Extract whatever comes after the SxxExx tag (e.g. Sayonara)
-    const afterSe = clean.substring(idx + seMatch[0].length).trim();
-    const cleanAfter = afterSe.replace(/\b(2160p|4k|1080p|720p|480p|360p|WEBRip|BluRay|AMZN|NF|WEB-DL|AAC|DD5|10bit|DDP5|x265|x264|hevc|h264|MiNX|GalaxyRG|MeGusta|TGx|PSA|ELiTE|Rapta|NeoNoir).*/i, '').trim();
+    // Extract whatever comes after the SxxExx tag (e.g. Sayonara or Down and Out)
+    const afterSe = idx >= 0 ? clean.substring(idx + seMatch[0].length).trim() : '';
+    const cleanAfter = afterSe
+      .replace(/[\(\[][^)\]]*\b(2160p|4k|1080p|720p|480p|360p|WEBRip|BluRay|AMZN|NF|WEB-DL|WEB|AAC|DD5|10bit|DDP5|x265|x264|hevc|h264|av1|Repack|RP)\b.*$/i, '')
+      .replace(/\b(2160p|4k|1080p|720p|480p|360p|WEBRip|BluRay|AMZN|NF|WEB-DL|WEB|AAC|DD5|10bit|DDP5|x265|x264|hevc|h264|av1|MiNX|GalaxyRG|MeGusta|TGx|PSA|ELiTE|Rapta|NeoNoir|Vyndros)\b.*$/i, '')
+      .replace(/^[\s\-–—:|]+/, '')
+      .replace(/[\s\-–—:|(\[]+$/, '')
+      .trim();
     if (cleanAfter.length > 0) {
       episodeTitle = cleanAfter;
     }
-  } else if (yearMatch) {
-    const idx = clean.search(/\b(19\d\d|20\d\d)\b/);
-    if (idx > 0) title = clean.substring(0, idx);
+  } else if (yearCutoffIdx > 0) {
+    title = clean.substring(0, yearCutoffIdx);
+  } else if (techBoundaryIdx > 0) {
+    title = clean.substring(0, techBoundaryIdx);
   }
 
-  // Clean trailing release groups and tags
-  title = title.replace(/\b(WEBRip|BluRay|AMZN|NF|WEB-DL|AAC|DD5|10bit|MiNX|GalaxyRG|MeGusta|TGx|PSA|ELiTE|Rapta)\b.*$/i, '');
-  title = title.trim();
+  // Clean trailing release groups, tags, and dangling separators
+  title = title
+    .replace(/[\(\[][^)\]]*\b(2160p|4k|1080p|720p|480p|360p|WEBRip|BluRay|AMZN|NF|WEB-DL|WEB|AAC|DD5|10bit|DDP5|x265|x264|hevc|h264|av1|Repack|RP)\b.*$/i, '')
+    .replace(/\b(WEBRip|BluRay|AMZN|NF|WEB-DL|AAC|DD5|10bit|MiNX|GalaxyRG|MeGusta|TGx|PSA|ELiTE|Rapta)\b.*$/i, '')
+    .replace(/^[\s\-–—:|]+/, '')
+    .replace(/[\s\-–—:|(\[]+$/, '')
+    .trim();
 
   let formattedTitle = title || base;
   if (type === 'series') {
-    const epLabel = season && episode ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}` : '';
+    const epLabel = season !== null && episode !== null ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}` : '';
     if (epLabel) {
       formattedTitle = episodeTitle ? `${title} ${epLabel}: ${episodeTitle}` : `${title} ${epLabel}`;
     }
@@ -126,11 +187,165 @@ export function heuristicParseFilename(filename, contextHint = '') {
   };
 }
 
+export const MEDIA_METADATA_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    type: { type: 'string', enum: ['movie', 'series'] },
+    series_name: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    season: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+    episode: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+    episode_title: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    year: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+    plot: { type: 'string' },
+    series_plot: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    genres: { type: 'array', items: { type: 'string' } },
+    tags: { type: 'array', items: { type: 'string' } },
+    poster_url: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    backdrop_url: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    is_adult: { type: 'boolean' },
+  },
+  required: ['title', 'type', 'plot', 'genres', 'tags', 'is_adult'],
+};
+
 /**
- * Enriches media metadata using Google Gemini AI.
+ * Checks whether a synopsis string is missing or one of Kodimi's generic placeholder fallbacks.
+ */
+export function isPlaceholderOrGenericPlot(plot) {
+  if (!plot || typeof plot !== 'string') return true;
+  const t = plot.trim();
+  if (t.length < 24) return true;
+  if (/^(Enjoy|Watch)\s+.+\s+(streaming|in high definition)\s+on\s+(your personal\s+)?Kodimi/i.test(t)) {
+    return true;
+  }
+  if (/^(No synopsis available|Stream seamlessly on Kodimi|Browse all seasons and episodes|Stream this episode in full high definition)/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Extracts and parses a JSON object from model output, tolerating markdown code fences
+ * or grounded search preamble/citation text around the JSON payload.
+ */
+export function extractJsonObject(rawText) {
+  if (!rawText || typeof rawText !== 'string') {
+    throw new Error('Empty AI response text');
+  }
+
+  const trimmed = rawText.trim();
+  const strippedFence = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+  try {
+    return JSON.parse(strippedFence);
+  } catch (_) {}
+
+  // Scan for the outermost balanced {...} JSON block (string-escape aware)
+  const firstBrace = strippedFence.indexOf('{');
+  if (firstBrace === -1) {
+    throw new Error('No JSON object found in AI response');
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = firstBrace; i < strippedFence.length; i++) {
+    const ch = strippedFence[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const candidate = strippedFence.slice(firstBrace, i + 1);
+        return JSON.parse(candidate);
+      }
+    }
+  }
+
+  throw new Error('Unterminated JSON object in AI response');
+}
+
+function isRetryableGeminiError(err) {
+  const msg = String(err?.message || err || '');
+  const status = err?.status || err?.code;
+  if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
+    return true;
+  }
+  return /\b(429|500|502|503|504|RESOURCE_EXHAUSTED|UNAVAILABLE|DEADLINE_EXCEEDED|ECONNRESET|ETIMEDOUT|fetch failed)\b/i.test(msg);
+}
+
+function isUnsupportedStructuredGroundingError(err) {
+  const msg = String(err?.message || err || '');
+  const status = err?.status || err?.code;
+  if (status === 400 || /\b400\b|INVALID_ARGUMENT/i.test(msg)) {
+    return /tool|google_?search|response_?mime_?type|schema|json/i.test(msg);
+  }
+  return false;
+}
+
+async function generateGroundedMetadataJson(client, prompt) {
+  const maxAttempts = 3;
+  let useStructuredSchema = true;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const configObj = useStructuredSchema
+        ? {
+            temperature: 0.1,
+            tools: [{ googleSearch: {} }],
+            responseMimeType: 'application/json',
+            responseJsonSchema: MEDIA_METADATA_JSON_SCHEMA,
+          }
+        : {
+            temperature: 0.1,
+            tools: [{ googleSearch: {} }],
+          };
+
+      const response = await client.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: configObj,
+      });
+
+      return extractJsonObject(response.text || '');
+    } catch (err) {
+      lastError = err;
+      if (useStructuredSchema && isUnsupportedStructuredGroundingError(err)) {
+        useStructuredSchema = false;
+        attempt--; // Retry immediately without structured MIME constraint while keeping Google Search grounding
+        continue;
+      }
+      if (attempt < maxAttempts && isRetryableGeminiError(err)) {
+        const backoffMs = 1500 * Math.pow(2, attempt - 1);
+        await new Promise((r) => setTimeout(r, backoffMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new Error('Gemini metadata enrichment failed');
+}
+
+/**
+ * Enriches media metadata using Google Gemini AI with Google Search Grounding.
  * Falls back to heuristic parsing if API is unavailable.
  */
-export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = '') {
+export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = '', options = {}) {
+  const matchHint = typeof options?.matchHint === 'string' ? options.matchHint.trim() : '';
   const parsed = heuristicParseFilename(filename, contextHint);
 
   // If adult content, avoid sending to general safety filters and generate structured tags
@@ -139,6 +354,7 @@ export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = 
       ...parsed,
       size_bytes: fileSize,
       plot: 'Private Media content.',
+      series_plot: null,
       genres: ['Adult'],
       tags: ['Private', '18+'],
       poster_url: 'https://images.unsplash.com/photo-1518173946687-a4c8892bbd9f?w=600&auto=format&fit=crop&q=80',
@@ -154,68 +370,72 @@ export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = 
 
   try {
     let existingSeries = null;
-    if (parsed.type === 'series' && parsed.series_name && mediaDB.getSeriesInfo) {
+    if (!matchHint && parsed.type === 'series' && parsed.series_name && mediaDB.getSeriesInfo) {
       existingSeries = mediaDB.getSeriesInfo(parsed.series_name);
     }
 
-    const existingSeriesNote = existingSeries?.year
-      ? `\nNOTE: This series is already indexed in the catalog as the ${existingSeries.year} show ("${existingSeries.series_name}"). You MUST match the ${existingSeries.year} show version, cast, and episode titles, NOT any older/different series with the same name.`
+    const existingSeriesNote =
+      !matchHint && existingSeries?.year
+        ? `\nCATALOG CONTEXT: This series is already indexed in the catalog as the ${existingSeries.year} show ("${existingSeries.series_name}"). Match the ${existingSeries.year} show version, cast, and episode guide.`
+        : '';
+
+    const userHintBlock = matchHint
+      ? `\nAUTHORITATIVE USER MATCH HINT: "${matchHint}". You MUST prioritize this exact title/year/adaptation specified by the user over any ambiguous filename guesses.`
       : '';
 
-    const prompt = `You are an expert movie and TV media cataloger for a personal streaming platform named Kodimi.
+    const prompt = `You are an authoritative movie and television metadata archivist for a personal streaming platform named Kodimi.
 Analyze this video file name: "${filename}" ${contextHint ? `(from release: "${contextHint}")` : ''}.
-Detected Season: ${parsed.season || 'null'}, Episode: ${parsed.episode || 'null'}, Inferred Series: "${parsed.series_name || ''}", Inferred Episode Title: "${parsed.episode_title || ''}".${existingSeriesNote}
+Heuristic parse -> Detected Type: "${parsed.type}", Season: ${parsed.season ?? 'null'}, Episode: ${parsed.episode ?? 'null'}, Inferred Year: ${parsed.year ?? 'null'}, Inferred Series: "${parsed.series_name || ''}", Inferred Title: "${parsed.title || ''}", Inferred Episode Title: "${parsed.episode_title || ''}".${existingSeriesNote}${userHintBlock}
 
-IMPORTANT RULES:
-1. If this is adult/pornographic/XXX/18+ explicit content, set "is_adult": true, "type": "movie", "series_name": null.
-2. If this is a TV series episode (contains SxxExx or season/episode pattern):
+MANDATORY VERIFICATION & ACCURACY RULES:
+1. USE GOOGLE SEARCH GROUNDING to verify the real-world movie or TV show, exact release year, cast/characters, overarching series premise, and official Season/Episode guide before writing any synopsis. NEVER invent or hallucinate plot points, character names, or fake episode storylines.
+2. If this is adult/pornographic/XXX/18+ explicit content, set "is_adult": true, "type": "movie", "series_name": null, "series_plot": null.
+3. If this is a TV series episode (contains SxxExx / Season-Episode pattern, or user hint indicates a TV series):
    - Set "type": "series"
-   - Set "series_name": Canonical name of the TV show (e.g. "Slow Horses")
-   - Set "season": Season number (integer, e.g. 6)
-   - Set "episode": Episode number (integer, e.g. 5)
-   - Set "episode_title": The actual title of this specific episode (e.g. "Sayonara")
-   - Set "title": MUST be formatted as: "{series_name} S{XX}E{XX}: {episode_title}" (e.g. "Slow Horses S06E05: Sayonara"). If episode title is unknown, use "{series_name} S{XX}E{XX}".
-   - Set "plot": An accurate 2-3 sentence synopsis/plot overview of THIS SPECIFIC EPISODE (what happens in this episode, not just the generic series premise).
-3. If this is a standalone Movie:
+   - Set "series_name": Canonical official name of the TV show (e.g. "Slow Horses", "Dark Matter", "Succession")
+   - Set "season": Season number (integer)
+   - Set "episode": Episode number (integer)
+   - Set "episode_title": Verified official title of Season {season}, Episode {episode} (or null if untitled)
+   - Set "title": MUST be formatted as "{series_name} S{XX}E{XX}: {episode_title}" (or "{series_name} S{XX}E{XX}" if episode_title is null)
+   - Set "year": Premiere year of this TV series adaptation (e.g. 2024 for Apple TV+'s Dark Matter)
+   - Set "series_plot": Verified 2-3 sentence overarching synopsis of the TV series as a whole
+   - Set "plot": Verified 2-3 sentence synopsis of THIS SPECIFIC EPISODE (Season {season}, Episode {episode}). If this specific episode's official synopsis has not been published yet, write a concise factual 1-2 sentence description referencing verified Season {season} context without fabricating scenes.
+4. If this is a standalone Movie:
    - Set "type": "movie"
-   - Set "series_name": null, "season": null, "episode": null, "episode_title": null
-   - Set "title": Canonical movie title
-   - Set "plot": Accurate 2-3 sentence synopsis of the movie.
-4. DISAMBIGUATION RULE:
-   If a title has multiple adaptations across different years (e.g. "Dark Matter" 2024 vs 2015, "Shogun" 2024 vs 1980), always default to the modern/recent release unless a specific past year is explicitly indicated in the filename or release context.
+   - Set "series_name": null, "season": null, "episode": null, "episode_title": null, "series_plot": null
+   - Set "title": Canonical official movie title (keep numbers that belong to the title, e.g. "1917", "Blade Runner 2049", "2001: A Space Odyssey")
+   - Set "year": Verified theatrical/streaming release year of this exact film
+   - Set "plot": Verified 2-3 sentence factual synopsis of this exact film (matching its real cast and release year).
+5. DISAMBIGUATION RULE:
+   Unless an explicit release year or user match hint specifies an older version, prefer the modern/recent well-known release (including 2024–2026 films and streaming series).
 
-Return a strictly valid JSON object with fields:
+Return ONLY a strictly valid JSON object matching:
 {
   "title": string,
-  "type": "movie" or "series",
-  "series_name": string or null,
-  "season": integer or null,
-  "episode": integer or null,
-  "episode_title": string or null,
-  "year": integer or null,
+  "type": "movie" | "series",
+  "series_name": string | null,
+  "season": integer | null,
+  "episode": integer | null,
+  "episode_title": string | null,
+  "year": integer | null,
   "plot": string,
+  "series_plot": string | null,
   "genres": string[],
   "tags": string[],
-  "poster_url": string,
-  "backdrop_url": string,
+  "poster_url": string | null,
+  "backdrop_url": string | null,
   "is_adult": boolean
-}
+}`;
 
-Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON string.`;
-
-    const response = await client.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-    });
-
-    const text = response.text?.trim() || '';
-    const cleanJson = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
-    const aiData = JSON.parse(cleanJson);
+    const aiData = await generateGroundedMetadataJson(client, prompt);
 
     // If filename has SxxExx and parsed.is_adult is false, never allow AI hallucination to mark it as adult
     const isAdultDetected = Boolean(
       parsed.is_adult ||
-      (!parsed.season && !parsed.episode && (aiData.is_adult || (Array.isArray(aiData.genres) && aiData.genres.some((g) => /adult|erotic|xxx|porn/i.test(g)))))
+        (parsed.season === null &&
+          parsed.episode === null &&
+          (aiData.is_adult ||
+            (Array.isArray(aiData.genres) && aiData.genres.some((g) => /adult|erotic|xxx|porn/i.test(g)))))
     );
 
     if (isAdultDetected) {
@@ -224,6 +444,7 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
         is_adult: true,
         type: 'movie',
         series_name: null,
+        series_plot: null,
         size_bytes: fileSize,
         plot: 'Private Media content.',
         genres: ['Adult'],
@@ -233,12 +454,12 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
       };
     }
 
-    let finalType = parsed.type === 'series' ? 'series' : (aiData.type || parsed.type);
+    let finalType = parsed.type === 'series' && !matchHint ? 'series' : (aiData.type || parsed.type);
     let seriesName = aiData.series_name || parsed.series_name;
 
     if (finalType === 'series') {
-      // Reconcile with canonical series name if already in catalog (e.g. "Avatar: Seven Havens")
-      if (seriesName && mediaDB.getCanonicalSeriesName) {
+      // Reconcile with canonical series name if already in catalog (unless overridden by explicit matchHint)
+      if (!matchHint && seriesName && mediaDB.getCanonicalSeriesName) {
         seriesName = mediaDB.getCanonicalSeriesName(seriesName);
       }
     }
@@ -250,15 +471,22 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
       const epNum = aiData.episode ?? parsed.episode;
       const epTitle = aiData.episode_title || parsed.episode_title;
       const sName = seriesName || 'TV Series';
-      const epLabel = sNum && epNum ? `S${String(sNum).padStart(2, '0')}E${String(epNum).padStart(2, '0')}` : '';
+      const epLabel =
+        sNum !== null && sNum !== undefined && epNum !== null && epNum !== undefined
+          ? `S${String(sNum).padStart(2, '0')}E${String(epNum).padStart(2, '0')}`
+          : '';
 
       if (epLabel) {
         finalTitle = epTitle ? `${sName} ${epLabel}: ${epTitle}` : `${sName} ${epLabel}`;
       }
     }
 
-    const cleanPoster = (aiData.poster_url && !aiData.poster_url.includes('tmdb.org')) ? aiData.poster_url : null;
-    const cleanBackdrop = (aiData.backdrop_url && !aiData.backdrop_url.includes('tmdb.org')) ? aiData.backdrop_url : null;
+    const cleanPoster = aiData.poster_url && !aiData.poster_url.includes('tmdb.org') ? aiData.poster_url : null;
+    const cleanBackdrop = aiData.backdrop_url && !aiData.backdrop_url.includes('tmdb.org') ? aiData.backdrop_url : null;
+    const resolvedSeriesPlot =
+      finalType === 'series'
+        ? (!isPlaceholderOrGenericPlot(aiData.series_plot) ? aiData.series_plot : (existingSeries?.series_plot || null))
+        : null;
 
     return {
       ...parsed,
@@ -267,10 +495,11 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
       title: finalTitle,
       type: finalType,
       series_name: finalType === 'series' ? seriesName : null,
-      season: aiData.season ?? parsed.season,
-      episode: aiData.episode ?? parsed.episode,
+      season: finalType === 'series' ? (aiData.season ?? parsed.season) : null,
+      episode: finalType === 'series' ? (aiData.episode ?? parsed.episode) : null,
       year: aiData.year ?? existingSeries?.year ?? parsed.year,
       plot: aiData.plot || `Watch ${finalTitle} in high definition on Kodimi.`,
+      series_plot: resolvedSeriesPlot,
       genres: Array.isArray(aiData.genres) && aiData.genres.length > 0 ? aiData.genres : ['Entertainment'],
       tags: Array.isArray(aiData.tags) && aiData.tags.length > 0 ? aiData.tags : ['HD', parsed.resolution],
       poster_url: cleanPoster,
@@ -283,15 +512,39 @@ Do NOT enclose in markdown backticks or code fences. Output ONLY the raw JSON st
 }
 
 function generateFallbackMetadata(parsed, fileSize) {
-  const genres = inferGenres(parsed.title);
+  let seriesName = parsed.series_name;
+  let title = parsed.title;
+  let existingSeries = null;
+
+  if (parsed.type === 'series' && seriesName) {
+    if (mediaDB.getSeriesInfo) {
+      existingSeries = mediaDB.getSeriesInfo(seriesName);
+    }
+    if (mediaDB.getCanonicalSeriesName) {
+      seriesName = mediaDB.getCanonicalSeriesName(seriesName);
+    }
+    const epLabel =
+      parsed.season !== null && parsed.episode !== null
+        ? `S${String(parsed.season).padStart(2, '0')}E${String(parsed.episode).padStart(2, '0')}`
+        : '';
+    if (epLabel) {
+      title = parsed.episode_title ? `${seriesName} ${epLabel}: ${parsed.episode_title}` : `${seriesName} ${epLabel}`;
+    }
+  }
+
+  const genres = existingSeries?.genres?.length ? existingSeries.genres : inferGenres(title);
   return {
     ...parsed,
+    title,
+    series_name: parsed.type === 'series' ? seriesName : null,
+    year: parsed.year ?? existingSeries?.year ?? null,
     size_bytes: fileSize,
-    plot: `Enjoy ${parsed.title} streaming in ${parsed.resolution} on your personal Kodimi media center.`,
+    plot: `Enjoy ${title} streaming in ${parsed.resolution} on your personal Kodimi media center.`,
+    series_plot: existingSeries?.series_plot ?? null,
     genres,
     tags: [parsed.resolution, parsed.video_codec.toUpperCase(), ...genres],
-    poster_url: getPlaceholderPoster(parsed.title),
-    backdrop_url: getPlaceholderBackdrop(parsed.title),
+    poster_url: existingSeries?.poster_url ?? getPlaceholderPoster(title),
+    backdrop_url: existingSeries?.backdrop_url ?? getPlaceholderBackdrop(title),
   };
 }
 
@@ -315,6 +568,9 @@ function getPlaceholderBackdrop(title) {
 }
 
 export default {
+  MEDIA_METADATA_JSON_SCHEMA,
   heuristicParseFilename,
+  isPlaceholderOrGenericPlot,
+  extractJsonObject,
   enrichMediaMetadata,
 };

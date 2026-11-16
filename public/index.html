@@ -21,7 +21,7 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 
   <!-- Custom Material Design Stylesheet -->
-  <link rel="stylesheet" href="/css/style.css?v=27" />
+  <link rel="stylesheet" href="/css/style.css?v=28" />
 </head>
 <body>
 
@@ -576,6 +576,24 @@
       <span class="player-loader-text">Buffering Stream...</span>
     </div>
 
+    <!-- Series Autoplay "Up Next" Overlay Card -->
+    <div id="player-upnext-card" class="player-upnext-card" style="display: none;" role="region" aria-label="Up Next">
+      <img id="player-upnext-thumb" class="player-upnext-thumb" src="" alt="" />
+      <div class="player-upnext-body">
+        <div id="player-upnext-badge" class="player-upnext-badge">UP NEXT</div>
+        <div id="player-upnext-title" class="player-upnext-title"></div>
+        <div class="player-upnext-actions">
+          <button type="button" class="btn-filled player-upnext-play-btn" id="player-upnext-play-btn">
+            <span class="material-symbols-outlined fill" style="font-size: 18px;">play_arrow</span>
+            <span id="player-upnext-play-label">Play Next</span>
+          </button>
+          <button type="button" class="btn-tonal player-upnext-cancel-btn" id="player-upnext-cancel-btn" title="Dismiss Autoplay for this episode">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Top Overlay -->
     <div id="player-overlay-top" class="player-overlay-top">
       <div style="display: flex; align-items: center; gap: 16px;">
@@ -615,6 +633,10 @@
             <span class="material-symbols-outlined">forward_10</span>
           </button>
 
+          <button class="icon-btn" id="player-next-ep-btn" title="Next Episode (Shift+N)" style="display: none;">
+            <span class="material-symbols-outlined fill">skip_next</span>
+          </button>
+
           <!-- Volume -->
           <div style="display: flex; align-items: center; gap: 8px;">
             <button class="icon-btn" id="player-volume-btn" title="Mute/Unmute (M)">
@@ -627,6 +649,11 @@
         </div>
 
         <div class="player-controls-right">
+          <!-- Series Autoplay Toggle -->
+          <button class="icon-btn active" id="player-autoplay-btn" title="Autoplay Next Episode: ON" style="display: none;">
+            <span class="material-symbols-outlined" id="player-autoplay-icon">playlist_play</span>
+          </button>
+
           <!-- Subtitles Dropdown -->
           <div style="position: relative;">
             <button class="icon-btn" id="player-subtitles-btn" title="Subtitles (C)">
@@ -741,6 +768,6 @@
   </nav>
 
   <!-- Application Entrypoint Module -->
-  <script type="module" src="/js/app.js?v=27"></script>
+  <script type="module" src="/js/app.js?v=28"></script>
 </body>
 </html>

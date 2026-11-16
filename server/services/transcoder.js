@@ -422,10 +422,37 @@ export async function streamOriginalDirect(gcsPath, req, res) {
 }
 
 /**
+ * Rejects mid-stream HTTP byte-range requests (Range: bytes=<start>- with start > 0)
+ * on dynamic FFmpeg fMP4 streams that always start at PTS=0.
+ * Prevents browsers from silently restarting FFmpeg from byte 0 on socket drops
+ * and routes stream handoff cleanly through KodimiPlayer's time-aware reconnect.
+ */
+export function rejectNonZeroByteRange(req, res) {
+  const rangeHeader = req?.headers?.range;
+  if (!rangeHeader || typeof rangeHeader !== 'string') return false;
+  const match = rangeHeader.match(/bytes=(\d+)-/i);
+  if (!match) return false;
+  const startByte = parseInt(match[1], 10);
+  if (Number.isFinite(startByte) && startByte > 0) {
+    if (res && !res.headersSent) {
+      res.writeHead(416, {
+        'Content-Range': 'bytes */*',
+        'Cache-Control': 'no-cache, no-store',
+      });
+      res.end();
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
  * Streams Original Video with universal AAC audio remuxing (-c:v copy -c:a aac)
  * and frame-locked A/V timestamp synchronization.
  */
 export async function streamOriginalRemux(gcsPath, startTimeSeconds = 0, req, res, options = {}) {
+  if (rejectNonZeroByteRange(req, res)) return;
+
   let clientClosed = false;
   res.on('close', () => {
     clientClosed = true;
@@ -493,6 +520,8 @@ export async function streamOriginalRemux(gcsPath, startTimeSeconds = 0, req, re
  * with capped-CRF rate control and smart passthrough when the original file is already optimized.
  */
 export async function streamTranscodedVideo(gcsPath, quality, startTimeSeconds = 0, req, res, options = {}) {
+  if (rejectNonZeroByteRange(req, res)) return;
+
   let clientClosed = false;
   res.on('close', () => {
     clientClosed = true;

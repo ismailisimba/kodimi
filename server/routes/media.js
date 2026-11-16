@@ -129,7 +129,8 @@ router.get('/series/:name/seasons', requireAuth, async (req, res) => {
   }
 
   const seriesName = decodeURIComponent(req.params.name);
-  const data = mediaDB.getSeriesSeasons(seriesName, showAdult);
+  const profileId = getProfileId(req);
+  const data = mediaDB.getSeriesSeasons(seriesName, showAdult, profileId);
   res.json(data);
 });
 
@@ -315,6 +316,7 @@ router.get('/:id/thumbnail', async (req, res) => {
 });
 
 router.get('/:id/duration', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
   const item = mediaDB.getById(req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Media not found' });
@@ -332,7 +334,8 @@ router.get('/:id/duration', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:id', requireAuth, (req, res) => {
+router.get('/:id', requireAuth, async (req, res) => {
+  await ensureMediaCacheFresh();
   const item = mediaDB.getById(req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Media not found' });
@@ -404,15 +407,26 @@ router.delete('/:id', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-router.post('/playback/progress', requireAuth, (req, res) => {
-  const { mediaId, currentTime, duration, completed } = req.body;
+router.post('/playback/progress', requireAuth, async (req, res) => {
+  const { mediaId, currentTime, duration, completed } = req.body || {};
   if (!mediaId) {
     return res.status(400).json({ error: 'mediaId is required' });
   }
 
   const profileId = getProfileId(req);
-  playbackDB.saveProgress(mediaId, currentTime, duration, completed, profileId);
-  res.json({ success: true });
+  const saved = await playbackDB.saveProgress(mediaId, currentTime, duration, completed, profileId);
+  res.json({ success: true, progress: saved });
+});
+
+router.delete('/playback/:mediaId', requireAuth, async (req, res) => {
+  const { mediaId } = req.params;
+  if (!mediaId) {
+    return res.status(400).json({ error: 'mediaId is required' });
+  }
+
+  const profileId = getProfileId(req);
+  const saved = await playbackDB.markCompleted(mediaId, profileId);
+  res.json({ success: true, progress: saved });
 });
 
 export default router;

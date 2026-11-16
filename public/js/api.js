@@ -190,10 +190,16 @@ export const api = {
     }),
 
   // Playback Progress
-  saveProgress: (mediaId, currentTime, duration, completed = 0) =>
+  saveProgress: (mediaId, currentTime, duration, completed = 0, options = {}) =>
     request('/media/playback/progress', {
       method: 'POST',
+      keepalive: Boolean(options.keepalive),
       body: JSON.stringify({ mediaId, currentTime, duration, completed }),
+    }),
+
+  dismissContinueWatching: (mediaId) =>
+    request(`/media/playback/${encodeURIComponent(mediaId)}`, {
+      method: 'DELETE',
     }),
 
   // Stream URL Generator with auth token, vault pin, codec negotiation & session ID

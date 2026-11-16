@@ -1,5 +1,5 @@
 import express from 'express';
-import { mediaDB } from '../db/database.js';
+import { mediaDB, ensureMediaCacheFresh } from '../db/database.js';
 import {
   streamOriginalDirect,
   streamOriginalRemux,
@@ -27,13 +27,22 @@ function resolveSessionKey(req, mediaId) {
   return `${user}:${profileId}:${mediaId}`;
 }
 
+async function getMediaItemFresh(id) {
+  let item = mediaDB.getById(id);
+  if (!item) {
+    await ensureMediaCacheFresh(true);
+    item = mediaDB.getById(id);
+  }
+  return item;
+}
+
 /**
  * Original Resolution Streaming.
  * Default: streamOriginalRemux (-c:v copy -c:a aac) with frame-locked A/V sync for universal audio compatibility.
  * If ?direct=true: raw HTTP 206 byte-range passthrough.
  */
 router.get('/:id', requireAuth, async (req, res) => {
-  const item = mediaDB.getById(req.params.id);
+  const item = await getMediaItemFresh(req.params.id);
   if (!item) {
     return res.status(404).send('Media not found');
   }
@@ -64,7 +73,7 @@ router.get('/:id', requireAuth, async (req, res) => {
  * Query params: ?quality=720p&time=0&codec=av1&sid=...
  */
 router.get('/:id/transcode', requireAuth, async (req, res) => {
-  const item = mediaDB.getById(req.params.id);
+  const item = await getMediaItemFresh(req.params.id);
   if (!item) {
     return res.status(404).send('Media not found');
   }
@@ -105,7 +114,7 @@ router.get('/:id/transcode', requireAuth, async (req, res) => {
  * Supports embedded tracks (?track=0) and persisted custom uploaded subtitles (?customId=sub_...).
  */
 router.get('/:id/subtitles', requireAuth, async (req, res) => {
-  const item = mediaDB.getById(req.params.id);
+  const item = await getMediaItemFresh(req.params.id);
   if (!item) {
     return res.status(404).send('Media not found');
   }
@@ -132,7 +141,7 @@ router.get('/:id/subtitles', requireAuth, async (req, res) => {
  * Returns array of available custom + embedded subtitle streams.
  */
 router.get('/:id/subtitles/tracks', requireAuth, async (req, res) => {
-  const item = mediaDB.getById(req.params.id);
+  const item = await getMediaItemFresh(req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Media not found' });
   }

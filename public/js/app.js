@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=27';
-import KodimiPlayer from './player.js?v=27';
+import { api, authState, vaultState, profileState } from './api.js?v=28';
+import KodimiPlayer from './player.js?v=28';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -20,7 +20,7 @@ import {
   buildRecentlyAddedFeed,
   sortMoviesList,
   escapeHtml,
-} from './components.js?v=27';
+} from './components.js?v=28';
 
 class KodimiApp {
   constructor() {
@@ -465,7 +465,10 @@ class KodimiApp {
         if (ep) {
           this.player.open(ep, startTime);
         } else {
-          api.getMediaById(epId).then((item) => this.player.open(item, startTime)).catch(() => {});
+          api.getMediaById(epId).then((res) => {
+            const item = res?.item || res;
+            if (item) this.player.open(item, startTime);
+          }).catch(() => {});
         }
         return;
       }
@@ -478,7 +481,8 @@ class KodimiApp {
         if (ep) {
           this.openDetailModal(ep);
         } else if (epId) {
-          api.getMediaById(epId).then((item) => {
+          api.getMediaById(epId).then((res) => {
+            const item = res?.item || res;
             if (item) this.openDetailModal(item);
           }).catch(() => {});
         }
@@ -581,9 +585,21 @@ class KodimiApp {
         return;
       }
 
+      const watchedBtn = e.target.closest('.quick-watched-btn');
+      if (watchedBtn) {
+        e.stopPropagation();
+        const id = watchedBtn.dataset.id;
+        if (id) {
+          this.continueWatching = this.continueWatching.filter((m) => m.id !== id);
+          this.renderView();
+          api.dismissContinueWatching(id).then(() => this.loadData()).catch(() => this.loadData());
+        }
+        return;
+      }
+
       // 8. Regular Media Card click opens detail
       const card = e.target.closest('.media-card');
-      if (card && !e.target.closest('.quick-play-btn, .quick-info-btn, .series-card')) {
+      if (card && !e.target.closest('.quick-play-btn, .quick-info-btn, .quick-watched-btn, .series-card')) {
         const id = card.dataset.id;
         const item = this.findMediaById(id);
         if (item) this.openDetailModal(item);

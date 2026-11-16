@@ -620,7 +620,7 @@ export const mediaDB = {
     return list.slice(0, limit);
   },
 
-  getSeriesSeasons: (seriesName, isAdult = false) => {
+  getSeriesSeasons: (seriesName, isAdult = false, profileId = null) => {
     const cleanName = (seriesName || '').trim().toLowerCase();
     const targetKey = normalizeSeriesKey(seriesName);
     const seasonsMap = {};
@@ -688,7 +688,19 @@ export const mediaDB = {
       if (!seasonsMap[sNum]) {
         seasonsMap[sNum] = [];
       }
-      seasonsMap[sNum].push(item);
+      const prog = profileId ? playbackCache.get(`${profileId}:${item.id}`) : null;
+      const effDur = prog?.duration || item.duration || 0;
+      const epDone = prog ? isPlaybackCompleted(prog.current_time, effDur, prog.completed) : false;
+      seasonsMap[sNum].push(
+        prog
+          ? {
+              ...item,
+              current_time: epDone ? 0 : prog.current_time,
+              playback_duration: effDur,
+              completed: epDone,
+            }
+          : item
+      );
     }
 
     for (const sNum in seasonsMap) {
@@ -703,29 +715,94 @@ export const mediaDB = {
   },
 };
 
+/**
+ * Determines whether a VOD playback session should be treated as finished
+ * (e.g. reached end credits >= 92% of total duration or explicitly ended).
+ */
+export function isPlaybackCompleted(currentTime, duration, completedFlag = false) {
+  if (Boolean(completedFlag)) return true;
+  const cur = Number(currentTime) || 0;
+  const dur = Number(duration) || 0;
+  if (dur > 60 && cur / dur >= 0.92) return true;
+  if (dur > 0 && dur <= 60 && cur / dur >= 0.95) return true;
+  return false;
+}
+
 // Playback Progress DB Methods
 export const playbackDB = {
   getProgress: (mediaId, profileId = 'default') => {
     return playbackCache.get(`${profileId}:${mediaId}`) || null;
   },
 
-  saveProgress: (mediaId, currentTime, duration, completed = 0, profileId = 'default') => {
+  saveProgress: async (mediaId, currentTime, duration, completed = 0, profileId = 'default') => {
+    const media = mediaCache.get(mediaId);
+    const effectiveDuration = Number(duration) > 0 ? Number(duration) : (media?.duration || 0);
+    const safeCurrent = Math.max(0, Number(currentTime) || 0);
+    const isCompleted = isPlaybackCompleted(safeCurrent, effectiveDuration, completed);
+
     const docData = {
       profile_id: profileId,
       media_id: mediaId,
-      current_time: currentTime,
-      duration,
-      completed: Boolean(completed),
+      current_time: safeCurrent,
+      duration: effectiveDuration,
+      completed: isCompleted,
       updated_at: new Date(),
     };
 
     playbackCache.set(`${profileId}:${mediaId}`, docData);
 
-    PlaybackModel.findOneAndUpdate(
-      { profile_id: profileId, media_id: mediaId },
-      { $set: docData },
-      { upsert: true, returnDocument: 'after' }
-    ).catch((err) => console.error('[Playback Save Error]:', err.message));
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await PlaybackModel.findOneAndUpdate(
+          { profile_id: profileId, media_id: mediaId },
+          { $set: docData },
+          { upsert: true, returnDocument: 'after' }
+        );
+      } catch (err) {
+        console.error('[Playback Save Error]:', err.message);
+      }
+    }
+
+    return docData;
+  },
+
+  markCompleted: async (mediaId, profileId = 'default') => {
+    const existing = playbackCache.get(`${profileId}:${mediaId}`);
+    const media = mediaCache.get(mediaId);
+    const effectiveDuration = existing?.duration || media?.duration || 0;
+    const docData = {
+      profile_id: profileId,
+      media_id: mediaId,
+      current_time: effectiveDuration,
+      duration: effectiveDuration,
+      completed: true,
+      updated_at: new Date(),
+    };
+
+    playbackCache.set(`${profileId}:${mediaId}`, docData);
+
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await PlaybackModel.findOneAndUpdate(
+          { profile_id: profileId, media_id: mediaId },
+          { $set: docData },
+          { upsert: true, returnDocument: 'after' }
+        );
+      } catch (err) {
+        console.error('[Playback MarkCompleted Error]:', err.message);
+      }
+    }
+
+    return docData;
+  },
+
+  deleteProgress: async (mediaId, profileId = 'default') => {
+    playbackCache.delete(`${profileId}:${mediaId}`);
+    if (mongoose.connection.readyState === 1) {
+      await PlaybackModel.deleteOne({ profile_id: profileId, media_id: mediaId }).catch((err) =>
+        console.error('[Playback Delete Error]:', err.message)
+      );
+    }
   },
 
   getContinueWatching: (profileId = 'default', limit = 15, allowAdult = false) => {
@@ -733,20 +810,20 @@ export const playbackDB = {
     const prefix = `${profileId}:`;
     for (const [key, progress] of playbackCache.entries()) {
       if (!key.startsWith(prefix)) continue;
-      if (!progress.completed && progress.current_time > 10) {
-        const media = mediaCache.get(progress.media_id);
-        if (media) {
-          if (media.is_adult && !allowAdult) {
-            continue; // Strictly hide private/adult titles unless vault is open
-          }
-          list.push({
-            ...media,
-            current_time: progress.current_time,
-            playback_duration: progress.duration,
-            completed: progress.completed,
-            last_watched: progress.updated_at,
-          });
+      const media = mediaCache.get(progress.media_id);
+      if (!media) continue;
+      const effDur = progress.duration || media.duration || 0;
+      if (!isPlaybackCompleted(progress.current_time, effDur, progress.completed) && progress.current_time > 10) {
+        if (media.is_adult && !allowAdult) {
+          continue; // Strictly hide private/adult titles unless vault is open
         }
+        list.push({
+          ...media,
+          current_time: progress.current_time,
+          playback_duration: effDur,
+          completed: false,
+          last_watched: progress.updated_at,
+        });
       }
     }
 

@@ -3,7 +3,7 @@
  * Enhanced with AV1/HEVC Low-Bandwidth Codec Negotiation, Smart 1080p-Low,
  * Debounced Zero-429 Seeking, and Persistent GCS Manual Subtitles (.SRT / .VTT / .ASS)
  */
-import { api } from './api.js?v=27';
+import { api, vaultState } from './api.js?v=28';
 
 /**
  * Parses WebVTT (.vtt), SubRip (.srt), or SubStation Alpha (.ass / .ssa) text into sorted cues:
@@ -360,12 +360,109 @@ export function renderSafeSubtitleHtml(text) {
   return escaped.replace(/&lt;(\/?(?:i|b|u))&gt;/gi, '<$1>');
 }
 
-class KodimiPlayer {
+/**
+ * Mirrors server completion logic (>= 92% on movies/episodes > 60s or explicit ended).
+ */
+export function isVodPlaybackCompleted(currentTimeSec, totalDurationSec, explicitEnded = false) {
+  if (Boolean(explicitEnded)) return true;
+  const cur = Number(currentTimeSec) || 0;
+  const dur = Number(totalDurationSec) || 0;
+  if (dur > 60 && cur / dur >= 0.92) return true;
+  if (dur > 0 && dur <= 60 && cur / dur >= 0.95) return true;
+  return false;
+}
+
+/**
+ * Detects when a progressive empty_moov fMP4 stream closes early (e.g. Cloud Run 3600s timeout
+ * or instance drain on a fragment boundary), causing <video> to emit premature 'ended'.
+ */
+export function isPrematureStreamEnd(currentTimeSec, totalDurationSec) {
+  const cur = Number(currentTimeSec) || 0;
+  const dur = Number(totalDurationSec) || 0;
+  if (dur <= 90) return false;
+  const remainingMargin = Math.max(45, dur * 0.05);
+  return cur >= 0 && cur < dur - remainingMargin;
+}
+
+/**
+ * Formats an episode label like "S01E02 • The Avatar Returns".
+ */
+export function formatEpisodeCode(ep) {
+  if (!ep) return '';
+  const s = String(ep.season || 1).padStart(2, '0');
+  const e = String(ep.episode || 1).padStart(2, '0');
+  const code = `S${s}E${e}`;
+  const cleanTitle = String(ep.title || '')
+    .replace(/^.*?[sS]\d+[eE]\d+\s*[-:•]?\s*/, '')
+    .trim();
+  if (cleanTitle && cleanTitle.toLowerCase() !== code.toLowerCase()) {
+    return `${code} • ${cleanTitle}`;
+  }
+  return code;
+}
+
+/**
+ * Resolves the current episode position and next chronologically available episode
+ * across all seasons of a series (handles missing episode numbers and S01 -> S02 transitions).
+ */
+export function resolveNextSeriesEpisode(seasonsData, currentMedia) {
+  if (!seasonsData || !seasonsData.seasons || !currentMedia) {
+    return { currentIndex: -1, totalEpisodes: 0, nextEpisode: null };
+  }
+
+  const seasonsMap = seasonsData.seasons || {};
+  const seasonNums = Array.isArray(seasonsData.seasonNumbers) && seasonsData.seasonNumbers.length > 0
+    ? [...seasonsData.seasonNumbers].map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+    : Object.keys(seasonsMap).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+
+  const flat = [];
+  const seenIds = new Set();
+
+  for (const sNum of seasonNums) {
+    const eps = Array.isArray(seasonsMap[sNum]) ? [...seasonsMap[sNum]] : [];
+    eps.sort((a, b) => (a.episode || 0) - (b.episode || 0));
+    for (const ep of eps) {
+      if (!ep || !ep.id || seenIds.has(ep.id)) continue;
+      seenIds.add(ep.id);
+      flat.push(ep);
+    }
+  }
+
+  let currentIndex = flat.findIndex((ep) => ep.id === currentMedia.id);
+  if (currentIndex === -1 && currentMedia.episode != null) {
+    const targetSeason = currentMedia.season || 1;
+    const targetEpisode = currentMedia.episode;
+    currentIndex = flat.findIndex(
+      (ep) => (ep.season || 1) === targetSeason && ep.episode === targetEpisode
+    );
+  }
+
+  const nextEpisode =
+    currentIndex >= 0 && currentIndex + 1 < flat.length ? flat[currentIndex + 1] : null;
+
+  return {
+    currentIndex,
+    totalEpisodes: flat.length,
+    nextEpisode,
+  };
+}
+
+export class KodimiPlayer {
   constructor() {
     this.container = document.getElementById('player-container');
     this.video = document.getElementById('player-video');
     this.playBtn = document.getElementById('player-play-btn');
     this.playIcon = document.getElementById('player-play-icon');
+    this.nextEpBtn = document.getElementById('player-next-ep-btn');
+    this.autoplayBtn = document.getElementById('player-autoplay-btn');
+    this.autoplayIcon = document.getElementById('player-autoplay-icon');
+    this.upNextCard = document.getElementById('player-upnext-card');
+    this.upNextThumb = document.getElementById('player-upnext-thumb');
+    this.upNextBadge = document.getElementById('player-upnext-badge');
+    this.upNextTitle = document.getElementById('player-upnext-title');
+    this.upNextPlayBtn = document.getElementById('player-upnext-play-btn');
+    this.upNextPlayLabel = document.getElementById('player-upnext-play-label');
+    this.upNextCancelBtn = document.getElementById('player-upnext-cancel-btn');
     this.progressContainer = document.getElementById('player-progress-container');
     this.progressTooltip = document.getElementById('player-progress-tooltip');
     this.progressBuffer = document.getElementById('player-progress-buffer');
@@ -389,9 +486,9 @@ class KodimiPlayer {
     this.subtitleFileInput = document.getElementById('player-subtitle-file-input');
     this.subOffsetMinusBtn = document.getElementById('player-sub-offset-minus');
     this.subOffsetResetBtn = document.getElementById('player-sub-offset-reset');
-    this.subOffsetPlusBtn = document.getElementById('player-sub-offset-plus');
     this.subModeOverlayBtn = document.getElementById('player-sub-mode-overlay');
     this.subModeNativeBtn = document.getElementById('player-sub-mode-native');
+    this.subOffsetPlusBtn = document.getElementById('player-sub-offset-plus');
     this.loader = document.getElementById('player-loader');
     this.loaderText = document.querySelector('.player-loader-text');
     this.backBtn = document.getElementById('player-back-btn');
@@ -401,8 +498,15 @@ class KodimiPlayer {
 
     this.currentMedia = null;
     this.selectedQuality = 'original';
+    this.userSelectedQuality = null;
     this.totalDuration = 0;
     this.seekTimeOffset = 0;
+    this.lastKnownEffectiveTime = 0;
+    this.hasEstablishedPlayback = false;
+    this.recoveryAttempts = 0;
+    this.maxRecoveryAttempts = 4;
+    this.recoveryResetTimer = null;
+    this.stallWatchdogTimer = null;
     this.isPendingSeek = false;
     this.pendingSeekTarget = 0;
     this.seekDebounceTimer = null;
@@ -420,14 +524,16 @@ class KodimiPlayer {
     this._lastTimeText = '';
 
     this.supportedCodecs = this.detectSupportedCodecs();
-    this.codecPreference = localStorage.getItem('kodimi_codec_pref') || 'auto';
-    this.useNativeSubtitles = localStorage.getItem('kodimi_native_subtitles') === '1';
+    this.codecPreference = this.readStorage('kodimi_codec_pref', 'auto');
+    this.useNativeSubtitles = this.readStorage('kodimi_native_subtitles', '0') === '1';
+    this.autoplayEnabled = this.readStorage('kodimi_autoplay_next', '1') !== '0';
 
     this.currentVolume = 1;
     this.isMuted = false;
     this.subtitlesEnabled = false;
     this.availableSubtitles = [];
     this.activeSubtitleId = 'off';
+    this.preferredSubtitlePref = null;
     this.subtitleCues = [];
     this.subtitleOffsetSec = 0;
     this.controlsTimeout = null;
@@ -435,8 +541,35 @@ class KodimiPlayer {
     this.hls = null;
     this.liveTranscodeQuality = null;
 
+    // Series Autoplay queue state
+    this.seriesSeasonsCache = new Map();
+    this.nextEpisode = null;
+    this.upNextDismissedForId = null;
+    this.upNextCountdownTimer = null;
+    this.upNextSecondsLeft = 0;
+    this.upNextMode = null;
+
     this.updateSubtitleModeButtons();
+    this.updateAutoplayButtonUI();
     this.initEvents();
+  }
+
+  readStorage(key, fallback = '') {
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) {
+        const val = localStorage.getItem(key);
+        return val !== null ? val : fallback;
+      }
+    } catch (_) {}
+    return fallback;
+  }
+
+  writeStorage(key, val) {
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) {
+        localStorage.setItem(key, val);
+      }
+    } catch (_) {}
   }
 
   detectSupportedCodecs() {
@@ -509,17 +642,40 @@ class KodimiPlayer {
       this.hideLoader();
     });
     this.video.addEventListener('pause', () => {
+      this.clearStallWatchdog();
       this.playbackClock.onPauseOrWait(this.video.currentTime);
       this.stopPlaybackSyncLoop();
       this.releaseWakeLock();
       this.updatePlayIcon(false);
       this.onTimeUpdate(true);
+      if (!this.isLive && this.currentMedia && !this.video.ended && !this.isPendingSeek) {
+        this.persistPlaybackProgress();
+      }
     });
     this.video.addEventListener('ended', () => {
+      this.clearStallWatchdog();
       this.playbackClock.onPauseOrWait(this.video.currentTime);
       this.stopPlaybackSyncLoop();
       this.releaseWakeLock();
       this.updatePlayIcon(false);
+
+      if (!this.isLive && this.currentMedia && !this.isPendingSeek) {
+        const cur = this.getEffectiveCurrentTime();
+        const dur = this.getEffectiveDuration();
+
+        // Catch premature 'ended' when Cloud Run cuts an empty_moov fMP4 stream between fragments
+        if (isPrematureStreamEnd(cur, dur)) {
+          this.reconnectVodStream('premature-ended');
+          return;
+        }
+
+        // Genuine end of movie/episode: persist completion immediately
+        this.persistPlaybackProgress({ completed: true });
+        this.onTimeUpdate(true);
+        this.handleGenuineEnded();
+        return;
+      }
+
       this.onTimeUpdate(true);
     });
     this.video.addEventListener('timeupdate', () => {
@@ -541,16 +697,24 @@ class KodimiPlayer {
 
     // Video Buffering & Loading Listeners
     this.video.addEventListener('loadstart', () => {
+      // If browser spontaneously restarts HTTP loading mid-stream (without loadVideoSource/seek),
+      // prevent resetting clock to 0 and take over with time-synced reconnect.
+      if (!this.isLive && this.currentMedia && !this.isPendingSeek && this.hasEstablishedPlayback) {
+        this.reconnectVodStream('unexpected-browser-loadstart');
+        return;
+      }
       this.playbackClock.onPauseOrWait(0);
       this.showLoader('Loading stream...');
     });
     this.video.addEventListener('waiting', () => {
       this.playbackClock.onPauseOrWait(this.video.currentTime);
       this.showLoader('Buffering...');
+      this.armStallWatchdog('waiting');
     });
     this.video.addEventListener('stalled', () => {
       if (this.video.readyState < 3) {
         this.playbackClock.onPauseOrWait(this.video.currentTime);
+        this.armStallWatchdog('stalled');
       }
     });
     this.video.addEventListener('seeking', () => {
@@ -558,10 +722,12 @@ class KodimiPlayer {
       this.showLoader('Seeking...');
     });
     this.video.addEventListener('canplay', () => {
+      this.clearStallWatchdog();
       this.isPendingSeek = false;
       this.hideLoader();
     });
     this.video.addEventListener('playing', () => {
+      this.clearStallWatchdog();
       this.isPendingSeek = false;
       this.hasRetriedCurrentLoad = false;
       this.playbackClock.onPlaying(this.video.currentTime, this.video.playbackRate || 1);
@@ -571,6 +737,7 @@ class KodimiPlayer {
       this.onTimeUpdate();
     });
     this.video.addEventListener('seeked', () => {
+      this.clearStallWatchdog();
       this.playbackClock.onRawTimeSample(this.video.currentTime);
       if (!this.video.paused) {
         this.playbackClock.onPlaying(this.video.currentTime, this.video.playbackRate || 1);
@@ -579,18 +746,27 @@ class KodimiPlayer {
       this.onTimeUpdate(true);
     });
 
-    // Graceful Codec Fallback & Transient Network Retry
+    // Graceful Codec Fallback & Mid-Stream Handoff Recovery
     this.video.addEventListener('error', () => {
+      this.clearStallWatchdog();
       this.playbackClock.onPauseOrWait(this.video.currentTime);
       this.stopPlaybackSyncLoop();
       if (this.isLive || !this.currentMedia || this.isPendingSeek) return;
       const mediaErr = this.video.error;
       if (!mediaErr) return;
 
-      const cur = this.getEffectiveCurrentTime();
+      const cur = this.getSafeResumeTime();
       const activeCodec = this.getEffectiveCodec();
 
-      // If Smart TV auto-selected Direct mode and container/audio failed, fall back seamlessly to Universal AAC Remux
+      // 1. Mid-stream interruption after playback was already established (e.g. Cloud Run 3600s timeout
+      //    or instance switch severing fMP4 mid-fragment -> code 2 NETWORK or code 3 DECODE):
+      //    Reconnect seamlessly at exact effective timestamp WITHOUT disabling AV1/HEVC.
+      if (this.hasEstablishedPlayback && (mediaErr.code === 2 || mediaErr.code === 3)) {
+        this.reconnectVodStream(`mid-stream-error-${mediaErr.code}`);
+        return;
+      }
+
+      // 2. Startup Direct Raw MP4 failure on Smart TV -> fall back to Universal AAC Remux
       if ((mediaErr.code === 3 || mediaErr.code === 4) && this.selectedQuality === 'direct') {
         console.warn('[Player] Direct Raw MP4 playback failed, falling back to Universal AAC Remux...');
         this.selectedQuality = 'original';
@@ -602,8 +778,9 @@ class KodimiPlayer {
         return;
       }
 
-      // Decode / format unsupported fallback: AV1 -> HEVC -> H.264
+      // 3. Startup decode / format unsupported fallback: AV1 -> HEVC -> H.264
       if (
+        !this.hasEstablishedPlayback &&
         (mediaErr.code === 3 || mediaErr.code === 4) &&
         this.selectedQuality !== 'original' &&
         this.selectedQuality !== 'direct' &&
@@ -616,6 +793,7 @@ class KodimiPlayer {
         }
         const fallbackCodec = this.getEffectiveCodec();
         console.warn(`[Player] Codec ${activeCodec.toUpperCase()} decode failed, falling back to ${fallbackCodec.toUpperCase()}...`);
+        this.seekTimeOffset = cur;
         this.updateQualityBadgeLabel();
         this.renderVodQualityMenu();
         const retryUrl = this.buildVodStreamUrl(this.selectedQuality, cur);
@@ -623,33 +801,49 @@ class KodimiPlayer {
         return;
       }
 
-      // Single transient network retry after 1.5s
-      if (!this.hasRetriedCurrentLoad && mediaErr.code === 2) {
-        this.hasRetriedCurrentLoad = true;
-        this.showLoader('Reconnecting stream...');
-        if (this.retryTimer) clearTimeout(this.retryTimer);
-        this.retryTimer = setTimeout(() => {
-          if (!this.currentMedia || this.isLive) return;
-          const retryUrl = this.buildVodStreamUrl(this.selectedQuality, cur);
-          this.loadVideoSource(retryUrl, cur);
-        }, 1500);
+      // 4. Transient network / startup stream error -> bounded time-synced reconnect
+      if (mediaErr.code === 2 || mediaErr.code === 3) {
+        this.reconnectVodStream(`startup-error-${mediaErr.code}`);
       }
     });
 
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && this.currentMedia && !this.container.classList.contains('player-hidden')) {
+      if (!this.currentMedia || this.container.classList.contains('player-hidden')) return;
+      if (document.visibilityState === 'visible') {
         if (!this.video.paused) {
           this.requestWakeLock();
           this.startPlaybackSyncLoop();
         }
         this.onTimeUpdate(true);
+      } else if (!this.isLive) {
+        this.persistPlaybackProgress({ keepalive: true });
       }
     });
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', () => {
+        if (!this.isLive && this.currentMedia && !this.container.classList.contains('player-hidden')) {
+          this.persistPlaybackProgress({ keepalive: true });
+        }
+      });
+    }
 
     // Controls Action Listeners
     this.playBtn.addEventListener('click', () => this.togglePlay());
     document.getElementById('player-rewind-btn').addEventListener('click', () => this.skip(-10));
     document.getElementById('player-forward-btn').addEventListener('click', () => this.skip(10));
+    if (this.nextEpBtn) {
+      this.nextEpBtn.addEventListener('click', () => this.playNextEpisode());
+    }
+    if (this.autoplayBtn) {
+      this.autoplayBtn.addEventListener('click', () => this.toggleAutoplay());
+    }
+    if (this.upNextPlayBtn) {
+      this.upNextPlayBtn.addEventListener('click', () => this.playNextEpisode());
+    }
+    if (this.upNextCancelBtn) {
+      this.upNextCancelBtn.addEventListener('click', () => this.dismissUpNext());
+    }
 
     // Progress Bar Scrubber
     this.progressContainer.addEventListener('click', (e) => this.seek(e));
@@ -737,25 +931,41 @@ class KodimiPlayer {
     document.addEventListener('keydown', (e) => this.onKeyDown(e));
   }
 
-  open(media, initialTime = 0) {
+  open(media, initialTime = 0, options = {}) {
+    const preserveSession = Boolean(options.preserveSessionSettings);
     this.cancelPendingTimers();
     this.stopPlaybackSyncLoop();
+    this.hideUpNextCard();
     this.isLive = false;
     this.liveTranscodeQuality = null;
     this.currentMedia = media;
     this.streamSessionId = `sid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    // On Smart TVs (Hisense VIDAA / Tizen / webOS), prefer HTTP 206 Direct MP4 when the file is already native H.264+AAC MP4
+    // Preserve user-selected VOD quality across autoplay episode transitions when compatible
     const preferDirectOnTv = this.isSmartTv && canDirectPlayNativeMp4(media);
-    this.selectedQuality = preferDirectOnTv ? 'direct' : 'original';
+    if (preserveSession && this.userSelectedQuality) {
+      if (this.userSelectedQuality === 'direct' && !canDirectPlayNativeMp4(media)) {
+        this.selectedQuality = 'original';
+      } else {
+        this.selectedQuality = this.userSelectedQuality;
+      }
+    } else {
+      this.userSelectedQuality = null;
+      this.selectedQuality = preferDirectOnTv ? 'direct' : 'original';
+    }
+
+    const startSec = Math.max(0, Number(initialTime) || 0);
 
     this.updateQualityBadgeLabel();
     this.renderVodQualityMenu();
     this.titleDisplay.textContent = media.title;
     this.totalDuration = (media && media.duration > 0) ? media.duration : 0;
-    this.seekTimeOffset = this.selectedQuality === 'direct' ? 0 : initialTime;
+    this.seekTimeOffset = this.selectedQuality === 'direct' ? 0 : startSec;
+    this.lastKnownEffectiveTime = startSec;
+    this.hasEstablishedPlayback = false;
+    this.recoveryAttempts = 0;
     this.isPendingSeek = false;
-    this.pendingSeekTarget = initialTime;
+    this.pendingSeekTarget = startSec;
     this.hasRetriedCurrentLoad = false;
     this.subtitlesEnabled = false;
     this.activeSubtitleId = 'off';
@@ -763,10 +973,15 @@ class KodimiPlayer {
     this._lastSubtitleHtml = null;
     this._lastTimeText = '';
 
+    this.nextEpisode = null;
+    this.upNextDismissedForId = null;
+    this.updateSeriesControlsVisibility();
+    this.loadSeriesQueueForMedia(media);
+
     this.playbackClock.reset({
       seekOffsetSec: this.seekTimeOffset,
       isDirectMode: this.selectedQuality === 'direct',
-      initialRawSec: this.selectedQuality === 'direct' ? initialTime : 0,
+      initialRawSec: this.selectedQuality === 'direct' ? startSec : 0,
       durationSec: this.totalDuration,
     });
 
@@ -789,15 +1004,17 @@ class KodimiPlayer {
     // Remove existing subtitle tracks
     this.clearSubtitleTracks();
 
-    // Fetch and populate available subtitle tracks (custom GCS + embedded)
-    this.loadSubtitleTracks(media.id);
+    // Fetch and populate available subtitle tracks (auto-selecting preferred language on episode transitions)
+    this.loadSubtitleTracks(media.id, { autoSelectPreferred: preserveSession });
 
     this.container.classList.remove('player-hidden');
-    document.body.style.overflow = 'hidden';
+    if (typeof document !== 'undefined' && document.body) {
+      document.body.style.overflow = 'hidden';
+    }
 
     // Start VOD stream
-    const url = this.buildVodStreamUrl(this.selectedQuality, initialTime);
-    this.loadVideoSource(url, initialTime);
+    const url = this.buildVodStreamUrl(this.selectedQuality, startSec);
+    this.loadVideoSource(url, startSec);
 
     this.onUserActivity();
 
@@ -806,12 +1023,8 @@ class KodimiPlayer {
       clearInterval(this.progressInterval);
     }
     this.progressInterval = setInterval(() => {
-      if (this.currentMedia && !this.isLive) {
-        const cur = this.getEffectiveCurrentTime();
-        const dur = this.getEffectiveDuration();
-        if (dur > 0 && !this.video.paused) {
-          api.saveProgress(this.currentMedia.id, cur, dur, 0).catch(() => {});
-        }
+      if (this.currentMedia && !this.isLive && !this.video.paused) {
+        this.persistPlaybackProgress();
       }
     }, 15000);
   }
@@ -819,13 +1032,17 @@ class KodimiPlayer {
   openLive(channel) {
     this.cancelPendingTimers();
     this.stopPlaybackSyncLoop();
+    this.hideUpNextCard();
     this.isLive = true;
     this.liveTranscodeQuality = null;
+    this.nextEpisode = null;
+    this.upNextDismissedForId = null;
     this.currentMedia = {
       ...channel,
       is_live: true,
       title: channel.name,
     };
+    this.updateSeriesControlsVisibility();
     this.selectedQuality = 'live';
     this.qualityLabel.textContent = channel.resolution || 'LIVE';
     this.renderLiveQualityMenu();
@@ -836,6 +1053,9 @@ class KodimiPlayer {
     `;
     this.totalDuration = 0;
     this.seekTimeOffset = 0;
+    this.lastKnownEffectiveTime = 0;
+    this.hasEstablishedPlayback = false;
+    this.recoveryAttempts = 0;
     this.isPendingSeek = false;
     this.subtitlesEnabled = false;
     this.activeSubtitleId = 'off';
@@ -858,7 +1078,9 @@ class KodimiPlayer {
     }
 
     this.container.classList.remove('player-hidden');
-    document.body.style.overflow = 'hidden';
+    if (typeof document !== 'undefined' && document.body) {
+      document.body.style.overflow = 'hidden';
+    }
 
     this.loadLiveSource(channel.streamUrl);
     this.onUserActivity();
@@ -937,6 +1159,83 @@ class KodimiPlayer {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
+    if (this.recoveryResetTimer) {
+      clearTimeout(this.recoveryResetTimer);
+      this.recoveryResetTimer = null;
+    }
+    this.clearStallWatchdog();
+    this.stopUpNextCountdown();
+  }
+
+  armStallWatchdog(reason = 'stalled') {
+    if (this.isLive || !this.currentMedia || this.isPendingSeek || !this.hasEstablishedPlayback) return;
+    if (this.stallWatchdogTimer) return;
+    const anchorAtArm = this.getSafeResumeTime();
+    this.stallWatchdogTimer = setTimeout(() => {
+      this.stallWatchdogTimer = null;
+      if (this.isLive || !this.currentMedia || this.isPendingSeek || this.video.paused || this.video.ended) {
+        return;
+      }
+      const nowPos = this.getSafeResumeTime();
+      if (Math.abs(nowPos - anchorAtArm) < 0.25 && this.video.readyState < 3) {
+        this.reconnectVodStream(`stall-watchdog-${reason}`);
+      }
+    }, 18000);
+  }
+
+  clearStallWatchdog() {
+    if (this.stallWatchdogTimer) {
+      clearTimeout(this.stallWatchdogTimer);
+      this.stallWatchdogTimer = null;
+    }
+  }
+
+  reconnectVodStream(reason = 'stream-interrupted') {
+    if (this.isLive || !this.currentMedia || this.isPendingSeek) return false;
+    if (this.retryTimer) return true; // Reconnect already scheduled
+
+    if (this.recoveryAttempts >= this.maxRecoveryAttempts) {
+      this.showLoader('Stream interrupted — press Play to resume');
+      return false;
+    }
+
+    const resumeTime = this.getSafeResumeTime();
+    this.recoveryAttempts += 1;
+    const delayMs = this.recoveryAttempts === 1 ? 800 : Math.min(5000, 1200 * this.recoveryAttempts);
+
+    console.warn(
+      `[Player] Stream handoff/recovery #${this.recoveryAttempts} (${reason}) at ${resumeTime.toFixed(2)}s (quality=${this.selectedQuality}, codec=${this.getEffectiveCodec()})`
+    );
+
+    // Lock offset and monotonic timestamp immediately so UI & subtitles never snap backward
+    this.hasEstablishedPlayback = false;
+    this.lastKnownEffectiveTime = resumeTime;
+    this.seekTimeOffset = this.selectedQuality === 'direct' ? 0 : resumeTime;
+    this.showLoader('Reconnecting stream...');
+
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (!this.currentMedia || this.isLive || this.isPendingSeek) return;
+      this.streamSessionId = `sid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const retryUrl = this.buildVodStreamUrl(this.selectedQuality, resumeTime);
+      this.loadVideoSource(retryUrl, resumeTime);
+    }, delayMs);
+
+    return true;
+  }
+
+  persistPlaybackProgress(options = {}) {
+    if (!this.currentMedia || this.isLive) return Promise.resolve();
+    const mediaId = this.currentMedia.id;
+    const cur = this.getEffectiveCurrentTime();
+    const dur = this.getEffectiveDuration();
+    if (!mediaId || dur <= 0) return Promise.resolve();
+
+    const completed = isVodPlaybackCompleted(cur, dur, options.completed) ? 1 : 0;
+    const savedTime = options.completed && dur > 0 ? Math.max(cur, dur) : cur;
+    return api
+      .saveProgress(mediaId, savedTime, dur, completed, { keepalive: Boolean(options.keepalive) })
+      .catch(() => {});
   }
 
   abortVideoStream() {
@@ -1062,12 +1361,25 @@ class KodimiPlayer {
   loadVideoSource(url, startTime = 0) {
     this.destroyHls();
     this.stopPlaybackSyncLoop();
+    this.clearStallWatchdog();
+    if (this.recoveryResetTimer) {
+      clearTimeout(this.recoveryResetTimer);
+      this.recoveryResetTimer = null;
+    }
+
+    const normalizedStart = Math.max(0, Number(startTime) || 0);
+    // CRITICAL INVARIANT: Always synchronize seekTimeOffset with startTime inside loadVideoSource
+    // so error recovery, Cloud Run timeout handoffs, codec switches, and seeks stay 100% locked.
+    this.seekTimeOffset = this.selectedQuality === 'direct' ? 0 : normalizedStart;
+    this.lastKnownEffectiveTime = normalizedStart;
+    this.hasEstablishedPlayback = false;
+
     this.abortVideoStream();
 
     this.playbackClock.reset({
       seekOffsetSec: this.seekTimeOffset,
       isDirectMode: this.selectedQuality === 'direct',
-      initialRawSec: this.selectedQuality === 'direct' ? startTime : 0,
+      initialRawSec: this.selectedQuality === 'direct' ? normalizedStart : 0,
       durationSec: this.totalDuration,
     });
 
@@ -1077,9 +1389,9 @@ class KodimiPlayer {
     this.video.volume = this.currentVolume;
     this.video.muted = this.isMuted;
 
-    if (this.selectedQuality === 'direct' && startTime > 0) {
+    if (this.selectedQuality === 'direct' && normalizedStart > 0) {
       try {
-        this.video.currentTime = startTime;
+        this.video.currentTime = normalizedStart;
       } catch (_) {}
     }
 
@@ -1094,18 +1406,20 @@ class KodimiPlayer {
     this.stopPlaybackSyncLoop();
     this.releaseWakeLock();
     this.destroyHls();
+    this.hideUpNextCard();
 
-    if (this.currentMedia && !this.isLive) {
-      const cur = this.getEffectiveCurrentTime();
-      const dur = this.getEffectiveDuration();
-      if (dur > 0) {
-        api.saveProgress(this.currentMedia.id, cur, dur, 0).catch(() => {});
-      }
-    }
+    const savePromise = (!this.isLive && this.currentMedia)
+      ? this.persistPlaybackProgress({ keepalive: true })
+      : Promise.resolve();
 
     this.isLive = false;
     this.liveTranscodeQuality = null;
     this.isPendingSeek = false;
+    this.hasEstablishedPlayback = false;
+    this.recoveryAttempts = 0;
+    this.userSelectedQuality = null;
+    this.nextEpisode = null;
+    this.upNextDismissedForId = null;
     this.streamSessionId = null;
 
     if (this.progressInterval) {
@@ -1116,17 +1430,38 @@ class KodimiPlayer {
     this.abortVideoStream();
     this.clearSubtitleTracks();
     this.container.classList.add('player-hidden');
-    document.body.style.overflow = '';
+    if (typeof document !== 'undefined' && document.body) {
+      document.body.style.overflow = '';
+    }
     this.currentMedia = null;
+    this.updateSeriesControlsVisibility();
 
-    if (document.fullscreenElement) {
+    if (typeof document !== 'undefined' && document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
 
-    window.dispatchEvent(new CustomEvent('kodimi_player_closed'));
+    // Dispatch after progress save settles (or max 250ms timeout) so Continue Watching reflects latest state
+    let dispatched = false;
+    const notifyClosed = () => {
+      if (dispatched) return;
+      dispatched = true;
+      if (typeof window !== 'undefined' && typeof CustomEvent !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('kodimi_player_closed'));
+      }
+    };
+    const fallbackTimer = setTimeout(notifyClosed, 250);
+    savePromise.finally(() => {
+      clearTimeout(fallbackTimer);
+      notifyClosed();
+    });
   }
 
   togglePlay() {
+    if (!this.isLive && this.currentMedia && this.recoveryAttempts >= this.maxRecoveryAttempts) {
+      this.recoveryAttempts = 0;
+      this.reconnectVodStream('manual-play-retry');
+      return;
+    }
     if (this.video.paused) {
       const p = this.video.play();
       if (p !== undefined) {
@@ -1141,11 +1476,32 @@ class KodimiPlayer {
     this.playIcon.textContent = isPlaying ? 'pause' : 'play_arrow';
   }
 
+  getSafeResumeTime() {
+    if (this.isPendingSeek) return Math.max(0, this.pendingSeekTarget || 0);
+    const cur = this.getEffectiveCurrentTime();
+    return Math.max(cur, this.lastKnownEffectiveTime || 0, this.seekTimeOffset || 0);
+  }
+
   getEffectiveCurrentTime() {
     if (this.isPendingSeek) {
       return this.pendingSeekTarget;
     }
-    return this.playbackClock.getEffectiveTime(this.video ? this.video.currentTime : 0);
+    const rawSec = this.video ? this.video.currentTime : 0;
+    const computed = this.playbackClock.getEffectiveTime(rawSec);
+    // Protect against unsolicited browser raw currentTime drops to 0 before error/reconnect fires
+    if (
+      this.hasEstablishedPlayback &&
+      this.lastKnownEffectiveTime > 0 &&
+      computed + 2.5 < this.lastKnownEffectiveTime
+    ) {
+      return this.lastKnownEffectiveTime;
+    }
+    if (Number.isFinite(computed) && computed >= 0) {
+      if (computed > this.lastKnownEffectiveTime || !this.hasEstablishedPlayback) {
+        this.lastKnownEffectiveTime = computed;
+      }
+    }
+    return computed;
   }
 
   getEffectiveDuration() {
@@ -1181,28 +1537,35 @@ class KodimiPlayer {
 
   seekToTime(targetTime) {
     if (!this.currentMedia) return;
+    const clampedTarget = Math.max(0, Number(targetTime) || 0);
+    this.stopUpNextCountdown();
 
     if (this.selectedQuality === 'direct') {
+      this.hasEstablishedPlayback = false;
+      this.lastKnownEffectiveTime = clampedTarget;
       this.playbackClock.reset({
         seekOffsetSec: 0,
         isDirectMode: true,
-        initialRawSec: targetTime,
+        initialRawSec: clampedTarget,
         durationSec: this.totalDuration,
       });
       if (!this.video.paused) {
-        this.playbackClock.onPlaying(targetTime, this.video.playbackRate || 1);
+        this.playbackClock.onPlaying(clampedTarget, this.video.playbackRate || 1);
       }
-      this.video.currentTime = targetTime;
+      this.video.currentTime = clampedTarget;
       this.onTimeUpdate(true);
       return;
     }
 
     // Immediate UI feedback (0ms) while coalescing rapid seeks into a single FFmpeg request (280ms debounce)
     this.isPendingSeek = true;
-    this.pendingSeekTarget = targetTime;
-    this.seekTimeOffset = targetTime;
+    this.pendingSeekTarget = clampedTarget;
+    this.seekTimeOffset = clampedTarget;
+    this.lastKnownEffectiveTime = clampedTarget;
+    this.hasEstablishedPlayback = false;
+    this.recoveryAttempts = 0;
     this.hasRetriedCurrentLoad = false;
-    this.showLoader(`Seeking to ${this.formatTime(targetTime)}...`);
+    this.showLoader(`Seeking to ${this.formatTime(clampedTarget)}...`);
     this.onTimeUpdate(true);
 
     if (this.seekDebounceTimer) {
@@ -1240,7 +1603,9 @@ class KodimiPlayer {
     this.cancelPendingTimers();
     const currentTime = this.getEffectiveCurrentTime();
     this.selectedQuality = quality;
+    this.userSelectedQuality = quality;
     this.isPendingSeek = false;
+    this.recoveryAttempts = 0;
     this.hasRetriedCurrentLoad = false;
 
     this.updateQualityBadgeLabel();
@@ -1474,7 +1839,7 @@ class KodimiPlayer {
     }
   }
 
-  async loadSubtitleTracks(mediaId) {
+  async loadSubtitleTracks(mediaId, options = {}) {
     if (!this.subtitlesOptions) return;
     this.subtitlesOptions.innerHTML = `
       <button class="quality-option active" data-track-id="off">
@@ -1493,6 +1858,30 @@ class KodimiPlayer {
         id: t.id || (t.customId ? t.customId : `embedded_${t.trackIndex}`),
       }));
       this.renderSubtitleTracksList();
+
+      // Carry over subtitle preference across autoplayed episodes
+      if (
+        options.autoSelectPreferred &&
+        this.preferredSubtitlePref?.enabled &&
+        this.availableSubtitles.length > 0 &&
+        this.activeSubtitleId === 'off'
+      ) {
+        const prefLang = this.preferredSubtitlePref.language;
+        const prefLabel = this.preferredSubtitlePref.label;
+        const matched =
+          (prefLang && prefLang !== 'und'
+            ? this.availableSubtitles.find((t) => String(t.language || '').toLowerCase() === prefLang)
+            : null) ||
+          (prefLabel
+            ? this.availableSubtitles.find((t) => String(t.label || '').toLowerCase() === prefLabel)
+            : null) ||
+          this.availableSubtitles.find((t) => /eng|english/i.test(`${t.language || ''} ${t.label || ''}`)) ||
+          this.availableSubtitles[0];
+
+        if (matched) {
+          this.setSubtitleTrackById(matched.id, { preservePreference: true });
+        }
+      }
     } catch (err) {
       console.warn('Failed to load subtitle tracks:', err);
       this.availableSubtitles = [];
@@ -1570,13 +1959,16 @@ class KodimiPlayer {
     });
   }
 
-  async setSubtitleTrackById(trackId) {
+  async setSubtitleTrackById(trackId, options = {}) {
     this.activeSubtitleId = trackId;
     this.clearSubtitleTracks();
 
     if (!trackId || trackId === 'off') {
       this.activeSubtitleId = 'off';
       this.subtitlesEnabled = false;
+      if (!options.preservePreference) {
+        this.preferredSubtitlePref = { enabled: false, language: '', label: '' };
+      }
       this.updateSubtitlesIcon(false);
       this.updateSubtitleDisplay('');
       this.renderSubtitleTracksList();
@@ -1590,6 +1982,11 @@ class KodimiPlayer {
     }
 
     this.subtitlesEnabled = true;
+    this.preferredSubtitlePref = {
+      enabled: true,
+      language: String(track.language || '').toLowerCase(),
+      label: String(track.label || '').toLowerCase(),
+    };
     this.updateSubtitlesIcon(true);
     this.renderSubtitleTracksList();
 
@@ -1708,9 +2105,7 @@ class KodimiPlayer {
 
   setNativeSubtitleMode(enabled) {
     this.useNativeSubtitles = Boolean(enabled);
-    try {
-      localStorage.setItem('kodimi_native_subtitles', this.useNativeSubtitles ? '1' : '0');
-    } catch (_) {}
+    this.writeStorage('kodimi_native_subtitles', this.useNativeSubtitles ? '1' : '0');
     this.updateSubtitleModeButtons();
     this.syncNativeTextTrack();
     this.updateSubtitles();
@@ -1877,6 +2272,12 @@ class KodimiPlayer {
       return;
     }
 
+    // Sample effective clock on every tick even when controls are hidden so monotonic state & Up Next stay live
+    const cur = this.getEffectiveCurrentTime();
+    const dur = this.getEffectiveDuration();
+    this.updateStreamEstablishment(cur);
+    this.evaluateUpNextPreview(cur, dur);
+
     // Always keep subtitles synchronized on every tick
     this.updateSubtitles();
 
@@ -1886,8 +2287,6 @@ class KodimiPlayer {
       return;
     }
 
-    const cur = this.getEffectiveCurrentTime();
-    const dur = this.getEffectiveDuration();
     const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
     if (this.progressFill) {
       this.progressFill.style.width = `${pct.toFixed(2)}%`;
@@ -1907,6 +2306,240 @@ class KodimiPlayer {
         this.progressBuffer.style.width = `${bufPct.toFixed(2)}%`;
       } catch (_) {}
     }
+  }
+
+  updateStreamEstablishment(cur) {
+    if (this.isLive || !this.currentMedia || this.isPendingSeek || !this.video || this.video.paused) {
+      return;
+    }
+    const streamAdvance = this.selectedQuality === 'direct'
+      ? Math.max(0, (this.video.currentTime || 0) - (this.pendingSeekTarget || 0))
+      : Math.max(0, cur - this.seekTimeOffset);
+    if (!this.hasEstablishedPlayback && streamAdvance >= 1.5) {
+      this.hasEstablishedPlayback = true;
+      if (this.recoveryAttempts > 0 && !this.recoveryResetTimer) {
+        this.recoveryResetTimer = setTimeout(() => {
+          this.recoveryResetTimer = null;
+          if (this.hasEstablishedPlayback && !this.video.paused) {
+            this.recoveryAttempts = 0;
+          }
+        }, 4000);
+      }
+    }
+  }
+
+  isSeriesEpisode(media = this.currentMedia) {
+    return Boolean(media && !media.is_live && (media.type === 'series' || media.series_name));
+  }
+
+  updateAutoplayButtonUI() {
+    if (!this.autoplayBtn) return;
+    this.autoplayBtn.classList.toggle('active', Boolean(this.autoplayEnabled));
+    this.autoplayBtn.style.opacity = this.autoplayEnabled ? '1' : '0.6';
+    this.autoplayBtn.title = `Autoplay Next Episode: ${this.autoplayEnabled ? 'ON' : 'OFF'}`;
+    if (this.autoplayIcon) {
+      this.autoplayIcon.textContent = this.autoplayEnabled ? 'playlist_play' : 'playlist_remove';
+    }
+  }
+
+  toggleAutoplay() {
+    this.autoplayEnabled = !this.autoplayEnabled;
+    this.writeStorage('kodimi_autoplay_next', this.autoplayEnabled ? '1' : '0');
+    this.updateAutoplayButtonUI();
+    if (!this.autoplayEnabled) {
+      this.stopUpNextCountdown();
+      if (this.upNextMode === 'preview') {
+        this.hideUpNextCard();
+      } else if (this.upNextMode === 'countdown' && this.nextEpisode) {
+        this.showUpNextCard('manual');
+      }
+    } else if (this.currentMedia && this.video?.ended && this.nextEpisode && this.upNextDismissedForId !== this.currentMedia.id) {
+      this.startUpNextCountdown(5);
+    }
+  }
+
+  updateSeriesControlsVisibility() {
+    const isEp = !this.isLive && this.isSeriesEpisode(this.currentMedia);
+    if (this.autoplayBtn) {
+      this.autoplayBtn.style.display = isEp ? 'flex' : 'none';
+      this.updateAutoplayButtonUI();
+    }
+    if (this.nextEpBtn) {
+      if (isEp && this.nextEpisode) {
+        this.nextEpBtn.style.display = 'flex';
+        this.nextEpBtn.title = `Next: ${formatEpisodeCode(this.nextEpisode)} (Shift+N)`;
+      } else {
+        this.nextEpBtn.style.display = 'none';
+      }
+    }
+  }
+
+  async loadSeriesQueueForMedia(media) {
+    if (!this.isSeriesEpisode(media)) {
+      this.nextEpisode = null;
+      this.updateSeriesControlsVisibility();
+      return;
+    }
+
+    const rawSeriesName =
+      media.series_name ||
+      String(media.title || '')
+        .replace(/\s*-\s*[sS]\d+[eE]\d+.*$/, '')
+        .trim();
+    if (!rawSeriesName) {
+      this.updateSeriesControlsVisibility();
+      return;
+    }
+
+    const cacheKey = `${rawSeriesName.toLowerCase()}::${Boolean(media.is_adult)}`;
+    try {
+      let seasonsData = this.seriesSeasonsCache.get(cacheKey);
+      let resolved = seasonsData ? resolveNextSeriesEpisode(seasonsData, media) : null;
+
+      if (!seasonsData || !resolved || resolved.currentIndex === -1) {
+        seasonsData = await api.getSeriesSeasons(
+          rawSeriesName,
+          media.is_adult ? { adult: 'true' } : {}
+        );
+        if (seasonsData && seasonsData.seasons) {
+          this.seriesSeasonsCache.set(cacheKey, seasonsData);
+        }
+        resolved = resolveNextSeriesEpisode(seasonsData, media);
+      }
+
+      if (!this.currentMedia || this.currentMedia.id !== media.id) return;
+      this.nextEpisode = resolved?.nextEpisode || null;
+      this.updateSeriesControlsVisibility();
+    } catch (err) {
+      console.warn('[Player] Failed to resolve series episode queue:', err?.message || err);
+    }
+  }
+
+  evaluateUpNextPreview(cur, dur) {
+    if (this.isLive || !this.currentMedia || !this.nextEpisode || this.upNextCountdownTimer) {
+      return;
+    }
+    if (!this.autoplayEnabled || this.upNextDismissedForId === this.currentMedia.id) {
+      return;
+    }
+    if (dur < 120 || cur <= 0) return;
+
+    const remaining = dur - cur;
+    if (remaining > 0 && remaining <= 20) {
+      if (this.upNextMode !== 'preview') {
+        this.showUpNextCard('preview');
+      }
+    } else if (this.upNextMode === 'preview' && remaining > 23) {
+      this.hideUpNextCard();
+    }
+  }
+
+  handleGenuineEnded() {
+    if (!this.currentMedia || !this.nextEpisode) return;
+
+    if (this.autoplayEnabled && this.upNextDismissedForId !== this.currentMedia.id) {
+      this.startUpNextCountdown(5);
+    } else {
+      this.showUpNextCard('manual');
+    }
+  }
+
+  showUpNextCard(mode = 'preview', secondsLeft = 0) {
+    if (!this.upNextCard || !this.nextEpisode) return;
+    this.upNextMode = mode;
+
+    const ep = this.nextEpisode;
+    const codeLabel = formatEpisodeCode(ep);
+    const pin = vaultState?.getPin ? vaultState.getPin() : null;
+    const pinParam = ep.is_adult && pin ? `&pin=${encodeURIComponent(pin)}` : '';
+    const thumbUrl = `/api/media/${ep.id}/thumbnail?variant=42${pinParam}`;
+
+    if (this.upNextThumb && this.upNextThumb.dataset.epId !== ep.id) {
+      this.upNextThumb.dataset.epId = ep.id;
+      this.upNextThumb.src = thumbUrl;
+      this.upNextThumb.alt = codeLabel;
+    }
+    if (this.upNextTitle) {
+      this.upNextTitle.textContent = codeLabel;
+    }
+    if (this.upNextBadge) {
+      this.upNextBadge.textContent =
+        mode === 'countdown' ? `UP NEXT • PLAYING IN ${secondsLeft}S` : 'UP NEXT';
+    }
+    if (this.upNextPlayLabel) {
+      this.upNextPlayLabel.textContent = mode === 'countdown' ? `Play Now (${secondsLeft}s)` : 'Play Next';
+    }
+    if (this.upNextCancelBtn) {
+      this.upNextCancelBtn.textContent = mode === 'countdown' ? 'Cancel' : 'Dismiss';
+    }
+
+    this.upNextCard.style.display = 'flex';
+  }
+
+  hideUpNextCard() {
+    this.stopUpNextCountdown();
+    this.upNextMode = null;
+    if (this.upNextCard) {
+      this.upNextCard.style.display = 'none';
+    }
+  }
+
+  dismissUpNext() {
+    if (this.currentMedia) {
+      this.upNextDismissedForId = this.currentMedia.id;
+    }
+    this.hideUpNextCard();
+  }
+
+  startUpNextCountdown(seconds = 5) {
+    if (!this.nextEpisode) return;
+    this.stopUpNextCountdown();
+    this.upNextSecondsLeft = Math.max(1, Math.round(seconds));
+    this.showUpNextCard('countdown', this.upNextSecondsLeft);
+    if (this.upNextPlayBtn && typeof this.upNextPlayBtn.focus === 'function') {
+      try {
+        this.upNextPlayBtn.focus();
+      } catch (_) {}
+    }
+
+    this.upNextCountdownTimer = setInterval(() => {
+      if (!this.currentMedia || !this.nextEpisode || !this.autoplayEnabled) {
+        this.stopUpNextCountdown();
+        return;
+      }
+      this.upNextSecondsLeft -= 1;
+      if (this.upNextSecondsLeft <= 0) {
+        this.stopUpNextCountdown();
+        this.playNextEpisode();
+        return;
+      }
+      this.showUpNextCard('countdown', this.upNextSecondsLeft);
+    }, 1000);
+  }
+
+  stopUpNextCountdown() {
+    if (this.upNextCountdownTimer) {
+      clearInterval(this.upNextCountdownTimer);
+      this.upNextCountdownTimer = null;
+    }
+    this.upNextSecondsLeft = 0;
+  }
+
+  playNextEpisode() {
+    if (this.isLive || !this.nextEpisode) return false;
+    const targetEpisode = this.nextEpisode;
+
+    // Mark the current episode completed if we're transitioning near the end or after ended
+    if (this.currentMedia) {
+      const cur = this.getEffectiveCurrentTime();
+      const dur = this.getEffectiveDuration();
+      const nearEnd = this.video?.ended || (dur > 0 && (cur / dur >= 0.85 || dur - cur <= 60));
+      this.persistPlaybackProgress({ completed: nearEnd });
+    }
+
+    this.hideUpNextCard();
+    this.open(targetEpisode, 0, { preserveSessionSettings: true });
+    return true;
   }
 
   onMetadataLoaded() {
@@ -1986,6 +2619,11 @@ class KodimiPlayer {
       if (key === 'ArrowRight' && isInteractiveFocus) return;
       e.preventDefault();
       this.skip(10);
+    } else if ((key === 'N' && e.shiftKey) || key === 'MediaTrackNext') {
+      if (this.nextEpisode) {
+        e.preventDefault();
+        this.playNextEpisode();
+      }
     } else if (key === 'c') {
       e.preventDefault();
       this.toggleSubtitles();
@@ -1996,6 +2634,11 @@ class KodimiPlayer {
       e.preventDefault();
       this.toggleMute();
     } else if (key === 'Escape' || key === 'Backspace' || key === 'GoBack' || key === 'XF86Back') {
+      if (this.upNextMode === 'countdown' || this.upNextMode === 'preview') {
+        e.preventDefault();
+        this.dismissUpNext();
+        return;
+      }
       const menuOpen =
         (this.qualityMenu && this.qualityMenu.classList.contains('open')) ||
         (this.subtitlesMenu && this.subtitlesMenu.classList.contains('open'));

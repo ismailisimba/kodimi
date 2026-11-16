@@ -38,6 +38,7 @@ gcloud run deploy kodimi `
   --min-instances 0 `
   --max-instances 6 `
   --concurrency 80 `
+  --session-affinity `
   --cpu-throttling `
   --timeout 3600 `
   --set-env-vars "NODE_ENV=production,IS_WORKER=false,WORKER_SERVICE_URL=$WORKER_URL,GCS_BUCKET_NAME=$BUCKET_NAME,GCP_PROJECT_ID=$PROJECT_ID,SERVICE_URL=https://kodimi.mnembo.com" `

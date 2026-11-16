@@ -272,6 +272,11 @@ export function renderMediaCard(item) {
           <button class="quick-info-btn" data-id="${item.id}" title="More Info">
             <span class="material-symbols-outlined" style="font-size: 18px;">info</span>
           </button>
+          ${isResume ? `
+            <button class="quick-watched-btn" data-id="${item.id}" title="Mark as Watched (Remove from Continue Watching)">
+              <span class="material-symbols-outlined" style="font-size: 18px;">check_circle</span>
+            </button>
+          ` : ''}
         </div>
       </div>
     </div>
@@ -612,21 +617,25 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1) {
   const episodes = seasonsMap[activeSeason] || [];
   const episodesHtml = episodes.map((ep) => {
     const epThumb = `/api/media/${ep.id}/thumbnail?variant=42${pinParam}`;
-    const startTime = ep.current_time || 0;
-    const isResume = startTime > 10;
+    const isCompleted = Boolean(ep.completed);
+    const startTime = isCompleted ? 0 : (ep.current_time || 0);
+    const isResume = !isCompleted && startTime > 10;
     const durStr = ep.duration > 0 ? `${Math.round(ep.duration / 60)}m` : 'HD';
+    const progressPct = isCompleted
+      ? 100
+      : (ep.current_time && ep.playback_duration ? Math.min(100, (ep.current_time / ep.playback_duration) * 100) : 0);
 
     return `
       <div class="series-episode-card" data-id="${ep.id}">
         <div class="episode-thumb-container">
           <img class="episode-thumb" src="${epThumb}" alt="${escapeHtml(ep.title)}" onerror="if(this.src.indexOf('/thumbnail') === -1 && '${fallbackThumb}') { this.src='${fallbackThumb}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=E${ep.episode || 1}'; }" />
-          <button class="episode-play-overlay episode-play-btn" data-id="${ep.id}" data-time="${startTime}" title="${isResume ? 'Resume' : 'Play'}">
+          <button class="episode-play-overlay episode-play-btn" data-id="${ep.id}" data-time="${startTime}" title="${isResume ? 'Resume' : (isCompleted ? 'Watch Again' : 'Play')}">
             <span class="material-symbols-outlined fill" style="font-size: 28px;">play_arrow</span>
           </button>
-          <span class="episode-badge">E${String(ep.episode || 1).padStart(2, '0')}</span>
-          ${ep.current_time && ep.playback_duration ? `
+          <span class="episode-badge">E${String(ep.episode || 1).padStart(2, '0')}${isCompleted ? ' ✓' : ''}</span>
+          ${progressPct > 0 ? `
             <div class="episode-progress-bar">
-              <div class="episode-progress-fill" style="width: ${Math.min(100, (ep.current_time / ep.playback_duration) * 100)}%;"></div>
+              <div class="episode-progress-fill" style="width: ${progressPct}%;"></div>
             </div>
           ` : ''}
         </div>

@@ -50,14 +50,18 @@ router.post('/', requireAuth, requireOwner, async (req, res) => {
     return forwardToWorker(req, res, '/api/downloads');
   }
 
-  const { url, name, category } = req.body || {};
+  const { url, name, category, playlist, maxItems } = req.body || {};
 
   if (!url) {
     return res.status(400).json({ error: 'Download URL is required' });
   }
 
   try {
-    const job = await startDownload(url, name, { category });
+    const job = await startDownload(url, name, {
+      category,
+      playlist: playlist === true ? true : playlist === false ? false : 'auto',
+      maxItems: maxItems ? Number(maxItems) : 50,
+    });
     res.json({ success: true, download: job });
   } catch (err) {
     res.status(500).json({ error: err.message });

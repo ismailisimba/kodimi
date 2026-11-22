@@ -2,11 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   detectSocialPlatform,
+  detectPlaylistIntent,
+  normalizePlaylistEntries,
+  buildSocialMediaMetadata,
   resolveYtDlpRunner,
   sanitizeFilenameSegment,
 } from '../server/services/socialDownloader.js';
 import { applyCategoryOverride } from '../server/services/aiTagger.js';
 import { mediaDB } from '../server/db/database.js';
+import {
+  collapseGroupedMedia,
+  renderSeriesCard,
+  renderSeriesModalContent,
+} from '../public/js/components.js';
+import { resolveNextSeriesEpisode } from '../public/js/player.js';
 
 test('detectSocialPlatform accurately identifies all 6 supported social networks and rejects non-social URLs', () => {
   const cases = [
@@ -117,5 +126,136 @@ test('Documentary and Others media categories work across applyCategoryOverride,
     await mediaDB.delete(docId);
     await mediaDB.delete(docByGenreId);
     await mediaDB.delete(othersId);
+  }
+});
+
+test('Social playlist detection, normalization, series-style grouping, UI rendering, and autoplay queue', async () => {
+  // 1. Playlist URL intent detection
+  const ytPlaylist = detectPlaylistIntent('https://www.youtube.com/playlist?list=PL1234567890');
+  assert.equal(ytPlaylist.isExplicitPlaylist, true);
+  assert.equal(ytPlaylist.isAutoMix, false);
+
+  const ytWatchWithList = detectPlaylistIntent('https://www.youtube.com/watch?v=abc123&list=PL1234567890');
+  assert.equal(ytWatchWithList.isExplicitPlaylist, false);
+  assert.equal(ytWatchWithList.hasPlaylistParam, true);
+  assert.equal(ytWatchWithList.isAutoMix, false);
+
+  const ytAutoMix = detectPlaylistIntent('https://www.youtube.com/watch?v=abc123&list=RDMMabc123');
+  assert.equal(ytAutoMix.isAutoMix, true);
+  assert.equal(ytAutoMix.isExplicitPlaylist, false);
+
+  const fbPlaylist = detectPlaylistIntent('https://www.facebook.com/watch/playlist/123456789');
+  assert.equal(fbPlaylist.isExplicitPlaylist, true);
+
+  const igHighlight = detectPlaylistIntent('https://www.instagram.com/stories/highlights/17999999999/');
+  assert.equal(igHighlight.isExplicitPlaylist, true);
+
+  // 2. Flat playlist entry normalization skips unavailable videos & resolves YouTube URLs
+  const entries = normalizePlaylistEntries(
+    {
+      title: 'Systems Design Crash Course',
+      uploader: 'TechChannel',
+      entries: [
+        { id: 'vid001', title: 'Load Balancing', url: 'vid001', duration: 180 },
+        { id: 'vid002', title: '[Private video]', url: 'vid002' },
+        { id: 'vid003', title: 'Caching Strategies', url: 'https://www.youtube.com/watch?v=vid003', duration: 240 },
+        { id: 'vid004', title: 'Sharding Deep Dive', url: 'vid004', duration: 300 },
+      ],
+    },
+    'https://www.youtube.com/playlist?list=PLtest',
+    { id: 'youtube', label: 'YouTube' },
+    50
+  );
+  assert.equal(entries.length, 3);
+  assert.equal(entries[0].url, 'https://www.youtube.com/watch?v=vid001');
+  assert.equal(entries[1].title, 'Caching Strategies');
+
+  // 3. Build playlist metadata, store in mediaDB, verify series-style grouping & autoplay
+  const savedIds = [];
+  const standaloneId = 'test-social-standalone-clip';
+  try {
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const meta = buildSocialMediaMetadata({
+        info: {
+          title: e.title,
+          description: `Episode ${i + 1} overview.`,
+          duration: e.duration,
+          upload_date: '20260510',
+          height: 1080,
+          uploader: 'TechChannel',
+        },
+        platform: { id: 'youtube', label: 'YouTube' },
+        customName: '',
+        gcsPath: `Social/YouTube/Systems Design Crash Course/S01E0${i + 1}-${e.id}.mp4`,
+        sizeBytes: 15_000_000,
+        categoryOverride: 'others',
+        playlistMeta: {
+          seriesName: 'Systems Design Crash Course',
+          seriesPlot: 'Complete systems design YouTube playlist by TechChannel.',
+          uploader: 'TechChannel',
+          season: 1,
+          episode: i + 1,
+          totalEpisodes: entries.length,
+        },
+      });
+      const saved = await mediaDB.upsert(meta);
+      savedIds.push(saved.id);
+    }
+
+    await mediaDB.upsert({
+      id: standaloneId,
+      type: 'others',
+      title: 'Standalone Short Clip',
+      tags: ['YouTube', 'Others'],
+      genres: ['Others'],
+      filename: 'Standalone.mp4',
+      gcs_path: 'Social/YouTube/Standalone.mp4',
+    });
+
+    // Verify getSeriesSeasons returns non-TV-series playlists with is_playlist=true and ordered episodes
+    const seasonsData = mediaDB.getSeriesSeasons('Systems Design Crash Course');
+    assert.ok(seasonsData.series, 'Playlist must resolve through getSeriesSeasons');
+    assert.equal(seasonsData.series.is_playlist, true);
+    assert.equal(seasonsData.seasons[1].length, 3);
+    assert.equal(seasonsData.seasons[1][0].episode, 1);
+    assert.equal(seasonsData.seasons[1][2].episode, 3);
+
+    // Verify player autoplay queue transitions Video 1 -> Video 2 -> Video 3 -> null
+    const step1 = resolveNextSeriesEpisode(seasonsData, seasonsData.seasons[1][0]);
+    assert.equal(step1.nextEpisode?.id, seasonsData.seasons[1][1].id);
+    const step2 = resolveNextSeriesEpisode(seasonsData, seasonsData.seasons[1][1]);
+    assert.equal(step2.nextEpisode?.id, seasonsData.seasons[1][2].id);
+    const step3 = resolveNextSeriesEpisode(seasonsData, seasonsData.seasons[1][2]);
+    assert.equal(step3.nextEpisode, null);
+
+    // Verify collapseGroupedMedia collapses 3 playlist videos into 1 card + keeps 1 standalone card
+    const othersItems = mediaDB.getAll({ type: 'others' }).filter(
+      (m) => savedIds.includes(m.id) || m.id === standaloneId
+    );
+    const collapsed = collapseGroupedMedia(othersItems);
+    assert.equal(collapsed.length, 2, '3 playlist videos + 1 standalone clip should collapse into 2 cards');
+    const playlistCard = collapsed.find((c) => c.is_series_group);
+    assert.ok(playlistCard, 'Expected grouped playlist card');
+    assert.equal(playlistCard.is_playlist, true);
+    assert.equal(playlistCard.episodes_count, 3);
+
+    // Verify Playlist card & modal rendering
+    const cardHtml = renderSeriesCard(playlistCard);
+    assert.ok(cardHtml.includes('Playlist • 3 Videos'), 'Card badge must show Playlist • 3 Videos');
+    const modalHtml = renderSeriesModalContent(seasonsData, 1, { isOwner: true });
+    assert.ok(modalHtml.includes('Play Playlist'), 'Modal CTA must say Play Playlist');
+    assert.ok(modalHtml.includes('Autoplay Enabled'), 'Modal must display Autoplay Enabled badge');
+    assert.ok(modalHtml.includes('Video 1') && modalHtml.includes('Video 3'), 'Modal must list playlist videos');
+    assert.ok(!modalHtml.includes('series-retag-btn'), 'Playlist modal should not show Gemini TV Re-tag button');
+
+    // Verify changing category of a playlist item preserves series_name grouping
+    const recategorized = await mediaDB.updateCategory(savedIds[0], 'documentary');
+    assert.equal(recategorized.series_name, 'Systems Design Crash Course');
+  } finally {
+    for (const sid of savedIds) {
+      await mediaDB.delete(sid);
+    }
+    await mediaDB.delete(standaloneId);
   }
 });

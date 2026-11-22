@@ -104,6 +104,9 @@ const DownloadSchema = new mongoose.Schema({
   name: String,
   source_type: String,
   source_url: String,
+  category: String,
+  include_playlist: { type: Boolean, default: false },
+  max_items: { type: Number, default: 50 },
   status: { type: String, default: 'queued', index: true },
   status_text: String,
   progress: { type: Number, default: 0 },
@@ -552,11 +555,24 @@ export const mediaDB = {
       nextType = 'series';
     }
 
+    const preserveSeriesName =
+      Boolean(existing.series_name) &&
+      (nextType === 'series' ||
+        nextType === 'documentary' ||
+        nextType === 'others') &&
+      (existing.season != null ||
+        existing.episode != null ||
+        tags.some((t) => String(t).toLowerCase() === 'playlist'));
+
     return mediaDB.upsert(
       {
         ...existing,
         type: nextType,
-        series_name: nextType === 'series' ? (existing.series_name || existing.title) : null,
+        series_name: nextType === 'series'
+          ? (existing.series_name || existing.title)
+          : preserveSeriesName
+            ? existing.series_name
+            : null,
         genres,
         tags,
       },
@@ -569,7 +585,7 @@ export const mediaDB = {
     const key = normalizeSeriesKey(name);
     if (!key) return name;
     for (const item of mediaCache.values()) {
-      if (item.type === 'series' && item.series_name) {
+      if ((item.type === 'series' || item.series_name) && item.series_name) {
         if (normalizeSeriesKey(item.series_name) === key) {
           return item.series_name;
         }
@@ -584,7 +600,7 @@ export const mediaDB = {
     if (!key) return null;
     let info = null;
     for (const item of mediaCache.values()) {
-      if (item.type === 'series' && item.series_name && normalizeSeriesKey(item.series_name) === key) {
+      if ((item.type === 'series' || item.series_name) && item.series_name && normalizeSeriesKey(item.series_name) === key) {
         if (!info) {
           info = {
             series_name: item.series_name,
@@ -636,6 +652,9 @@ export const mediaDB = {
       const seriesKey = normalizeSeriesKey(rawSeriesName) || rawSeriesName.toLowerCase();
       const itemAddedTs = getEffectiveAddedTime(item);
 
+      const itemIsPlaylist =
+        Array.isArray(item.tags) && item.tags.some((t) => String(t).toLowerCase() === 'playlist');
+
       if (!seriesMap.has(seriesKey)) {
         const initialSeriesPlot = !isGenericFallbackPlot(item.series_plot) ? item.series_plot : null;
         seriesMap.set(seriesKey, {
@@ -644,6 +663,7 @@ export const mediaDB = {
           series_name: rawSeriesName,
           type: 'series',
           is_series_group: true,
+          is_playlist: itemIsPlaylist,
           series_plot: initialSeriesPlot,
           plot: initialSeriesPlot || item.plot,
           year: item.year,
@@ -665,6 +685,8 @@ export const mediaDB = {
       const s = seriesMap.get(seriesKey);
       s.episodes_count += 1;
       if (item.season) s.seasons.add(item.season);
+      if (itemIsPlaylist) s.is_playlist = true;
+      if (item.season === 1 && item.episode === 1) s.sample_media_id = item.id;
 
       // Prefer canonical title with colon or longer formatted title if available
       if (rawSeriesName.includes(':') && !s.title.includes(':')) {
@@ -736,7 +758,7 @@ export const mediaDB = {
     let matchedSeries = null;
 
     for (const item of mediaCache.values()) {
-      if (item.type !== 'series') continue;
+      if (item.type !== 'series' && !item.series_name) continue;
       if (!isAdult && item.is_adult) continue;
       const curRaw = (item.series_name || item.title || '').trim().toLowerCase();
       const curKey = normalizeSeriesKey(curRaw);
@@ -750,11 +772,17 @@ export const mediaDB = {
 
       if (!matches) continue;
 
+      const itemIsPlaylist =
+        Array.isArray(item.tags) && item.tags.some((t) => String(t).toLowerCase() === 'playlist');
+
       if (!matchedSeries) {
         const initialSeriesPlot = !isGenericFallbackPlot(item.series_plot) ? item.series_plot : null;
         matchedSeries = {
           series_name: item.series_name || item.title,
           title: item.series_name || item.title,
+          type: item.type || 'series',
+          is_playlist: itemIsPlaylist,
+          tags: Array.isArray(item.tags) ? [...item.tags] : [],
           series_plot: initialSeriesPlot,
           plot: initialSeriesPlot || item.plot,
           year: item.year,
@@ -765,6 +793,10 @@ export const mediaDB = {
           sample_media_id: item.id,
         };
       } else {
+        if (itemIsPlaylist) matchedSeries.is_playlist = true;
+        if (item.season === 1 && item.episode === 1) {
+          matchedSeries.sample_media_id = item.id;
+        }
         if (item.series_name && item.series_name.includes(':') && !matchedSeries.series_name.includes(':')) {
           matchedSeries.series_name = item.series_name;
           matchedSeries.title = item.series_name;

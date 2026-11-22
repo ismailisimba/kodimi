@@ -179,10 +179,16 @@ export const api = {
   // Downloads & Social Media Ingestion (Owner-only)
   getDownloads: () => request('/downloads'),
 
-  startDownload: (url, name = '', category = '') =>
+  startDownload: (url, name = '', category = '', options = {}) =>
     request('/downloads', {
       method: 'POST',
-      body: JSON.stringify({ url, name, ...(category ? { category } : {}) }),
+      body: JSON.stringify({
+        url,
+        name,
+        ...(category ? { category } : {}),
+        ...(typeof options.playlist === 'boolean' ? { playlist: options.playlist } : {}),
+        ...(options.maxItems ? { maxItems: Number(options.maxItems) } : {}),
+      }),
     }),
 
   cancelDownload: (id) => request(`/downloads/${id}`, { method: 'DELETE' }),

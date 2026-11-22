@@ -3,7 +3,7 @@
  * Enhanced with AV1/HEVC Low-Bandwidth Codec Negotiation, Smart 1080p-Low,
  * Debounced Zero-429 Seeking, and Persistent GCS Manual Subtitles (.SRT / .VTT / .ASS)
  */
-import { api, vaultState, profileState } from './api.js?v=29';
+import { api, vaultState, profileState } from './api.js?v=30';
 
 function escapePlayerHtml(str) {
   if (!str) return '';
@@ -2535,16 +2535,17 @@ export class KodimiPlayer {
     if (!this.autoplayEnabled || this.upNextDismissedForId === this.currentMedia.id) {
       return;
     }
-    if (dur < 120 || cur <= 0) return;
+    if (dur < 20 || cur <= 0) return;
 
+    const previewWindow = dur < 120 ? Math.min(8, Math.max(4, Math.floor(dur * 0.15))) : 20;
     const remaining = dur - cur;
-    if (remaining > 0 && remaining <= 20) {
+    if (remaining > 0 && remaining <= previewWindow) {
       if (this.upNextMode !== 'preview') {
         this.showUpNextCard('preview');
       }
-    } else if (this.upNextMode === 'preview' && remaining > 23) {
+    } else if (this.upNextMode === 'preview' && remaining > previewWindow + 3) {
       this.hideUpNextCard();
-    this.hideLiveError();
+      this.hideLiveError();
     }
   }
 

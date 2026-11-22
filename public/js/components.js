@@ -66,6 +66,114 @@ export function sortMoviesList(movies, sortOrder = 'recent') {
   return copy;
 }
 
+function isPlaylistCollection(item) {
+  if (!item) return false;
+  if (item.is_playlist) return true;
+  return Array.isArray(item.tags) && item.tags.some((t) => String(t).toLowerCase() === 'playlist');
+}
+
+/**
+ * Collapses items belonging to a shared `series_name` (TV Series, Docuseries, or Social/YouTube Playlists)
+ * into a single Series/Playlist card while keeping standalone videos as individual cards.
+ */
+export function collapseGroupedMedia(mediaItems, seriesList = []) {
+  if (!Array.isArray(mediaItems) || mediaItems.length === 0) return [];
+
+  const seriesByKey = new Map();
+  if (Array.isArray(seriesList)) {
+    for (const s of seriesList) {
+      const key = normalizeSeriesGroupKey(s.series_name || s.title);
+      if (key && !seriesByKey.has(key)) {
+        seriesByKey.set(key, s);
+      }
+    }
+  }
+
+  const groupStats = new Map();
+  for (const m of mediaItems) {
+    if (!m || !m.series_name) continue;
+    const rawName = String(m.series_name).trim();
+    const key = normalizeSeriesGroupKey(rawName);
+    if (!key) continue;
+    if (!groupStats.has(key)) {
+      groupStats.set(key, {
+        displayName: rawName,
+        seasons: new Set(),
+        episodesCount: 0,
+        isPlaylist: isPlaylistCollection(m),
+        sample: m,
+        firstEp: null,
+        latestAddedMs: getItemAddedMs(m),
+      });
+    }
+    const st = groupStats.get(key);
+    st.seasons.add(m.season || 1);
+    st.episodesCount += 1;
+    if (isPlaylistCollection(m)) st.isPlaylist = true;
+    if ((m.season || 1) === 1 && m.episode === 1) st.firstEp = m;
+    const ms = getItemAddedMs(m);
+    if (ms > st.latestAddedMs) st.latestAddedMs = ms;
+  }
+
+  const seenKeys = new Set();
+  const out = [];
+
+  for (const item of mediaItems) {
+    if (!item) continue;
+    const isGrouped = item.type === 'series' || Boolean(item.series_name);
+    if (!isGrouped) {
+      out.push(item);
+      continue;
+    }
+
+    const rawName = (item.series_name || String(item.title || '').replace(/\s*-\s*[sS]\d+[eE]\d+.*$/, '')).trim();
+    const key = normalizeSeriesGroupKey(rawName);
+    if (!key) {
+      out.push(item);
+      continue;
+    }
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    const existingSeries = seriesByKey.get(key);
+    const st = groupStats.get(key);
+    const sample = st?.firstEp || st?.sample || item;
+    const isPlaylist = Boolean(st?.isPlaylist || isPlaylistCollection(existingSeries) || isPlaylistCollection(item));
+
+    if (existingSeries) {
+      out.push({
+        ...existingSeries,
+        is_series_group: true,
+        is_playlist: isPlaylist,
+        added_timestamp: Math.max(st?.latestAddedMs || 0, getItemAddedMs(existingSeries)),
+      });
+    } else {
+      out.push({
+        id: `series-${key.replace(/\s+/g, '-')}`,
+        type: item.type || 'series',
+        is_series_group: true,
+        is_playlist: isPlaylist,
+        series_name: st?.displayName || rawName,
+        title: st?.displayName || rawName,
+        year: sample.year || item.year,
+        plot: sample.series_plot || item.series_plot || sample.plot || item.plot,
+        genres: sample.genres || item.genres || [],
+        tags: sample.tags || item.tags || [],
+        poster_url: sample.poster_url || item.poster_url || '',
+        backdrop_url: sample.backdrop_url || item.backdrop_url || '',
+        seasons_count: st ? Math.max(1, st.seasons.size) : 1,
+        episodes_count: st ? st.episodesCount : 1,
+        sample_media_id: sample.id,
+        is_adult: Boolean(item.is_adult),
+        gcs_created_at: item.gcs_created_at || item.created_at || null,
+        added_timestamp: st?.latestAddedMs || getItemAddedMs(item),
+      });
+    }
+  }
+
+  return out;
+}
+
 /**
  * Builds the Home "Recently Added to GCS" feed:
  * - Sorts all catalog items by newest GCS upload time (`gcs_created_at || created_at`).
@@ -94,18 +202,22 @@ export function buildRecentlyAddedFeed(mediaItems, seriesList = [], limit = 18) 
     const rawName = m.series_name || String(m.title || '').replace(/\s*-\s*[sS]\d+[eE]\d+.*$/, '').trim();
     const key = normalizeSeriesGroupKey(rawName);
     if (!key) continue;
-    if (!fallbackSeriesStats.has(key)) {
-      fallbackSeriesStats.set(key, {
-        displayName: rawName || m.title,
-        seasons: new Set(),
-        episodesCount: 0,
-        sample: m,
-      });
+      if (!fallbackSeriesStats.has(key)) {
+        fallbackSeriesStats.set(key, {
+          displayName: rawName || m.title,
+          seasons: new Set(),
+          episodesCount: 0,
+          isPlaylist: isPlaylistCollection(m),
+          firstEp: null,
+          sample: m,
+        });
+      }
+      const st = fallbackSeriesStats.get(key);
+      st.seasons.add(m.season || 1);
+      st.episodesCount += 1;
+      if (isPlaylistCollection(m)) st.isPlaylist = true;
+      if ((m.season || 1) === 1 && m.episode === 1) st.firstEp = m;
     }
-    const st = fallbackSeriesStats.get(key);
-    st.seasons.add(m.season || 1);
-    st.episodesCount += 1;
-  }
 
   const sortedMedia = [...mediaItems].sort((a, b) => {
     const diff = getItemAddedMs(b) - getItemAddedMs(a);
@@ -132,26 +244,31 @@ export function buildRecentlyAddedFeed(mediaItems, seriesList = [], limit = 18) 
 
         const existingSeries = seriesByKey.get(key);
         const stats = fallbackSeriesStats.get(key);
+        const isPlaylist = Boolean(stats?.isPlaylist || isPlaylistCollection(existingSeries) || isPlaylistCollection(item));
+        const sampleItem = stats?.firstEp || item;
         const seriesCardObj = existingSeries
           ? {
               ...existingSeries,
               is_series_group: true,
+              is_playlist: isPlaylist,
               added_timestamp: Math.max(addedMs, getItemAddedMs(existingSeries)),
             }
           : {
               id: `series-${key.replace(/\s+/g, '-')}`,
-              type: 'series',
+              type: item.type || 'series',
               is_series_group: true,
+              is_playlist: isPlaylist,
               series_name: stats?.displayName || rawSeriesName,
               title: stats?.displayName || rawSeriesName,
-              year: item.year,
-              plot: item.series_plot || item.plot,
-              genres: item.genres || [],
-              poster_url: item.poster_url || '',
-              backdrop_url: item.backdrop_url || '',
+              year: sampleItem.year || item.year,
+              plot: sampleItem.series_plot || item.series_plot || sampleItem.plot || item.plot,
+              genres: sampleItem.genres || item.genres || [],
+              tags: sampleItem.tags || item.tags || [],
+              poster_url: sampleItem.poster_url || item.poster_url || '',
+              backdrop_url: sampleItem.backdrop_url || item.backdrop_url || '',
               seasons_count: stats ? stats.seasons.size : 1,
               episodes_count: stats ? stats.episodesCount : 1,
-              sample_media_id: item.id,
+              sample_media_id: sampleItem.id,
               is_adult: Boolean(item.is_adult),
               gcs_created_at: item.gcs_created_at || item.created_at || null,
               added_timestamp: addedMs,
@@ -454,13 +571,18 @@ export function renderSeriesCard(series) {
     poster = fallbackThumb;
   }
 
+  const isPlaylist = isPlaylistCollection(series);
   const seasonText = `${series.seasons_count || 1} Season${(series.seasons_count || 1) > 1 ? 's' : ''}`;
-  const epText = `${series.episodes_count || 1} Ep${(series.episodes_count || 1) > 1 ? 's' : ''}`;
+  const epCount = series.episodes_count || 1;
+  const epText = isPlaylist ? `${epCount} Video${epCount > 1 ? 's' : ''}` : `${epCount} Ep${epCount > 1 ? 's' : ''}`;
+  const badgeText = isPlaylist ? `Playlist • ${epText}` : `${seasonText} • ${epText}`;
+  const browseTitle = isPlaylist ? 'Browse Playlist Videos' : 'Browse Seasons & Episodes';
+  const infoTitle = isPlaylist ? 'Playlist Info' : 'Series Info';
 
   return `
     <div class="media-card series-card" data-series-name="${escapeHtml(series.series_name || series.title)}" data-sample-id="${series.sample_media_id || ''}">
       <img class="card-poster" src="${poster}" alt="${escapeHtml(series.title)}" loading="lazy" onerror="if(this.src.indexOf('/thumbnail') === -1 && '${fallbackThumb}') { this.src='${fallbackThumb}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=${encodeURIComponent(series.title.slice(0, 16))}'; }" />
-      <span class="card-badge" style="background-color: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); font-weight: 700;">${seasonText} • ${epText}</span>
+      <span class="card-badge" style="background-color: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); font-weight: 700;">${badgeText}</span>
       <div class="card-overlay">
         <div class="card-title">${escapeHtml(series.title)}</div>
         <div class="card-meta">
@@ -468,10 +590,10 @@ export function renderSeriesCard(series) {
           ${series.genres && series.genres[0] ? `<span>• ${series.genres[0]}</span>` : ''}
         </div>
         <div class="card-quick-actions">
-          <button class="quick-play-btn series-browse-btn" data-series-name="${escapeHtml(series.series_name || series.title)}" title="Browse Seasons & Episodes">
-            <span class="material-symbols-outlined fill" style="font-size: 18px;">video_library</span>
+          <button class="quick-play-btn series-browse-btn" data-series-name="${escapeHtml(series.series_name || series.title)}" title="${browseTitle}">
+            <span class="material-symbols-outlined fill" style="font-size: 18px;">${isPlaylist ? 'playlist_play' : 'video_library'}</span>
           </button>
-          <button class="quick-info-btn series-info-btn" data-series-name="${escapeHtml(series.series_name || series.title)}" title="Series Info">
+          <button class="quick-info-btn series-info-btn" data-series-name="${escapeHtml(series.series_name || series.title)}" title="${infoTitle}">
             <span class="material-symbols-outlined" style="font-size: 18px;">info</span>
           </button>
         </div>
@@ -616,8 +738,13 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1, options =
     backdrop = fallbackThumb;
   }
 
-  // Season Tabs HTML
-  const seasonTabsHtml = seasonNumbers.map((sNum) => `
+  const isPlaylist = isPlaylistCollection(series);
+  const totalItems = Object.values(seasonsMap).flat().length;
+
+  // Season Tabs HTML (hidden when single-list social playlist)
+  const seasonTabsHtml = (isPlaylist && seasonNumbers.length <= 1)
+    ? ''
+    : seasonNumbers.map((sNum) => `
     <button class="season-tab-btn ${sNum === activeSeason ? 'active' : ''}" data-season="${sNum}">
       Season ${sNum} <span style="font-size: 11px; opacity: 0.8;">(${seasonsMap[sNum]?.length || 0})</span>
     </button>
@@ -630,19 +757,23 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1, options =
     const isCompleted = Boolean(ep.completed);
     const startTime = isCompleted ? 0 : (ep.current_time || 0);
     const isResume = !isCompleted && startTime > 10;
-    const durStr = ep.duration > 0 ? `${Math.round(ep.duration / 60)}m` : 'HD';
+    const durStr = ep.duration > 0
+      ? (ep.duration < 60 ? `${Math.round(ep.duration)}s` : `${Math.round(ep.duration / 60)}m`)
+      : 'HD';
     const progressPct = isCompleted
       ? 100
       : (ep.current_time && ep.playback_duration ? Math.min(100, (ep.current_time / ep.playback_duration) * 100) : 0);
+    const epIdxLabel = isPlaylist ? `#${String(ep.episode || 1).padStart(2, '0')}` : `E${String(ep.episode || 1).padStart(2, '0')}`;
+    const itemNumLabel = isPlaylist ? `Video ${ep.episode || 1}` : `Episode ${ep.episode || 1}`;
 
     return `
       <div class="series-episode-card" data-id="${ep.id}">
         <div class="episode-thumb-container">
-          <img class="episode-thumb" src="${epThumb}" alt="${escapeHtml(ep.title)}" onerror="if(this.src.indexOf('/thumbnail') === -1 && '${fallbackThumb}') { this.src='${fallbackThumb}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=E${ep.episode || 1}'; }" />
+          <img class="episode-thumb" src="${epThumb}" alt="${escapeHtml(ep.title)}" onerror="if(this.src.indexOf('/thumbnail') === -1 && '${fallbackThumb}') { this.src='${fallbackThumb}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=${encodeURIComponent(epIdxLabel)}'; }" />
           <button class="episode-play-overlay episode-play-btn" data-id="${ep.id}" data-time="${startTime}" title="${isResume ? 'Resume' : (isCompleted ? 'Watch Again' : 'Play')}">
             <span class="material-symbols-outlined fill" style="font-size: 28px;">play_arrow</span>
           </button>
-          <span class="episode-badge">E${String(ep.episode || 1).padStart(2, '0')}${isCompleted ? ' ✓' : ''}</span>
+          <span class="episode-badge">${epIdxLabel}${isCompleted ? ' ✓' : ''}</span>
           ${progressPct > 0 ? `
             <div class="episode-progress-bar">
               <div class="episode-progress-fill" style="width: ${progressPct}%;"></div>
@@ -651,14 +782,14 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1, options =
         </div>
         <div class="episode-info">
           <div class="episode-title-row">
-            <span class="episode-number">Episode ${ep.episode || 1}</span>
+            <span class="episode-number">${itemNumLabel}</span>
             <span class="episode-title">${escapeHtml(ep.title.replace(/^.*?[sS]\d+[eE]\d+:?\s*/, ''))}</span>
             <span class="episode-dur">${durStr}</span>
-            <button type="button" class="episode-info-btn" data-id="${ep.id}" title="Episode Details / Re-tag Synopsis">
+            <button type="button" class="episode-info-btn" data-id="${ep.id}" title="${isPlaylist ? 'Video Details / Category' : 'Episode Details / Re-tag Synopsis'}">
               <span class="material-symbols-outlined" style="font-size: 16px;">info</span>
             </button>
           </div>
-          <p class="episode-plot">${escapeHtml(ep.plot || 'Stream this episode in full high definition on Kodimi.')}</p>
+          <p class="episode-plot">${escapeHtml(ep.plot || 'Stream this video in full high definition on Kodimi.')}</p>
         </div>
       </div>
     `;
@@ -671,22 +802,23 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1, options =
         <div class="series-gradient"></div>
       </div>
       <div class="series-header-content">
-        <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-          <span class="chip chip-primary">Series</span>
+        <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap;">
+          <span class="chip chip-primary">${isPlaylist ? 'Playlist' : 'Series'}</span>
           ${series.year ? `<span class="chip chip-outline">${series.year}</span>` : ''}
-          <span class="chip">${seasonNumbers.length} Season${seasonNumbers.length > 1 ? 's' : ''}</span>
-          <span class="chip">${Object.values(seasonsMap).flat().length} Episodes</span>
+          ${!isPlaylist ? `<span class="chip">${seasonNumbers.length} Season${seasonNumbers.length > 1 ? 's' : ''}</span>` : ''}
+          <span class="chip">${totalItems} ${isPlaylist ? (totalItems === 1 ? 'Video' : 'Videos') : (totalItems === 1 ? 'Episode' : 'Episodes')}</span>
+          ${isPlaylist ? `<span class="chip chip-outline">Autoplay Enabled</span>` : ''}
         </div>
         <h1 class="series-title">${escapeHtml(series.title || series.series_name)}</h1>
-        <p class="series-plot">${escapeHtml(series.series_plot || series.plot || 'Browse all seasons and episodes below.')}</p>
+        <p class="series-plot">${escapeHtml(series.series_plot || series.plot || (isPlaylist ? 'Watch all playlist videos continuously with autoplay.' : 'Browse all seasons and episodes below.'))}</p>
         <div class="series-actions">
           ${episodes[0] ? `
             <button class="btn-filled episode-play-btn" data-id="${episodes[0].id}">
               <span class="material-symbols-outlined fill">play_arrow</span>
-              <span>Play S${activeSeason} E01</span>
+              <span>${isPlaylist ? 'Play Playlist' : `Play S${activeSeason} E01`}</span>
             </button>
           ` : ''}
-          ${isOwner ? `
+          ${isOwner && !isPlaylist ? `
             <button type="button" class="btn-tonal" id="series-retag-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" title="Re-enrich series & episode synopses with Gemini Search Grounding">
               <span class="material-symbols-outlined">auto_awesome</span>
               <span>Re-tag Series</span>
@@ -697,7 +829,7 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1, options =
             </button>
           ` : ''}
         </div>
-        ${isOwner ? `
+        ${isOwner && !isPlaylist ? `
           <div id="series-fix-match-row" class="fix-match-bar" style="display: none; margin-top: 12px; max-width: 680px;">
             <input
               type="text"

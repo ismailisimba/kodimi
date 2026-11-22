@@ -143,7 +143,7 @@ router.post('/series/:name/retag', requireAuth, requireOwner, async (req, res) =
   const targetKey = normalizeSeriesKey(seriesName);
   const allItems = mediaDB.getAll({ limit: 2000, isAdult: showAdult });
   const episodes = allItems.filter(
-    (m) => m.type === 'series' && normalizeSeriesKey(m.series_name || m.title || '') === targetKey
+    (m) => (m.type === 'series' || Boolean(m.series_name)) && normalizeSeriesKey(m.series_name || m.title || '') === targetKey
   );
 
   if (episodes.length === 0) {

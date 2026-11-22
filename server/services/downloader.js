@@ -8,7 +8,7 @@ import { createWriteStream, fileExists, getFileMetadata } from '../config/gcs.js
 import { downloadsDB, mediaDB } from '../db/database.js';
 import { enrichMediaMetadata } from './aiTagger.js';
 import { getOrProbeDuration, getOrGenerateThumbnail } from './transcoder.js';
-import { detectSocialPlatform, downloadSocialMediaToGcs } from './socialDownloader.js';
+import { detectSocialPlatform, detectPlaylistIntent, downloadSocialMediaToGcs } from './socialDownloader.js';
 
 export const downloadEvents = new EventEmitter();
 downloadEvents.setMaxListeners(50);
@@ -169,12 +169,17 @@ export function resolveCleanFilename(effectiveName, originalFilename) {
  */
 export async function startDownload(sourceUrl, customName = '', options = {}) {
   const category = typeof options?.category === 'string' ? options.category.trim().toLowerCase() : '';
+  const playlistOption = options?.playlist === true ? true : options?.playlist === false ? false : 'auto';
+  const maxItems = Math.min(100, Math.max(1, Number(options?.maxItems) || 50));
   let cleanSourceUrl = typeof sourceUrl === 'string' ? sourceUrl.trim() : sourceUrl;
   const isMagnet = typeof cleanSourceUrl === 'string' && cleanSourceUrl.startsWith('magnet:?');
   if (isMagnet) {
     cleanSourceUrl = sanitizeMagnetUri(cleanSourceUrl);
   }
   const socialPlatform = !isMagnet ? detectSocialPlatform(cleanSourceUrl) : null;
+  const playlistIntent = socialPlatform ? detectPlaylistIntent(cleanSourceUrl) : { isExplicitPlaylist: false };
+  const isPlaylistMode =
+    playlistOption === true || (playlistOption === 'auto' && Boolean(playlistIntent.isExplicitPlaylist));
   const isTorrent =
     !isMagnet &&
     !socialPlatform &&
@@ -208,7 +213,7 @@ export async function startDownload(sourceUrl, customName = '', options = {}) {
   const name =
     customName ||
     extractedMagnetName ||
-    (socialPlatform ? `${socialPlatform.label} Video` : null) ||
+    (socialPlatform ? `${socialPlatform.label} ${isPlaylistMode ? 'Playlist' : 'Video'}` : null) ||
     (isDirect ? path.basename(new URL(cleanSourceUrl).pathname) : null) ||
     `media-${Date.now()}`;
 
@@ -218,8 +223,12 @@ export async function startDownload(sourceUrl, customName = '', options = {}) {
     source_type: sourceType,
     source_url: typeof cleanSourceUrl === 'string' ? cleanSourceUrl : 'buffer',
     category: category || (socialPlatform ? 'others' : ''),
+    include_playlist: socialPlatform ? isPlaylistMode : false,
+    max_items: socialPlatform ? maxItems : 50,
     status: 'downloading',
-    status_text: socialPlatform ? `Connecting to ${socialPlatform.label}...` : 'Starting download...',
+    status_text: socialPlatform
+      ? `Connecting to ${socialPlatform.label}${isPlaylistMode ? ' playlist' : ''}...`
+      : 'Starting download...',
     progress: 0,
     speed: 0,
     downloaded_bytes: 0,
@@ -235,7 +244,10 @@ export async function startDownload(sourceUrl, customName = '', options = {}) {
   ensureWorkerKeepalive();
 
   if (socialPlatform) {
-    processSocialDownload(id, cleanSourceUrl, customName, downloadRecord.category);
+    processSocialDownload(id, cleanSourceUrl, customName, downloadRecord.category, {
+      playlist: playlistOption,
+      maxItems,
+    });
   } else if (isMagnet || isTorrent) {
     processTorrentDownload(id, cleanSourceUrl, customName, downloadRecord.category);
   } else if (isDirect) {
@@ -368,25 +380,55 @@ export async function completeDirectUpload(id, filename, size = 0, category = ''
   }
 }
 
+async function indexSocialMediaEpisode(epResult) {
+  const gcsCreatedAt = await resolveGcsTimestamp(epResult.gcsPath);
+  const saved = await mediaDB.upsert({
+    ...epResult.metadata,
+    gcs_path: epResult.gcsPath,
+    gcs_created_at: gcsCreatedAt,
+    created_at: gcsCreatedAt,
+  });
+  getOrProbeDuration(saved.id, epResult.gcsPath)
+    .then(() => getOrGenerateThumbnail(saved.id, epResult.gcsPath, '42'))
+    .catch(() => {});
+  console.log(`[Catalog] Social media video indexed: "${saved.title}" (${epResult.platform.label}, type=${saved.type})`);
+  return saved;
+}
+
 /**
- * Handles social media link ingestion (YouTube, Instagram, Twitter/X, Reddit, LinkedIn, Facebook) via yt-dlp -> GCS.
+ * Handles social media link ingestion (single video OR multi-video playlist)
+ * from YouTube, Instagram, Twitter/X, Reddit, LinkedIn, and Facebook via yt-dlp -> GCS.
  */
-async function processSocialDownload(id, url, customName = '', category = 'others') {
+async function processSocialDownload(id, url, customName = '', category = 'others', options = {}) {
   try {
     const isCancelled = () => {
       const cur = activeJobs.get(id);
       return !cur || cur.status === 'failed' || cur.status === 'paused';
     };
 
+    const playlist = options?.playlist === true ? true : options?.playlist === false ? false : 'auto';
+    const maxItems = Math.min(100, Math.max(1, Number(options?.maxItems) || 50));
+    let indexedPlaylistItems = 0;
+
     const result = await downloadSocialMediaToGcs({
       id,
       url,
       customName,
       category: category || 'others',
+      playlist,
+      maxItems,
       onProgress: (partial) => updateDownload(id, partial),
       onChildProcess: (child) => {
         const cur = activeJobs.get(id);
         if (cur) cur.childProcess = child;
+      },
+      onEpisodeReady: async (epResult) => {
+        try {
+          await indexSocialMediaEpisode(epResult);
+          indexedPlaylistItems++;
+        } catch (indexErr) {
+          console.error(`[Catalog] Failed to index playlist item ${epResult.gcsPath}:`, indexErr.message);
+        }
       },
       isCancelled,
     });
@@ -396,11 +438,17 @@ async function processSocialDownload(id, url, customName = '', category = 'other
     const job = activeJobs.get(id);
     if (job) {
       job.status = 'completed';
-      job.status_text = `Saved ${result.platform.label} video to GCS`;
+      if (result.isPlaylist) {
+        const count = result.items?.length || indexedPlaylistItems;
+        const skippedNote = result.skippedCount > 0 ? ` (${result.skippedCount} skipped)` : '';
+        job.status_text = `Saved ${result.platform.label} playlist (${count} videos)${skippedNote} to GCS`;
+      } else {
+        job.status_text = `Saved ${result.platform.label} video to GCS`;
+      }
       job.progress = 100;
       job.speed = 0;
-      job.downloaded_bytes = result.sizeBytes;
-      job.total_bytes = result.sizeBytes;
+      job.downloaded_bytes = result.totalBytes || result.sizeBytes || 0;
+      job.total_bytes = result.totalBytes || result.sizeBytes || 0;
       job.gcs_path = result.gcsPath;
       downloadsDB.upsert(job);
       broadcastProgress(job);
@@ -408,20 +456,13 @@ async function processSocialDownload(id, url, customName = '', category = 'other
       checkAndEmitIdle();
     }
 
-    try {
-      const gcsCreatedAt = await resolveGcsTimestamp(result.gcsPath);
-      const saved = await mediaDB.upsert({
-        ...result.metadata,
-        gcs_path: result.gcsPath,
-        gcs_created_at: gcsCreatedAt,
-        created_at: gcsCreatedAt,
-      });
-      getOrProbeDuration(saved.id, result.gcsPath)
-        .then(() => getOrGenerateThumbnail(saved.id, result.gcsPath, '42'))
-        .catch(() => {});
-      console.log(`[Catalog] Social media video indexed: "${saved.title}" (${result.platform.label}, type=${saved.type})`);
-    } catch (indexErr) {
-      console.error(`[Catalog] Failed to index social video ${result.gcsPath}:`, indexErr.message);
+    // For single-video jobs, index immediately here (playlists already indexed each episode incrementally)
+    if (!result.isPlaylist) {
+      try {
+        await indexSocialMediaEpisode(result);
+      } catch (indexErr) {
+        console.error(`[Catalog] Failed to index social video ${result.gcsPath}:`, indexErr.message);
+      }
     }
   } catch (err) {
     const cur = activeJobs.get(id);
@@ -1026,7 +1067,10 @@ export async function resumeDownload(id) {
 
   const socialPlatform = typeof job.source_url === 'string' ? detectSocialPlatform(job.source_url) : null;
   if (socialPlatform) {
-    processSocialDownload(id, job.source_url, '', job.category || 'others');
+    processSocialDownload(id, job.source_url, '', job.category || 'others', {
+      playlist: job.include_playlist ? true : 'auto',
+      maxItems: job.max_items || 50,
+    });
   } else if (job.source_type === 'magnet' || job.source_type === 'torrent') {
     const cleanSource = typeof job.source_url === 'string' ? sanitizeMagnetUri(job.source_url) : job.source_url;
     processTorrentDownload(id, cleanSource, job.name, job.category || '');

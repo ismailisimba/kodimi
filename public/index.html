@@ -21,7 +21,7 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 
   <!-- Custom Material Design Stylesheet -->
-  <link rel="stylesheet" href="/css/style.css?v=29" />
+  <link rel="stylesheet" href="/css/style.css?v=30" />
 </head>
 <body>
 
@@ -272,6 +272,23 @@
                 <option value="series">Category: TV Series</option>
                 <option value="documentary">Category: Documentary</option>
                 <option value="others">Category: Others</option>
+              </select>
+            </div>
+
+            <div id="ingest-playlist-row" style="display: none; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border-radius: var(--md-shape-corner-m); background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1);">
+              <label style="display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: white; cursor: pointer; flex: 1; min-width: 220px;">
+                <input type="checkbox" id="download-playlist-checkbox" style="accent-color: var(--md-sys-color-primary); width: 15px; height: 15px;" />
+                <span id="ingest-playlist-label">Download full playlist / multi-video collection as a Series (with Autoplay)</span>
+              </label>
+              <select
+                id="download-playlist-limit"
+                title="Maximum videos to download from playlist"
+                style="background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-s); padding: 5px 10px; color: white; font-size: 11px;"
+              >
+                <option value="10">Max: 10 videos</option>
+                <option value="25">Max: 25 videos</option>
+                <option value="50" selected>Max: 50 videos</option>
+                <option value="100">Max: 100 videos</option>
               </select>
             </div>
           </form>
@@ -951,6 +968,6 @@
   </nav>
 
   <!-- Application Entrypoint Module -->
-  <script type="module" src="/js/app.js?v=29"></script>
+  <script type="module" src="/js/app.js?v=30"></script>
 </body>
 </html>

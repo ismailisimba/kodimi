@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=29';
-import KodimiPlayer from './player.js?v=29';
+import { api, authState, vaultState, profileState } from './api.js?v=30';
+import KodimiPlayer from './player.js?v=30';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -17,9 +17,10 @@ import {
   renderProfileCard,
   renderAddProfileCard,
   buildRecentlyAddedFeed,
+  collapseGroupedMedia,
   sortMoviesList,
   escapeHtml,
-} from './components.js?v=29';
+} from './components.js?v=30';
 
 class KodimiApp {
   constructor() {
@@ -123,6 +124,10 @@ class KodimiApp {
     this.downloadCategorySelect = document.getElementById('download-category-select');
     this.uploadCategorySelect = document.getElementById('upload-category-select');
     this.ingestPlatformBadge = document.getElementById('ingest-platform-badge');
+    this.ingestPlaylistRow = document.getElementById('ingest-playlist-row');
+    this.downloadPlaylistCheckbox = document.getElementById('download-playlist-checkbox');
+    this.ingestPlaylistLabel = document.getElementById('ingest-playlist-label');
+    this.downloadPlaylistLimit = document.getElementById('download-playlist-limit');
     this.downloadQueueList = document.getElementById('download-queue-list');
     this.downloadCountBadge = document.getElementById('download-badge');
 
@@ -1448,17 +1453,74 @@ class KodimiApp {
     }
   }
 
+  detectClientPlaylistIntent(rawUrl) {
+    try {
+      const parsed = new URL(String(rawUrl || '').trim());
+      const p = parsed.pathname.toLowerCase();
+      const listParam = parsed.searchParams.get('list');
+      const isAutoMix = Boolean(listParam && /^RD/i.test(listParam));
+      const isExplicit =
+        p === '/playlist' ||
+        p.startsWith('/playlist/') ||
+        p.startsWith('/course') ||
+        p.startsWith('/podcasts') ||
+        p.includes('/watch/playlist') ||
+        p.includes('/playlists') ||
+        p.includes('/media/set') ||
+        p.includes('/stories/highlights/') ||
+        p.includes('/collection/') ||
+        p.includes('/collections/') ||
+        /\/(@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)\/(videos|shorts|streams|playlists)\/?$/i.test(p);
+      return {
+        isExplicit,
+        hasListParam: Boolean(listParam),
+        isAutoMix,
+      };
+    } catch {
+      return { isExplicit: false, hasListParam: false, isAutoMix: false };
+    }
+  }
+
   updateIngestPlatformHint() {
     if (!this.downloadUrlInput || !this.ingestPlatformBadge) return;
-    const platform = this.detectClientSocialPlatform(this.downloadUrlInput.value);
+    const rawVal = this.downloadUrlInput.value;
+    const platform = this.detectClientSocialPlatform(rawVal);
     if (platform) {
-      this.ingestPlatformBadge.textContent = `${platform} link detected`;
+      const intent = this.detectClientPlaylistIntent(rawVal);
+      this.ingestPlatformBadge.textContent = intent.isExplicit
+        ? `${platform} playlist detected`
+        : `${platform} link detected`;
       this.ingestPlatformBadge.style.display = 'inline-flex';
       if (this.downloadCategorySelect && !this.downloadCategorySelect.value) {
         this.downloadCategorySelect.value = 'others';
       }
+      if (this.ingestPlaylistRow) {
+        this.ingestPlaylistRow.style.display = 'flex';
+      }
+      if (this.downloadPlaylistCheckbox) {
+        if (intent.isExplicit) {
+          this.downloadPlaylistCheckbox.checked = true;
+        } else if (intent.hasListParam && !intent.isAutoMix) {
+          this.downloadPlaylistCheckbox.checked = false;
+        }
+      }
+      if (this.ingestPlaylistLabel) {
+        if (intent.isExplicit) {
+          this.ingestPlaylistLabel.textContent = `${platform} playlist detected — download as Series (with Autoplay)`;
+        } else if (intent.hasListParam && !intent.isAutoMix) {
+          this.ingestPlaylistLabel.textContent = 'Playlist found in URL — check to download full playlist as Series (Autoplay)';
+        } else {
+          this.ingestPlaylistLabel.textContent = 'Download playlist / multi-video collection as a Series (with Autoplay)';
+        }
+      }
     } else {
       this.ingestPlatformBadge.style.display = 'none';
+      if (this.ingestPlaylistRow) {
+        this.ingestPlaylistRow.style.display = 'none';
+      }
+      if (this.downloadPlaylistCheckbox) {
+        this.downloadPlaylistCheckbox.checked = false;
+      }
     }
   }
 
@@ -1516,20 +1578,26 @@ class KodimiApp {
         html += renderCarousel('movies', 'Movies', movies);
       }
 
-      const documentaries = sortMoviesList(
-        this.mediaItems.filter((m) => this.isDocumentaryItem(m)),
-        'recent'
+      const documentaries = collapseGroupedMedia(
+        sortMoviesList(
+          this.mediaItems.filter((m) => this.isDocumentaryItem(m)),
+          'recent'
+        ),
+        this.seriesList
       );
       if (documentaries.length > 0) {
-        html += renderCarousel('documentary', 'Documentaries', documentaries);
+        html += renderCarousel('documentary', 'Documentaries', documentaries, renderCatalogCard);
       }
 
-      const others = sortMoviesList(
-        this.mediaItems.filter((m) => this.isOthersItem(m)),
-        'recent'
+      const others = collapseGroupedMedia(
+        sortMoviesList(
+          this.mediaItems.filter((m) => this.isOthersItem(m)),
+          'recent'
+        ),
+        this.seriesList
       );
       if (others.length > 0) {
-        html += renderCarousel('others', 'Others & Social Clips', others);
+        html += renderCarousel('others', 'Others & Social Clips', others, renderCatalogCard);
       }
 
       const action = this.mediaItems.filter((m) => m.genres?.includes('Action') || m.genres?.includes('Thriller'));
@@ -1620,17 +1688,23 @@ class KodimiApp {
         );
         this.gridTitle.textContent = `Movies (${filtered.length})`;
       } else if (this.activeFilter === 'documentary') {
-        filtered = sortMoviesList(
-          filtered.filter((m) => this.isDocumentaryItem(m)),
-          this.movieSortOrder
+        filtered = collapseGroupedMedia(
+          sortMoviesList(
+            filtered.filter((m) => this.isDocumentaryItem(m)),
+            this.movieSortOrder
+          ),
+          this.seriesList
         );
         this.gridTitle.textContent = `Documentary (${filtered.length})`;
       } else if (this.activeFilter === 'others') {
-        filtered = sortMoviesList(
-          filtered.filter((m) => this.isOthersItem(m)),
-          this.movieSortOrder
+        filtered = collapseGroupedMedia(
+          sortMoviesList(
+            filtered.filter((m) => this.isOthersItem(m)),
+            this.movieSortOrder
+          ),
+          this.seriesList
         );
-        this.gridTitle.textContent = `Others & Clips (${filtered.length})`;
+        this.gridTitle.textContent = `Others & Playlists (${filtered.length})`;
       } else if (this.activeFilter === 'continue') {
         filtered = this.continueWatching;
         this.gridTitle.textContent = `Continue Watching (${filtered.length})`;
@@ -1648,6 +1722,9 @@ class KodimiApp {
           const matchTags = m.tags?.some((t) => t.toLowerCase().includes(q));
           return matchTitle || matchSeries || matchPlot || matchGenres || matchTags;
         });
+        if (!['movie', 'continue', 'vault'].includes(this.activeFilter)) {
+          filtered = collapseGroupedMedia(filtered, this.seriesList);
+        }
         this.gridTitle.textContent = `Results for "${this.searchTerm}" (${filtered.length})`;
       }
 
@@ -1656,7 +1733,7 @@ class KodimiApp {
         this.emptyState.style.display = 'block';
       } else {
         this.emptyState.style.display = 'none';
-        this.gridContent.innerHTML = filtered.map(renderMediaCard).join('');
+        this.gridContent.innerHTML = filtered.map(renderCatalogCard).join('');
       }
     }
   }
@@ -1917,14 +1994,19 @@ class KodimiApp {
     const url = this.downloadUrlInput.value.trim();
     const name = this.downloadNameInput.value.trim();
     const category = this.downloadCategorySelect ? this.downloadCategorySelect.value : '';
+    const isSocial = Boolean(this.detectClientSocialPlatform(url));
+    const playlist = isSocial && this.downloadPlaylistCheckbox ? Boolean(this.downloadPlaylistCheckbox.checked) : undefined;
+    const maxItems = isSocial && this.downloadPlaylistLimit ? Number(this.downloadPlaylistLimit.value) || 50 : undefined;
     if (!url) return;
 
     try {
-      await api.startDownload(url, name, category);
+      await api.startDownload(url, name, category, { playlist, maxItems });
       this.downloadUrlInput.value = '';
       this.downloadNameInput.value = '';
       if (this.downloadCategorySelect) this.downloadCategorySelect.value = '';
       if (this.ingestPlatformBadge) this.ingestPlatformBadge.style.display = 'none';
+      if (this.ingestPlaylistRow) this.ingestPlaylistRow.style.display = 'none';
+      if (this.downloadPlaylistCheckbox) this.downloadPlaylistCheckbox.checked = false;
       this.loadDownloads();
     } catch (err) {
       alert(`Download failed: ${err.message}`);

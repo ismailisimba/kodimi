@@ -129,6 +129,8 @@ function buildBaseArgs(cookiePath) {
     '--no-warnings',
     '--no-check-certificates',
     '--geo-bypass',
+    '--js-runtimes', 'node',
+    '--remote-components', 'ejs:github',
     '--socket-timeout', '30',
     '--retries', '3',
     '--fragment-retries', '3',

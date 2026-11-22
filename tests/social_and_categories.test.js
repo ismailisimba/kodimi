@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   detectSocialPlatform,
   detectPlaylistIntent,
+  detectSocialAdultContent,
+  selectDirectProgressiveFormat,
+  selectLargeSplitHttpsFormats,
   normalizePlaylistEntries,
   buildSocialMediaMetadata,
   resolveYtDlpRunner,
@@ -258,4 +261,66 @@ test('Social playlist detection, normalization, series-style grouping, UI render
     }
     await mediaDB.delete(standaloneId);
   }
+});
+
+test('Zero-tmpfs streaming format selection handles multi-GB Twitter progressive MP4, standard YouTube 1080p, large YouTube DASH, and Vault NSFW routing', () => {
+  // 1. Twitter/X multi-GB 1080p progressive MP4 alongside video-only HLS -> selects direct progressive MP4
+  const twitterInfo = {
+    title: 'DP 🔞 - #anal #pawg #nsfwtwt',
+    duration: 3415,
+    age_limit: 18,
+    formats: [
+      { format_id: 'hls-audio-128000', ext: 'mp4', protocol: 'm3u8_native', vcodec: 'none', tbr: 128 },
+      { format_id: 'http-2176', ext: 'mp4', protocol: 'https', height: 720, tbr: 2176, filesize: 928_000_000, url: 'https://video.twimg.com/720.mp4' },
+      { format_id: 'http-10368', ext: 'mp4', protocol: 'https', height: 1080, tbr: 10368, filesize: 4_425_925_535, url: 'https://video.twimg.com/1080.mp4' },
+      { format_id: 'hls-5523', ext: 'mp4', protocol: 'm3u8_native', height: 1080, vcodec: 'avc1', acodec: 'none', tbr: 5523, url: 'https://video.twimg.com/1080.m3u8' },
+    ],
+  };
+
+  const chosenTw = selectDirectProgressiveFormat(twitterInfo);
+  assert.equal(chosenTw?.format_id, 'http-10368', 'Must select 1080p progressive MP4 for zero-RAM GCS streaming');
+
+  // 2. Standard 10-min YouTube video (360p progressive + 1080p small DASH) -> returns null so yt-dlp merges full 1080p
+  const normalYtInfo = {
+    title: 'JavaScript in 100 Seconds',
+    duration: 120,
+    formats: [
+      { format_id: '18', ext: 'mp4', protocol: 'https', height: 360, vcodec: 'avc1', acodec: 'mp4a', tbr: 600, url: 'https://rr1.googlevideo.com/360.mp4' },
+      { format_id: '137', ext: 'mp4', protocol: 'https', height: 1080, vcodec: 'avc1', acodec: 'none', filesize: 35_000_000, url: 'https://rr1.googlevideo.com/1080.mp4' },
+      { format_id: '140', ext: 'm4a', protocol: 'https', vcodec: 'none', acodec: 'mp4a', filesize: 2_000_000, url: 'https://rr1.googlevideo.com/audio.m4a' },
+    ],
+  };
+  assert.equal(selectDirectProgressiveFormat(normalYtInfo), null);
+  assert.equal(selectLargeSplitHttpsFormats(normalYtInfo), null);
+
+  // 3. Long 3-hour YouTube 1080p DASH (> 1.35 GiB) -> selects split HTTPS pipe for zero-tmpfs FFmpeg streaming
+  const hugeYtInfo = {
+    title: 'Full 3-Hour Documentary',
+    duration: 10800,
+    formats: [
+      { format_id: '18', ext: 'mp4', protocol: 'https', height: 360, vcodec: 'avc1', acodec: 'mp4a', tbr: 500, url: 'https://rr1.googlevideo.com/360.mp4' },
+      { format_id: '137', ext: 'mp4', protocol: 'https', height: 1080, vcodec: 'avc1', acodec: 'none', filesize: 2_200_000_000, url: 'https://rr1.googlevideo.com/1080.mp4' },
+      { format_id: '140', ext: 'm4a', protocol: 'https', vcodec: 'none', acodec: 'mp4a', filesize: 170_000_000, url: 'https://rr1.googlevideo.com/audio.m4a' },
+    ],
+  };
+  assert.equal(selectDirectProgressiveFormat(hugeYtInfo), null);
+  const split = selectLargeSplitHttpsFormats(hugeYtInfo);
+  assert.equal(split?.video?.format_id, '137');
+  assert.equal(split?.audio?.format_id, '140');
+
+  // 4. NSFW social video routes safely into Private Vault while normal video stays non-adult
+  assert.equal(detectSocialAdultContent(twitterInfo), true);
+  const adultMeta = buildSocialMediaMetadata({
+    info: { ...twitterInfo, height: 1080 },
+    platform: { id: 'twitter', label: 'Twitter' },
+    customName: '',
+    gcsPath: 'Social/Twitter/nsfw-clip.mp4',
+    sizeBytes: 2_360_533_794,
+    categoryOverride: 'others',
+  });
+  assert.equal(adultMeta.is_adult, true);
+  assert.ok(adultMeta.genres.includes('Adult'));
+  assert.ok(adultMeta.tags.includes('Private'));
+
+  assert.equal(detectSocialAdultContent(normalYtInfo), false);
 });

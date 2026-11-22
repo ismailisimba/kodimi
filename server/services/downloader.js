@@ -422,6 +422,10 @@ async function processSocialDownload(id, url, customName = '', category = 'other
         const cur = activeJobs.get(id);
         if (cur) cur.childProcess = child;
       },
+      onAbortController: (controller) => {
+        const cur = activeJobs.get(id);
+        if (cur) cur.abortController = controller;
+      },
       onEpisodeReady: async (epResult) => {
         try {
           await indexSocialMediaEpisode(epResult);
@@ -1016,6 +1020,9 @@ function broadcastProgress(data) {
 export function pauseDownload(id) {
   const job = activeJobs.get(id);
   if (job) {
+    if (job.abortController) {
+      try { job.abortController.abort(); } catch (_) {}
+    }
     if (job.childProcess) {
       try { job.childProcess.kill('SIGKILL'); } catch (_) {}
     }
@@ -1049,7 +1056,7 @@ export function pauseDownload(id) {
   return false;
 }
 
-export async function resumeDownload(id) {
+export async function resumeDownload(id, { isAutoResume = false } = {}) {
   let job = downloadsDB.getById(id);
   if (!job) {
     job = await downloadsDB.getByIdAsync(id);
@@ -1060,6 +1067,9 @@ export async function resumeDownload(id) {
   job.status = 'downloading';
   job.status_text = 'Resuming download...';
   job.error = null;
+  if (!isAutoResume) {
+    job.auto_resume_count = 0;
+  }
   downloadsDB.upsert(job);
   activeJobs.set(id, { ...job });
   broadcastProgress(job);
@@ -1084,6 +1094,9 @@ export async function resumeDownload(id) {
 export function cancelDownload(id, shouldUpsert = true) {
   const job = activeJobs.get(id);
   if (job) {
+    if (job.abortController) {
+      try { job.abortController.abort(); } catch (_) {}
+    }
     if (job.childProcess) {
       try { job.childProcess.kill('SIGKILL'); } catch (_) {}
     }
@@ -1135,15 +1148,29 @@ export async function initDownloader() {
       // Only auto-resume if the job was active within the last 20 minutes; otherwise pause so cold starts stay idle
       if (ageMs > 20 * 60 * 1000) {
         console.log(`[Downloader] Pausing stale in-flight job on startup (${Math.round(ageMs / 60000)}m old): ${dl.name}`);
-        downloadsDB.upsert({
+        await downloadsDB.upsertAsync({
           ...dl,
           status: 'paused',
           speed: 0,
           status_text: 'Paused after idle timeout — click Resume to continue',
         });
+      } else if ((dl.auto_resume_count || 0) >= 2) {
+        console.warn(`[Downloader] Stopping crash-looping job after ${dl.auto_resume_count} auto-resumes: ${dl.name} (${dl.id})`);
+        await downloadsDB.upsertAsync({
+          ...dl,
+          status: 'failed',
+          speed: 0,
+          error: 'Worker restarted repeatedly while processing this job. Click Resume to retry.',
+          status_text: 'Stopped after repeated restarts — click Resume to retry',
+        });
       } else {
-        console.log(`[Downloader] Auto-resuming recent in-flight job on startup: ${dl.name} (${dl.id})`);
-        resumeDownload(dl.id).catch((err) => console.warn(`[Downloader Auto-Resume Error]:`, err.message));
+        const nextAttempt = (dl.auto_resume_count || 0) + 1;
+        await downloadsDB.upsertAsync({
+          ...dl,
+          auto_resume_count: nextAttempt,
+        });
+        console.log(`[Downloader] Auto-resuming recent in-flight job on startup (attempt ${nextAttempt}/2): ${dl.name} (${dl.id})`);
+        resumeDownload(dl.id, { isAutoResume: true }).catch((err) => console.warn(`[Downloader Auto-Resume Error]:`, err.message));
       }
     }
   } catch (err) {

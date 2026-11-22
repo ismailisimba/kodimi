@@ -107,6 +107,7 @@ const DownloadSchema = new mongoose.Schema({
   category: String,
   include_playlist: { type: Boolean, default: false },
   max_items: { type: Number, default: 50 },
+  auto_resume_count: { type: Number, default: 0 },
   status: { type: String, default: 'queued', index: true },
   status_text: String,
   progress: { type: Number, default: 0 },
@@ -1210,8 +1211,8 @@ export const downloadsDB = {
   },
 
   upsert: (dl) => {
-    // Strip runtime stream, childProcess & torrent instances that cannot be serialized to MongoDB
-    const { torrent, currentReadStream, currentWriteStream, childProcess, ...cleanData } = dl;
+    // Strip runtime stream, childProcess, abortController & torrent instances that cannot be serialized to MongoDB
+    const { torrent, currentReadStream, currentWriteStream, childProcess, abortController, ...cleanData } = dl;
     const docData = {
       ...cleanData,
       updated_at: new Date(),
@@ -1224,6 +1225,25 @@ export const downloadsDB = {
       { $set: docData },
       { upsert: true, returnDocument: 'after' }
     ).catch((err) => console.error('[Download Upsert Error]:', err.message));
+  },
+
+  upsertAsync: async (dl) => {
+    const { torrent, currentReadStream, currentWriteStream, childProcess, abortController, ...cleanData } = dl;
+    const docData = {
+      ...cleanData,
+      updated_at: new Date(),
+    };
+
+    downloadCache.set(dl.id, docData);
+
+    if (mongoose.connection.readyState === 1) {
+      await DownloadModel.findOneAndUpdate(
+        { id: dl.id },
+        { $set: docData },
+        { upsert: true, returnDocument: 'after' }
+      );
+    }
+    return docData;
   },
 
   delete: (id) => {

@@ -3,8 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import axios from 'axios';
 import config from '../config/env.js';
 import { createWriteStream } from '../config/gcs.js';
+import { heuristicParseFilename } from './aiTagger.js';
+
+const TMPFS_SAFE_BYTES = 1.35 * 1024 * 1024 * 1024; // ~1.35 GiB max before preferring zero-tmpfs streaming to GCS
 
 const SOCIAL_PLATFORMS = [
   {
@@ -363,6 +367,161 @@ export function normalizePlaylistEntries(probeJson, sourceUrl, platform, maxItem
   return result;
 }
 
+export function detectSocialAdultContent(info, rawTitle = '', rawDesc = '') {
+  const combined = `${rawTitle || ''} ${rawDesc || ''} ${info?.title || ''} ${info?.description || ''}`;
+  if (/🔞|#nsfw|\bnsfw\b|\bnsfwtwt\b/i.test(combined)) {
+    return true;
+  }
+  try {
+    return Boolean(heuristicParseFilename(combined).is_adult);
+  } catch {
+    return false;
+  }
+}
+
+function estimateFormatBytes(fmt, durationSec = 0) {
+  if (!fmt) return 0;
+  const explicit = Number(fmt.filesize || fmt.filesize_approx || 0);
+  if (explicit > 0) return explicit;
+  const tbr = Number(fmt.tbr || fmt.vbr || fmt.abr || 0);
+  const dur = Number(durationSec || 0);
+  if (tbr > 0 && dur > 0) {
+    return Math.round((tbr * 1000 * dur) / 8);
+  }
+  return 0;
+}
+
+/**
+ * Selects a direct progressive HTTP/HTTPS MP4 format (already muxed video+audio) that can be
+ * streamed straight into GCS with ZERO /tmp disk/RAM usage (critical for multi-GB videos on Cloud Run).
+ * Only picks progressive when it matches the top available <=1080p resolution (e.g. Twitter/X, IG, FB),
+ * OR when a >=720p progressive stream avoids exceeding safe Cloud Run tmpfs headroom on huge videos.
+ */
+export function selectDirectProgressiveFormat(info) {
+  if (!info || typeof info !== 'object') return null;
+  const formats = Array.isArray(info.formats) ? info.formats : [];
+  const dur = Number(info.duration) || 0;
+
+  if (formats.length === 0) {
+    if (
+      info.url &&
+      (info.protocol === 'https' || info.protocol === 'http') &&
+      String(info.ext || '').toLowerCase() === 'mp4' &&
+      info.vcodec !== 'none' &&
+      info.acodec !== 'none'
+    ) {
+      return {
+        url: info.url,
+        ext: 'mp4',
+        height: Number(info.height) || 0,
+        tbr: Number(info.tbr) || 0,
+        filesize: estimateFormatBytes(info, dur),
+        http_headers: info.http_headers || {},
+      };
+    }
+    return null;
+  }
+
+  let maxAvailHeight = 0;
+  let maxSplitEstBytes = 0;
+  for (const f of formats) {
+    if (!f || f.vcodec === 'none') continue;
+    const h = Number(f.height) || 0;
+    if (h > 0 && h <= 1080 && h > maxAvailHeight) {
+      maxAvailHeight = h;
+    }
+    if (h > 0 && h <= 1080 && f.acodec === 'none') {
+      maxSplitEstBytes = Math.max(maxSplitEstBytes, estimateFormatBytes(f, dur));
+    }
+  }
+
+  const progressiveCandidates = formats
+    .filter((f) => {
+      if (!f || !f.url) return false;
+      const proto = String(f.protocol || '').toLowerCase();
+      if (proto !== 'https' && proto !== 'http') return false;
+      if (String(f.ext || '').toLowerCase() !== 'mp4') return false;
+      if (f.vcodec === 'none' || f.acodec === 'none') return false;
+      const h = Number(f.height) || 0;
+      if (h > 1080) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const hDiff = (Number(b.height) || 0) - (Number(a.height) || 0);
+      if (hDiff !== 0) return hDiff;
+      const tDiff = (Number(b.tbr) || 0) - (Number(a.tbr) || 0);
+      if (tDiff !== 0) return tDiff;
+      return estimateFormatBytes(b, dur) - estimateFormatBytes(a, dur);
+    });
+
+  if (progressiveCandidates.length === 0) return null;
+
+  const best = progressiveCandidates[0];
+  const bestHeight = Number(best.height) || 0;
+  const targetHeight = maxAvailHeight > 0 ? Math.min(1080, maxAvailHeight) : bestHeight;
+
+  if (bestHeight >= targetHeight && bestHeight > 0) {
+    return best;
+  }
+  // If top quality is split DASH/HLS exceeding safe Cloud Run tmpfs size, prefer >=720p direct stream
+  if (bestHeight >= 720 && maxSplitEstBytes > TMPFS_SAFE_BYTES) {
+    return best;
+  }
+  return null;
+}
+
+/**
+ * For very large split DASH streams (> 1.35 GiB, e.g. multi-hour 1080p YouTube videos) where
+ * writing to Cloud Run tmpfs would OOM, selects direct HTTPS video + audio URLs to mux straight to GCS via FFmpeg pipe.
+ */
+export function selectLargeSplitHttpsFormats(info) {
+  if (!info || !Array.isArray(info.formats)) return null;
+  const dur = Number(info.duration) || 0;
+
+  const videoCandidates = info.formats
+    .filter((f) => {
+      if (!f || !f.url) return false;
+      const proto = String(f.protocol || '').toLowerCase();
+      if (proto !== 'https' && proto !== 'http') return false;
+      if (!f.vcodec || f.vcodec === 'none') return false;
+      if (f.acodec && f.acodec !== 'none') return false;
+      const h = Number(f.height) || 0;
+      return h > 0 && h <= 1080;
+    })
+    .sort((a, b) => {
+      const hDiff = (Number(b.height) || 0) - (Number(a.height) || 0);
+      if (hDiff !== 0) return hDiff;
+      const mp4Diff = (b.ext === 'mp4' ? 1 : 0) - (a.ext === 'mp4' ? 1 : 0);
+      if (mp4Diff !== 0) return mp4Diff;
+      return (Number(b.tbr) || 0) - (Number(a.tbr) || 0);
+    });
+
+  const audioCandidates = info.formats
+    .filter((f) => {
+      if (!f || !f.url) return false;
+      const proto = String(f.protocol || '').toLowerCase();
+      if (proto !== 'https' && proto !== 'http') return false;
+      if (f.vcodec && f.vcodec !== 'none') return false;
+      if (!f.acodec || f.acodec === 'none') return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const m4aDiff = (b.ext === 'm4a' || b.ext === 'mp4' ? 1 : 0) - (a.ext === 'm4a' || a.ext === 'mp4' ? 1 : 0);
+      if (m4aDiff !== 0) return m4aDiff;
+      return (Number(b.abr || b.tbr) || 0) - (Number(a.abr || a.tbr) || 0);
+    });
+
+  if (!videoCandidates.length || !audioCandidates.length) return null;
+  const bestVideo = videoCandidates[0];
+  const bestAudio = audioCandidates[0];
+  const estTotal = estimateFormatBytes(bestVideo, dur) + estimateFormatBytes(bestAudio, dur);
+
+  if (estTotal > TMPFS_SAFE_BYTES) {
+    return { video: bestVideo, audio: bestAudio, estimatedBytes: estTotal };
+  }
+  return null;
+}
+
 export function buildSocialMediaMetadata({
   info,
   platform,
@@ -384,9 +543,15 @@ export function buildSocialMediaMetadata({
 
   const cat = String(categoryOverride || '').toLowerCase().trim();
   const isPlaylistItem = Boolean(playlistMeta && playlistMeta.seriesName);
+  const rawBaseTitle = isPlaylistItem
+    ? `${playlistMeta.seriesName} ${info?.title || ''}`
+    : (customName || info?.title || `${platform.label} Video`).trim();
+  const isAdult = detectSocialAdultContent(info, rawBaseTitle, rawDesc);
 
   let effectiveType;
-  if (isPlaylistItem) {
+  if (isAdult && !isPlaylistItem) {
+    effectiveType = 'movie';
+  } else if (isPlaylistItem) {
     effectiveType =
       cat === 'series'
         ? 'series'
@@ -404,24 +569,27 @@ export function buildSocialMediaMetadata({
             : 'others';
   }
 
-  const genres =
-    effectiveType === 'documentary'
+  const genres = isAdult
+    ? ['Adult']
+    : effectiveType === 'documentary'
       ? ['Documentary', platform.label]
       : effectiveType === 'series'
         ? [platform.label, 'Series']
         : ['Others', platform.label];
 
-  const tags = [platform.label, resolution];
+  const tags = isAdult ? ['Private', '18+', platform.label, resolution] : [platform.label, resolution];
   if (isPlaylistItem) {
     tags.push('Playlist');
   }
-  if (effectiveType === 'documentary') {
-    tags.push('Documentary');
-  } else if (effectiveType === 'others') {
-    tags.push('Others');
-  }
-  if (uploader) {
-    tags.push(String(uploader).slice(0, 32));
+  if (!isAdult) {
+    if (effectiveType === 'documentary') {
+      tags.push('Documentary');
+    } else if (effectiveType === 'others') {
+      tags.push('Others');
+    }
+    if (uploader) {
+      tags.push(String(uploader).slice(0, 32));
+    }
   }
 
   if (isPlaylistItem) {
@@ -444,7 +612,7 @@ export function buildSocialMediaMetadata({
       season,
       episode,
       year: parseUploadYear(info?.upload_date),
-      plot: shortDesc,
+      plot: isAdult ? 'Private Media content.' : shortDesc,
       series_plot: seriesPlot,
       genres: Array.from(new Set(genres)),
       tags: Array.from(new Set(tags)),
@@ -455,7 +623,7 @@ export function buildSocialMediaMetadata({
       resolution,
       video_codec: 'h264',
       audio_codec: 'aac',
-      is_adult: false,
+      is_adult: isAdult,
     };
   }
 
@@ -470,7 +638,7 @@ export function buildSocialMediaMetadata({
     season: null,
     episode: null,
     year: parseUploadYear(info?.upload_date),
-    plot: shortDesc,
+    plot: isAdult ? 'Private Media content.' : shortDesc,
     series_plot: null,
     genres: Array.from(new Set(genres)),
     tags: Array.from(new Set(tags)),
@@ -481,7 +649,7 @@ export function buildSocialMediaMetadata({
     resolution,
     video_codec: 'h264',
     audio_codec: 'aac',
-    is_adult: false,
+    is_adult: isAdult,
   };
 }
 
@@ -647,6 +815,261 @@ async function uploadLocalFileToGcs({
 }
 
 /**
+ * Streams a direct progressive HTTP/HTTPS MP4 URL straight into Google Cloud Storage
+ * with ZERO /tmp disk/RAM footprint (prevents Cloud Run tmpfs OOM on multi-GB videos).
+ */
+async function streamDirectFormatToGcs({
+  format,
+  gcsPath,
+  onProgress,
+  onAbortController = () => {},
+  isCancelled,
+  statusText,
+  progressStart = 5,
+  progressSpan = 94,
+}) {
+  const controller = new AbortController();
+  onAbortController(controller);
+
+  const reqHeaders = {
+    'User-Agent':
+      format.http_headers?.['User-Agent'] ||
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    ...(format.http_headers || {}),
+  };
+
+  try {
+    const response = await axios({
+      method: 'get',
+      url: format.url,
+      headers: reqHeaders,
+      responseType: 'stream',
+      signal: controller.signal,
+      timeout: 60000,
+      maxRedirects: 5,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+      validateStatus: (s) => s >= 200 && s < 300,
+    });
+
+    const headerLen = parseInt(response.headers?.['content-length'] || '0', 10);
+    const totalBytes = headerLen > 0 ? headerLen : Number(format.filesize || format.filesize_approx || 0);
+    const contentType = response.headers?.['content-type'] || 'video/mp4';
+
+    onProgress({
+      gcs_path: gcsPath,
+      total_bytes: totalBytes,
+      progress: Math.round(progressStart * 10) / 10,
+      status_text: statusText,
+    });
+
+    const downloadedBytes = await new Promise((resolve, reject) => {
+      const readStream = response.data;
+      const writeStream = createWriteStream(gcsPath, {
+        contentType: contentType.startsWith('video/') ? contentType : 'video/mp4',
+      });
+
+      let received = 0;
+      let lastTick = Date.now();
+      let lastBytes = 0;
+      let settled = false;
+
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        try { readStream.destroy(); } catch (_) {}
+        try { writeStream.destroy(); } catch (_) {}
+        reject(err);
+      };
+
+      readStream.on('data', (chunk) => {
+        if (isCancelled()) {
+          try { controller.abort(); } catch (_) {}
+          fail(new Error('Download cancelled or paused'));
+          return;
+        }
+        received += chunk.length;
+        const now = Date.now();
+        const elapsed = (now - lastTick) / 1000;
+        if (elapsed >= 0.7) {
+          const speed = Math.round((received - lastBytes) / elapsed);
+          const ratio = totalBytes > 0 ? Math.min(0.995, received / totalBytes) : 0.5;
+          const pct = Math.min(99, Math.round((progressStart + ratio * progressSpan) * 10) / 10);
+          onProgress({
+            downloaded_bytes: received,
+            total_bytes: totalBytes > 0 ? totalBytes : received,
+            progress: pct,
+            speed,
+            status_text: statusText,
+          });
+          lastTick = now;
+          lastBytes = received;
+        }
+      });
+
+      readStream.on('error', fail);
+      writeStream.on('error', fail);
+      writeStream.on('finish', () => {
+        if (settled) return;
+        settled = true;
+        resolve(received);
+      });
+
+      readStream.pipe(writeStream);
+    });
+
+    if (downloadedBytes <= 0) {
+      throw new Error('Direct progressive stream produced 0 bytes');
+    }
+
+    return { sizeBytes: downloadedBytes };
+  } finally {
+    onAbortController(null);
+  }
+}
+
+/**
+ * Streams a very large split DASH video+audio pair directly through FFmpeg into GCS
+ * (fragmented MP4 pipe, ZERO /tmp disk/RAM usage).
+ */
+async function streamSplitDashToGcs({
+  split,
+  gcsPath,
+  onProgress,
+  onChildProcess = () => {},
+  isCancelled,
+  statusText,
+  progressStart = 5,
+  progressSpan = 94,
+}) {
+  const formatHeaders = (hdrs) => {
+    if (!hdrs || typeof hdrs !== 'object') return null;
+    const lines = Object.entries(hdrs)
+      .filter(([k, v]) => k && v != null && !/^(host|connection|accept-encoding)$/i.test(k))
+      .map(([k, v]) => `${k}: ${String(v).replace(/[\r\n]/g, '')}`);
+    return lines.length ? `${lines.join('\r\n')}\r\n` : null;
+  };
+
+  const vHdr = formatHeaders(split.video.http_headers);
+  const aHdr = formatHeaders(split.audio.http_headers);
+
+  const ffArgs = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    ...(vHdr ? ['-headers', vHdr] : []),
+    '-i', split.video.url,
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    ...(aHdr ? ['-headers', aHdr] : []),
+    '-i', split.audio.url,
+    '-map', '0:v:0',
+    '-map', '1:a:0',
+    '-c', 'copy',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-f', 'mp4',
+    'pipe:1',
+  ];
+
+  const totalEst = Number(split.estimatedBytes) || 0;
+  onProgress({
+    gcs_path: gcsPath,
+    total_bytes: totalEst,
+    progress: Math.round(progressStart * 10) / 10,
+    status_text: statusText,
+  });
+
+  const sizeBytes = await new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', ffArgs, { windowsHide: true });
+    onChildProcess(child);
+
+    const writeStream = createWriteStream(gcsPath, { contentType: 'video/mp4' });
+    let uploaded = 0;
+    let lastTick = Date.now();
+    let lastBytes = 0;
+    let stderrTail = '';
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      onChildProcess(null);
+      try { child.kill('SIGKILL'); } catch (_) {}
+      try { writeStream.destroy(); } catch (_) {}
+      reject(err);
+    };
+
+    child.stdout.on('data', (chunk) => {
+      if (isCancelled()) {
+        fail(new Error('Download cancelled or paused'));
+        return;
+      }
+      uploaded += chunk.length;
+      const now = Date.now();
+      const elapsed = (now - lastTick) / 1000;
+      if (elapsed >= 0.7) {
+        const speed = Math.round((uploaded - lastBytes) / elapsed);
+        const ratio = totalEst > 0 ? Math.min(0.99, uploaded / totalEst) : 0.5;
+        const pct = Math.min(99, Math.round((progressStart + ratio * progressSpan) * 10) / 10);
+        onProgress({
+          downloaded_bytes: uploaded,
+          total_bytes: Math.max(totalEst, uploaded),
+          progress: pct,
+          speed,
+          status_text: statusText,
+        });
+        lastTick = now;
+        lastBytes = uploaded;
+      }
+    });
+
+    child.stderr.on('data', (d) => {
+      stderrTail = (stderrTail + d.toString()).slice(-1000);
+    });
+
+    child.on('error', fail);
+    writeStream.on('error', fail);
+
+    let ffExited = false;
+    let ffCode = 0;
+    let gcsFinished = false;
+
+    const checkDone = () => {
+      if (settled || !ffExited || !gcsFinished) return;
+      settled = true;
+      onChildProcess(null);
+      if (ffCode !== 0 || uploaded === 0) {
+        reject(new Error(stderrTail.trim() || `FFmpeg split-stream pipe exited with code ${ffCode}`));
+      } else {
+        resolve(uploaded);
+      }
+    };
+
+    child.on('close', (code) => {
+      ffExited = true;
+      ffCode = code ?? 1;
+      if (ffCode !== 0 && !gcsFinished) {
+        fail(new Error(stderrTail.trim() || `FFmpeg split-stream pipe exited with code ${ffCode}`));
+        return;
+      }
+      checkDone();
+    });
+
+    writeStream.on('finish', () => {
+      gcsFinished = true;
+      checkDone();
+    });
+
+    child.stdout.pipe(writeStream);
+  });
+
+  return { sizeBytes };
+}
+
+/**
  * Downloads a single video OR a full playlist/multi-video collection from YouTube, Instagram,
  * Twitter/X, Reddit, LinkedIn, or Facebook via yt-dlp -> FFmpeg MP4 -> GCS.
  * For playlists, downloads sequentially one video at a time (immediately clearing tmpfs after
@@ -661,6 +1084,7 @@ export async function downloadSocialMediaToGcs({
   maxItems = 50,
   onProgress = () => {},
   onChildProcess = () => {},
+  onAbortController = () => {},
   onEpisodeReady = null,
   isCancelled = () => false,
 }) {
@@ -768,57 +1192,107 @@ export async function downloadSocialMediaToGcs({
               throw new Error('Download cancelled or paused');
             }
 
-            const mediaFile = await runSingleYtDlpDownload({
-              runner,
-              targetUrl: entry.useParentPlaylistIndex ? url : entry.url,
-              itemDir,
-              cookiePath,
-              platform,
-              useParentPlaylistIndex: entry.useParentPlaylistIndex,
-              playlistIndex: entry.playlistIndex,
-              onProgress,
-              onChildProcess,
-              isCancelled,
-              statusPrefix,
-              progressStart: itemBasePct,
-              progressSpan: dlSpan,
-            });
+            const safeItemTitle = sanitizeFilenameSegment(fullEntryInfo.title || `Video-${epNum}`, `Video-${epNum}`);
+            let gcsPath = `Social/${platform.label}/${safePlaylistDir}/${epCode}-${safeItemTitle}-${shortJobId}.mp4`;
+            let uploadedSize = 0;
 
-            if (isCancelled()) {
-              throw new Error('Download cancelled or paused');
+            const directProg = !entry.useParentPlaylistIndex ? selectDirectProgressiveFormat(fullEntryInfo) : null;
+            const largeSplit = !directProg && !entry.useParentPlaylistIndex ? selectLargeSplitHttpsFormats(fullEntryInfo) : null;
+
+            let streamedDirectly = false;
+            if (directProg) {
+              try {
+                if (directProg.height) fullEntryInfo = { ...fullEntryInfo, height: directProg.height };
+                const res = await streamDirectFormatToGcs({
+                  format: directProg,
+                  gcsPath,
+                  onProgress,
+                  onAbortController,
+                  isCancelled,
+                  statusText: `${statusPrefix}Streaming "${safeItemTitle.slice(0, 44)}" directly to GCS...`,
+                  progressStart: itemBasePct,
+                  progressSpan: itemTotalSpan * 0.96,
+                });
+                uploadedSize = res.sizeBytes;
+                streamedDirectly = true;
+              } catch (directErr) {
+                if (isCancelled()) throw directErr;
+                console.warn(`[SocialDownloader] Direct stream fallback for playlist item #${epNum}: ${directErr.message}`);
+              }
+            } else if (largeSplit) {
+              try {
+                if (largeSplit.video.height) fullEntryInfo = { ...fullEntryInfo, height: largeSplit.video.height };
+                const res = await streamSplitDashToGcs({
+                  split: largeSplit,
+                  gcsPath,
+                  onProgress,
+                  onChildProcess,
+                  isCancelled,
+                  statusText: `${statusPrefix}Streaming HD "${safeItemTitle.slice(0, 40)}" directly to GCS...`,
+                  progressStart: itemBasePct,
+                  progressSpan: itemTotalSpan * 0.96,
+                });
+                uploadedSize = res.sizeBytes;
+                streamedDirectly = true;
+              } catch (splitErr) {
+                if (isCancelled()) throw splitErr;
+                console.warn(`[SocialDownloader] Split stream fallback for playlist item #${epNum}: ${splitErr.message}`);
+              }
             }
 
-            const ext = path.extname(mediaFile.name) || '.mp4';
-            const safeItemTitle = sanitizeFilenameSegment(fullEntryInfo.title || `Video-${epNum}`, `Video-${epNum}`);
-            const gcsPath = `Social/${platform.label}/${safePlaylistDir}/${epCode}-${safeItemTitle}-${shortJobId}${ext}`;
+            if (!streamedDirectly) {
+              const mediaFile = await runSingleYtDlpDownload({
+                runner,
+                targetUrl: entry.useParentPlaylistIndex ? url : entry.url,
+                itemDir,
+                cookiePath,
+                platform,
+                useParentPlaylistIndex: entry.useParentPlaylistIndex,
+                playlistIndex: entry.playlistIndex,
+                onProgress,
+                onChildProcess,
+                isCancelled,
+                statusPrefix,
+                progressStart: itemBasePct,
+                progressSpan: dlSpan,
+              });
 
-            onProgress({
-              gcs_path: gcsPath,
-              progress: Math.min(99, Math.round((itemBasePct + dlSpan) * 10) / 10),
-              speed: 0,
-              status_text: `${statusPrefix}Uploading "${safeItemTitle.slice(0, 44)}" to GCS...`,
-            });
+              if (isCancelled()) {
+                throw new Error('Download cancelled or paused');
+              }
 
-            await uploadLocalFileToGcs({
-              localFilePath: mediaFile.full,
-              gcsPath,
-              sizeBytes: mediaFile.size,
-              ext,
-              onProgress,
-              isCancelled,
-              statusText: `${statusPrefix}Uploading "${safeItemTitle.slice(0, 44)}" to GCS...`,
-              progressStart: itemBasePct + dlSpan,
-              progressSpan: uploadSpan,
-            });
+              const ext = path.extname(mediaFile.name) || '.mp4';
+              gcsPath = `Social/${platform.label}/${safePlaylistDir}/${epCode}-${safeItemTitle}-${shortJobId}${ext}`;
 
-            cumulativeBytes += mediaFile.size;
+              onProgress({
+                gcs_path: gcsPath,
+                progress: Math.min(99, Math.round((itemBasePct + dlSpan) * 10) / 10),
+                speed: 0,
+                status_text: `${statusPrefix}Uploading "${safeItemTitle.slice(0, 44)}" to GCS...`,
+              });
+
+              await uploadLocalFileToGcs({
+                localFilePath: mediaFile.full,
+                gcsPath,
+                sizeBytes: mediaFile.size,
+                ext,
+                onProgress,
+                isCancelled,
+                statusText: `${statusPrefix}Uploading "${safeItemTitle.slice(0, 44)}" to GCS...`,
+                progressStart: itemBasePct + dlSpan,
+                progressSpan: uploadSpan,
+              });
+              uploadedSize = mediaFile.size;
+            }
+
+            cumulativeBytes += uploadedSize;
 
             const metadata = buildSocialMediaMetadata({
               info: fullEntryInfo,
               platform,
               customName: '',
               gcsPath,
-              sizeBytes: mediaFile.size,
+              sizeBytes: uploadedSize,
               categoryOverride: category,
               playlistMeta: {
                 seriesName: playlistTitle,
@@ -832,7 +1306,7 @@ export async function downloadSocialMediaToGcs({
 
             const epResult = {
               gcsPath,
-              sizeBytes: mediaFile.size,
+              sizeBytes: uploadedSize,
               platform,
               metadata,
               epNum,
@@ -907,69 +1381,139 @@ export async function downloadSocialMediaToGcs({
 
     const displayTitle = sanitizeFilenameSegment(customName || info?.title || `${platform.label}-video-${Date.now()}`);
     const shortId = String(id).slice(0, 6);
+    let gcsPath = `Social/${platform.label}/${displayTitle}-${shortId}.mp4`;
+    let finalSizeBytes = 0;
 
-    onProgress({
-      name: `${displayTitle}.mp4`,
-      status_text: `Downloading from ${platform.label}...`,
-      progress: 5,
-      total_bytes: Number(info?.filesize || info?.filesize_approx || 0),
-    });
+    // Zero-RAM streaming path: stream direct progressive MP4 (e.g. Twitter/X 1080p) or large split DASH straight to GCS
+    const directProg = selectDirectProgressiveFormat(info);
+    const largeSplit = !directProg ? selectLargeSplitHttpsFormats(info) : null;
+    let streamedDirectly = false;
 
-    const itemDir = path.join(workDir, 'single');
-    const mediaFile = await runSingleYtDlpDownload({
-      runner,
-      targetUrl: url,
-      itemDir,
-      cookiePath,
-      platform,
-      onProgress,
-      onChildProcess,
-      isCancelled,
-      progressStart: 5,
-      progressSpan: 80,
-    });
+    if (directProg) {
+      if (directProg.height) info = { ...(info || {}), height: directProg.height };
+      onProgress({
+        name: `${displayTitle}.mp4`,
+        gcs_path: gcsPath,
+        status_text: `Streaming ${platform.label} video directly to GCS...`,
+        progress: 5,
+        total_bytes: Number(directProg.filesize || directProg.filesize_approx || info?.filesize || 0),
+      });
+      try {
+        console.log(
+          `[SocialDownloader] Direct zero-tmpfs streaming ${platform.label} format ${directProg.format_id || 'progressive'} (${directProg.height || '?'}p) -> gs://.../${gcsPath}`
+        );
+        const streamed = await streamDirectFormatToGcs({
+          format: directProg,
+          gcsPath,
+          onProgress,
+          onAbortController,
+          isCancelled,
+          statusText: `Streaming ${platform.label} video directly to GCS...`,
+          progressStart: 5,
+          progressSpan: 94,
+        });
+        finalSizeBytes = streamed.sizeBytes;
+        streamedDirectly = true;
+      } catch (directErr) {
+        if (isCancelled()) throw directErr;
+        console.warn(`[SocialDownloader] Direct stream failed (${directErr.message}); falling back to yt-dlp`);
+      }
+    } else if (largeSplit) {
+      if (largeSplit.video.height) info = { ...(info || {}), height: largeSplit.video.height };
+      onProgress({
+        name: `${displayTitle}.mp4`,
+        gcs_path: gcsPath,
+        status_text: `Streaming HD ${platform.label} video directly to GCS...`,
+        progress: 5,
+        total_bytes: largeSplit.estimatedBytes,
+      });
+      try {
+        console.log(
+          `[SocialDownloader] Split-DASH zero-tmpfs FFmpeg pipe (${largeSplit.video.height || '?'}p, ~${Math.round(largeSplit.estimatedBytes / 1048576)}MB) -> gs://.../${gcsPath}`
+        );
+        const streamed = await streamSplitDashToGcs({
+          split: largeSplit,
+          gcsPath,
+          onProgress,
+          onChildProcess,
+          isCancelled,
+          statusText: `Streaming HD ${platform.label} video directly to GCS...`,
+          progressStart: 5,
+          progressSpan: 94,
+        });
+        finalSizeBytes = streamed.sizeBytes;
+        streamedDirectly = true;
+      } catch (splitErr) {
+        if (isCancelled()) throw splitErr;
+        console.warn(`[SocialDownloader] Split-DASH pipe failed (${splitErr.message}); falling back to yt-dlp`);
+      }
+    }
 
-    const ext = path.extname(mediaFile.name) || '.mp4';
-    const gcsPath = `Social/${platform.label}/${displayTitle}-${shortId}${ext}`;
+    if (!streamedDirectly) {
+      onProgress({
+        name: `${displayTitle}.mp4`,
+        status_text: `Downloading from ${platform.label}...`,
+        progress: 5,
+        total_bytes: Number(info?.filesize || info?.filesize_approx || 0),
+      });
 
-    onProgress({
-      name: `${displayTitle}${ext}`,
-      gcs_path: gcsPath,
-      total_bytes: mediaFile.size,
-      progress: 86,
-      speed: 0,
-      status_text: `Uploading ${platform.label} video to GCS...`,
-    });
+      const itemDir = path.join(workDir, 'single');
+      const mediaFile = await runSingleYtDlpDownload({
+        runner,
+        targetUrl: url,
+        itemDir,
+        cookiePath,
+        platform,
+        onProgress,
+        onChildProcess,
+        isCancelled,
+        progressStart: 5,
+        progressSpan: 80,
+      });
 
-    await uploadLocalFileToGcs({
-      localFilePath: mediaFile.full,
-      gcsPath,
-      sizeBytes: mediaFile.size,
-      ext,
-      onProgress,
-      isCancelled,
-      statusText: `Uploading ${platform.label} video to GCS...`,
-      progressStart: 86,
-      progressSpan: 13,
-    });
+      const ext = path.extname(mediaFile.name) || '.mp4';
+      gcsPath = `Social/${platform.label}/${displayTitle}-${shortId}${ext}`;
+
+      onProgress({
+        name: `${displayTitle}${ext}`,
+        gcs_path: gcsPath,
+        total_bytes: mediaFile.size,
+        progress: 86,
+        speed: 0,
+        status_text: `Uploading ${platform.label} video to GCS...`,
+      });
+
+      await uploadLocalFileToGcs({
+        localFilePath: mediaFile.full,
+        gcsPath,
+        sizeBytes: mediaFile.size,
+        ext,
+        onProgress,
+        isCancelled,
+        statusText: `Uploading ${platform.label} video to GCS...`,
+        progressStart: 86,
+        progressSpan: 13,
+      });
+      finalSizeBytes = mediaFile.size;
+    }
 
     const metadata = buildSocialMediaMetadata({
       info,
       platform,
       customName,
       gcsPath,
-      sizeBytes: mediaFile.size,
+      sizeBytes: finalSizeBytes,
       categoryOverride: category,
     });
 
     return {
       isPlaylist: false,
       gcsPath,
-      sizeBytes: mediaFile.size,
-      totalBytes: mediaFile.size,
+      sizeBytes: finalSizeBytes,
+      totalBytes: finalSizeBytes,
       platform,
       metadata,
-      items: [{ gcsPath, sizeBytes: mediaFile.size, platform, metadata }],
+      items: [{ gcsPath, sizeBytes: finalSizeBytes, platform, metadata }],
       skippedCount: 0,
     };
   } finally {
@@ -983,6 +1527,9 @@ export async function downloadSocialMediaToGcs({
 export default {
   detectSocialPlatform,
   detectPlaylistIntent,
+  detectSocialAdultContent,
+  selectDirectProgressiveFormat,
+  selectLargeSplitHttpsFormats,
   normalizePlaylistEntries,
   buildSocialMediaMetadata,
   resolveYtDlpRunner,

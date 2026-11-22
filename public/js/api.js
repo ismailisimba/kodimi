@@ -38,12 +38,15 @@ export const profileState = {
     const p = profileState.getActiveProfile();
     return p?.id || 'default';
   },
+  isOwner: () => {
+    const p = profileState.getActiveProfile();
+    return Boolean(p && p.role === 'owner' && !p.is_kids);
+  },
 };
 
 export async function request(endpoint, options = {}) {
   const token = authState.getToken();
   const vaultPin = vaultState.getPin();
-  const activeProfileId = profileState.getActiveProfileId();
   const headers = {
     'Content-Type': 'application/json',
     ...(options.headers || {}),
@@ -52,11 +55,8 @@ export async function request(endpoint, options = {}) {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
-  if (vaultPin) {
+  if (vaultPin && profileState.isOwner()) {
     headers['x-vault-pin'] = vaultPin;
-  }
-  if (activeProfileId) {
-    headers['x-profile-id'] = activeProfileId;
   }
 
   const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -66,6 +66,8 @@ export async function request(endpoint, options = {}) {
 
   if (res.status === 401) {
     authState.clearToken();
+    vaultState.lock();
+    profileState.setActiveProfile(null);
     window.dispatchEvent(new CustomEvent('kodimi_auth_required'));
     throw new Error('Authentication required');
   }
@@ -87,23 +89,39 @@ export async function request(endpoint, options = {}) {
 }
 
 export const api = {
-  // Auth
-  login: async (password) => {
+  // Auth (Code-only per-profile login)
+  login: async (code) => {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ code }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Invalid password');
+      throw new Error(err.error || 'Invalid login code');
     }
     const data = await res.json();
     authState.setToken(data.token);
+    vaultState.lock();
+    if (data.profile) {
+      profileState.setActiveProfile(data.profile);
+    }
     return data;
   },
 
-  checkAuth: () => request('/auth/me'),
+  checkAuth: async () => {
+    const data = await request('/auth/me');
+    if (data?.profile) {
+      profileState.setActiveProfile(data.profile);
+    }
+    return data;
+  },
+
+  changeCode: (currentCode, newCode) =>
+    request('/auth/change-code', {
+      method: 'POST',
+      body: JSON.stringify({ currentCode, newCode }),
+    }),
 
   verifyPin: (pin) =>
     request('/auth/verify-pin', {
@@ -137,6 +155,12 @@ export const api = {
       body: JSON.stringify(matchHint ? { matchHint } : {}),
     }),
 
+  updateMediaCategory: (id, category) =>
+    request(`/media/${id}/category`, {
+      method: 'PATCH',
+      body: JSON.stringify({ category }),
+    }),
+
   retagInaccurate: (options = {}) =>
     request('/media/retag-inaccurate', {
       method: 'POST',
@@ -147,18 +171,18 @@ export const api = {
 
   deleteMedia: (id) => request(`/media/${id}`, { method: 'DELETE' }),
 
-  // Bucket Sync
+  // Bucket Sync (Owner-only)
   syncBucket: () => request('/media/sync-bucket', { method: 'POST' }),
 
   getSyncStatus: () => request('/media/sync-status'),
 
-  // Downloads
+  // Downloads & Social Media Ingestion (Owner-only)
   getDownloads: () => request('/downloads'),
 
-  startDownload: (url, name = '') =>
+  startDownload: (url, name = '', category = '') =>
     request('/downloads', {
       method: 'POST',
-      body: JSON.stringify({ url, name }),
+      body: JSON.stringify({ url, name, ...(category ? { category } : {}) }),
     }),
 
   cancelDownload: (id) => request(`/downloads/${id}`, { method: 'DELETE' }),
@@ -171,22 +195,22 @@ export const api = {
       body: JSON.stringify({ is_adult: isAdult }),
     }),
 
-  requestUploadUrl: (filename, size, contentType = 'application/octet-stream') =>
+  requestUploadUrl: (filename, size, contentType = 'application/octet-stream', category = '') =>
     request('/downloads/request-upload', {
       method: 'POST',
-      body: JSON.stringify({ filename, size, contentType }),
+      body: JSON.stringify({ filename, size, contentType, ...(category ? { category } : {}) }),
     }),
 
-  completeUpload: (filename, size, downloadId) =>
+  completeUpload: (filename, size, downloadId, category = '') =>
     request('/downloads/complete-upload', {
       method: 'POST',
-      body: JSON.stringify({ filename, size, downloadId }),
+      body: JSON.stringify({ filename, size, downloadId, ...(category ? { category } : {}) }),
     }),
 
-  uploadTorrentFile: (filename, base64Data) =>
+  uploadTorrentFile: (filename, base64Data, category = '') =>
     request('/downloads/upload-torrent', {
       method: 'POST',
-      body: JSON.stringify({ filename, data: base64Data }),
+      body: JSON.stringify({ filename, data: base64Data, ...(category ? { category } : {}) }),
     }),
 
   // Playback Progress
@@ -205,7 +229,7 @@ export const api = {
   // Stream URL Generator with auth token, vault pin, codec negotiation & session ID
   getStreamUrl: (id, quality = 'original', time = 0, opts = {}) => {
     const token = authState.getToken();
-    const pin = vaultState.getPin();
+    const pin = profileState.isOwner() ? vaultState.getPin() : null;
     const pinParam = pin ? `&pin=${encodeURIComponent(pin)}` : '';
     const sidParam = opts.sid ? `&sid=${encodeURIComponent(opts.sid)}` : '';
     const codecParam = opts.codec ? `&codec=${encodeURIComponent(opts.codec)}` : '';
@@ -213,24 +237,24 @@ export const api = {
     const roundedTime = Math.max(0, Number(time || 0)).toFixed(2);
 
     if (quality === 'direct') {
-      return `${API_BASE}/stream/${id}?direct=true&time=${roundedTime}&token=${token}${pinParam}${sidParam}`;
+      return `${API_BASE}/stream/${id}?direct=true&time=${roundedTime}&token=${encodeURIComponent(token || '')}${pinParam}${sidParam}`;
     }
     if (quality === 'original') {
-      return `${API_BASE}/stream/${id}?time=${roundedTime}&token=${token}${pinParam}${sidParam}`;
+      return `${API_BASE}/stream/${id}?time=${roundedTime}&token=${encodeURIComponent(token || '')}${pinParam}${sidParam}`;
     }
-    return `${API_BASE}/stream/${id}/transcode?quality=${encodeURIComponent(quality)}&time=${roundedTime}${codecParam}${capParam}${sidParam}&token=${token}${pinParam}`;
+    return `${API_BASE}/stream/${id}/transcode?quality=${encodeURIComponent(quality)}&time=${roundedTime}${codecParam}${capParam}${sidParam}&token=${encodeURIComponent(token || '')}${pinParam}`;
   },
 
-  // Subtitle URL Generator (v=2 invalidates any legacy truncated WebVTT browser caches)
+  // Subtitle URL Generator
   getSubtitleUrl: (id, trackOrOptions = 0) => {
     const token = authState.getToken();
-    const pin = vaultState.getPin();
+    const pin = profileState.isOwner() ? vaultState.getPin() : null;
     const pinParam = pin ? `&pin=${encodeURIComponent(pin)}` : '';
     if (trackOrOptions && typeof trackOrOptions === 'object' && trackOrOptions.customId) {
-      return `${API_BASE}/stream/${id}/subtitles?customId=${encodeURIComponent(trackOrOptions.customId)}&v=2&token=${token}${pinParam}`;
+      return `${API_BASE}/stream/${id}/subtitles?customId=${encodeURIComponent(trackOrOptions.customId)}&v=2&token=${encodeURIComponent(token || '')}${pinParam}`;
     }
     const trackIdx = typeof trackOrOptions === 'object' ? (trackOrOptions.trackIndex ?? 0) : trackOrOptions;
-    return `${API_BASE}/stream/${id}/subtitles?track=${trackIdx}&v=2&token=${token}${pinParam}`;
+    return `${API_BASE}/stream/${id}/subtitles?track=${trackIdx}&v=2&token=${encodeURIComponent(token || '')}${pinParam}`;
   },
 
   uploadCustomSubtitle: (id, { filename, label, language, content }) =>
@@ -255,7 +279,7 @@ export const api = {
     return request(`/media/series/${encodeURIComponent(name)}/seasons${query ? `?${query}` : ''}`);
   },
 
-  // Live TV & EPG
+  // Live TV & EPG (Authenticated Proxy & Transcode)
   getLiveCategories: () => request('/iptv/categories'),
 
   getLiveChannels: (params = {}) => {
@@ -265,15 +289,28 @@ export const api = {
 
   getChannelSchedule: (id) => request(`/iptv/channels/${encodeURIComponent(id)}/schedule`),
 
-  getLiveProxyUrl: (streamUrl) => `${API_BASE}/iptv/proxy?url=${encodeURIComponent(streamUrl)}`,
+  reportLiveChannelOffline: (id, reason = '') =>
+    request(`/iptv/channels/${encodeURIComponent(id)}/report-offline`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
 
-  getLiveTranscodeUrl: (streamUrl, quality = '480p') =>
-    `${API_BASE}/iptv/transcode?url=${encodeURIComponent(streamUrl)}&quality=${quality}`,
+  getLiveProxyUrl: (streamUrl, channelId = '') => {
+    const token = authState.getToken() || '';
+    const chParam = channelId ? `&channelId=${encodeURIComponent(channelId)}` : '';
+    return `${API_BASE}/iptv/proxy?url=${encodeURIComponent(streamUrl)}${chParam}&token=${encodeURIComponent(token)}`;
+  },
+
+  getLiveTranscodeUrl: (streamUrl, quality = '480p', channelId = '') => {
+    const token = authState.getToken() || '';
+    const chParam = channelId ? `&channelId=${encodeURIComponent(channelId)}` : '';
+    return `${API_BASE}/iptv/transcode?url=${encodeURIComponent(streamUrl)}&quality=${encodeURIComponent(quality)}${chParam}&token=${encodeURIComponent(token)}`;
+  },
 
   // Subtitle Tracks Probe
   getSubtitleTracks: (id) => request(`/stream/${id}/subtitles/tracks`),
 
-  // Profiles & Watchlist
+  // Profiles (Owner CRUD) & Watchlist (Self-isolated)
   getProfiles: () => request('/profiles'),
   createProfile: (data) => request('/profiles', { method: 'POST', body: JSON.stringify(data) }),
   updateProfile: (id, data) => request(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

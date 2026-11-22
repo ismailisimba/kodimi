@@ -3,10 +3,12 @@ import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import path from 'path';
 import axios from 'axios';
+import config from '../config/env.js';
 import { createWriteStream, fileExists, getFileMetadata } from '../config/gcs.js';
 import { downloadsDB, mediaDB } from '../db/database.js';
 import { enrichMediaMetadata } from './aiTagger.js';
 import { getOrProbeDuration, getOrGenerateThumbnail } from './transcoder.js';
+import { detectSocialPlatform, downloadSocialMediaToGcs } from './socialDownloader.js';
 
 export const downloadEvents = new EventEmitter();
 downloadEvents.setMaxListeners(50);
@@ -163,16 +165,27 @@ export function resolveCleanFilename(effectiveName, originalFilename) {
 }
 
 /**
- * Initiates a download (magnet, torrent URL, or direct HTTP/HTTPS link).
+ * Initiates a download (magnet, torrent URL, social media link, or direct HTTP/HTTPS link).
  */
-export async function startDownload(sourceUrl, customName = '') {
+export async function startDownload(sourceUrl, customName = '', options = {}) {
+  const category = typeof options?.category === 'string' ? options.category.trim().toLowerCase() : '';
   let cleanSourceUrl = typeof sourceUrl === 'string' ? sourceUrl.trim() : sourceUrl;
   const isMagnet = typeof cleanSourceUrl === 'string' && cleanSourceUrl.startsWith('magnet:?');
   if (isMagnet) {
     cleanSourceUrl = sanitizeMagnetUri(cleanSourceUrl);
   }
-  const isTorrent = typeof cleanSourceUrl === 'string' && (cleanSourceUrl.endsWith('.torrent') || cleanSourceUrl.includes('torrent'));
-  const isDirect = typeof cleanSourceUrl === 'string' && !isMagnet && (cleanSourceUrl.startsWith('http://') || cleanSourceUrl.startsWith('https://'));
+  const socialPlatform = !isMagnet ? detectSocialPlatform(cleanSourceUrl) : null;
+  const isTorrent =
+    !isMagnet &&
+    !socialPlatform &&
+    typeof cleanSourceUrl === 'string' &&
+    (cleanSourceUrl.endsWith('.torrent') || cleanSourceUrl.includes('torrent'));
+  const isDirect =
+    !isMagnet &&
+    !socialPlatform &&
+    !isTorrent &&
+    typeof cleanSourceUrl === 'string' &&
+    (cleanSourceUrl.startsWith('http://') || cleanSourceUrl.startsWith('https://'));
 
   let extractedMagnetName = null;
   if (isMagnet) {
@@ -185,16 +198,28 @@ export async function startDownload(sourceUrl, customName = '') {
   }
 
   const id = crypto.randomUUID();
-  const sourceType = isMagnet ? 'magnet' : isTorrent ? 'torrent' : 'direct';
-  const name = customName || extractedMagnetName || (isDirect ? path.basename(new URL(cleanSourceUrl).pathname) : null) || `media-${Date.now()}`;
+  const sourceType = socialPlatform
+    ? socialPlatform.id
+    : isMagnet
+      ? 'magnet'
+      : isTorrent
+        ? 'torrent'
+        : 'direct';
+  const name =
+    customName ||
+    extractedMagnetName ||
+    (socialPlatform ? `${socialPlatform.label} Video` : null) ||
+    (isDirect ? path.basename(new URL(cleanSourceUrl).pathname) : null) ||
+    `media-${Date.now()}`;
 
   const downloadRecord = {
     id,
     name,
     source_type: sourceType,
     source_url: typeof cleanSourceUrl === 'string' ? cleanSourceUrl : 'buffer',
+    category: category || (socialPlatform ? 'others' : ''),
     status: 'downloading',
-    status_text: 'Starting download...',
+    status_text: socialPlatform ? `Connecting to ${socialPlatform.label}...` : 'Starting download...',
     progress: 0,
     speed: 0,
     downloaded_bytes: 0,
@@ -209,10 +234,12 @@ export async function startDownload(sourceUrl, customName = '') {
   broadcastProgress(downloadRecord);
   ensureWorkerKeepalive();
 
-  if (isMagnet || isTorrent) {
-    processTorrentDownload(id, cleanSourceUrl, customName);
+  if (socialPlatform) {
+    processSocialDownload(id, cleanSourceUrl, customName, downloadRecord.category);
+  } else if (isMagnet || isTorrent) {
+    processTorrentDownload(id, cleanSourceUrl, customName, downloadRecord.category);
   } else if (isDirect) {
-    processDirectDownload(id, cleanSourceUrl, customName);
+    processDirectDownload(id, cleanSourceUrl, customName, downloadRecord.category);
   } else {
     failDownload(id, 'Unsupported URL format');
   }
@@ -223,7 +250,8 @@ export async function startDownload(sourceUrl, customName = '') {
 /**
  * Initiates torrent download directly from an uploaded .torrent file buffer.
  */
-export async function startTorrentFromBuffer(buffer, originalFilename = '') {
+export async function startTorrentFromBuffer(buffer, originalFilename = '', options = {}) {
+  const category = typeof options?.category === 'string' ? options.category.trim().toLowerCase() : '';
   const id = crypto.randomUUID();
   const name = originalFilename || `torrent-${Date.now()}`;
 
@@ -232,6 +260,7 @@ export async function startTorrentFromBuffer(buffer, originalFilename = '') {
     name,
     source_type: 'torrent',
     source_url: originalFilename,
+    category,
     status: 'downloading',
     status_text: 'Loading .torrent metadata...',
     progress: 0,
@@ -248,20 +277,21 @@ export async function startTorrentFromBuffer(buffer, originalFilename = '') {
   broadcastProgress(downloadRecord);
   ensureWorkerKeepalive();
 
-  processTorrentDownload(id, buffer, '');
+  processTorrentDownload(id, buffer, '', category);
   return downloadRecord;
 }
 
 /**
  * Registers an in-flight direct file upload in the active jobs database.
  */
-export function registerDirectUpload(filename, size = 0) {
+export function registerDirectUpload(filename, size = 0, category = '') {
   const id = crypto.randomUUID();
   const downloadRecord = {
     id,
     name: filename,
     source_type: 'upload',
     source_url: 'direct-upload',
+    category: category || '',
     status: 'uploading',
     status_text: 'Uploading to Cloud Storage...',
     progress: 0,
@@ -293,18 +323,20 @@ async function resolveGcsTimestamp(gcsPath) {
 /**
  * Marks direct file upload as complete and indexes it into the media catalog.
  */
-export async function completeDirectUpload(id, filename, size = 0) {
+export async function completeDirectUpload(id, filename, size = 0, category = '') {
   let job = activeJobs.get(id);
   if (!job) {
     job = downloadsDB.getById(id) || {
       id,
       name: filename,
       source_type: 'upload',
+      category: category || '',
       status: 'uploading',
       total_bytes: size,
     };
   }
 
+  const effectiveCategory = category || job.category || '';
   job.status = 'completed';
   job.status_text = 'Saved to Cloud Storage & Indexed';
   job.progress = 100;
@@ -318,7 +350,7 @@ export async function completeDirectUpload(id, filename, size = 0) {
   // Auto-enrich and index into media catalog
   try {
     const gcsCreatedAt = await resolveGcsTimestamp(filename);
-    const metadata = await enrichMediaMetadata(filename, size);
+    const metadata = await enrichMediaMetadata(filename, size, '', { category: effectiveCategory });
     const saved = await mediaDB.upsert({
       ...metadata,
       gcs_path: filename,
@@ -337,10 +369,73 @@ export async function completeDirectUpload(id, filename, size = 0) {
 }
 
 /**
+ * Handles social media link ingestion (YouTube, Instagram, Twitter/X, Reddit, LinkedIn, Facebook) via yt-dlp -> GCS.
+ */
+async function processSocialDownload(id, url, customName = '', category = 'others') {
+  try {
+    const isCancelled = () => {
+      const cur = activeJobs.get(id);
+      return !cur || cur.status === 'failed' || cur.status === 'paused';
+    };
+
+    const result = await downloadSocialMediaToGcs({
+      id,
+      url,
+      customName,
+      category: category || 'others',
+      onProgress: (partial) => updateDownload(id, partial),
+      onChildProcess: (child) => {
+        const cur = activeJobs.get(id);
+        if (cur) cur.childProcess = child;
+      },
+      isCancelled,
+    });
+
+    if (isCancelled()) return;
+
+    const job = activeJobs.get(id);
+    if (job) {
+      job.status = 'completed';
+      job.status_text = `Saved ${result.platform.label} video to GCS`;
+      job.progress = 100;
+      job.speed = 0;
+      job.downloaded_bytes = result.sizeBytes;
+      job.total_bytes = result.sizeBytes;
+      job.gcs_path = result.gcsPath;
+      downloadsDB.upsert(job);
+      broadcastProgress(job);
+      activeJobs.delete(id);
+      checkAndEmitIdle();
+    }
+
+    try {
+      const gcsCreatedAt = await resolveGcsTimestamp(result.gcsPath);
+      const saved = await mediaDB.upsert({
+        ...result.metadata,
+        gcs_path: result.gcsPath,
+        gcs_created_at: gcsCreatedAt,
+        created_at: gcsCreatedAt,
+      });
+      getOrProbeDuration(saved.id, result.gcsPath)
+        .then(() => getOrGenerateThumbnail(saved.id, result.gcsPath, '42'))
+        .catch(() => {});
+      console.log(`[Catalog] Social media video indexed: "${saved.title}" (${result.platform.label}, type=${saved.type})`);
+    } catch (indexErr) {
+      console.error(`[Catalog] Failed to index social video ${result.gcsPath}:`, indexErr.message);
+    }
+  } catch (err) {
+    const cur = activeJobs.get(id);
+    if (cur && cur.status !== 'paused') {
+      failDownload(id, err.message);
+    }
+  }
+}
+
+/**
  * Handles WebTorrent magnet or torrent link ingestion straight into GCS.
  * Downloads ALL video files contained in multi-file torrents sequentially.
  */
-async function processTorrentDownload(id, torrentSource, customName) {
+async function processTorrentDownload(id, torrentSource, customName, category = '') {
   try {
     const client = await getWebTorrentClient();
 
@@ -672,7 +767,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
                 // Immediately enrich and index this completed file into Kodimi media catalog!
                 try {
                   const gcsCreatedAt = await resolveGcsTimestamp(cleanFilename);
-                  const metadata = await enrichMediaMetadata(cleanFilename, fileBytes, torrent.name);
+                  const metadata = await enrichMediaMetadata(cleanFilename, fileBytes, torrent.name, { category });
                   const saved = await mediaDB.upsert({
                     ...metadata,
                     gcs_path: cleanFilename,
@@ -736,7 +831,7 @@ async function processTorrentDownload(id, torrentSource, customName) {
 /**
  * Handles direct HTTP/HTTPS link download straight into GCS.
  */
-async function processDirectDownload(id, url, customName) {
+async function processDirectDownload(id, url, customName, category = '') {
   try {
     const headResponse = await axios.head(url, { timeout: 15000 }).catch(() => null);
     const totalBytes = headResponse ? parseInt(headResponse.headers['content-length'] || '0', 10) : 0;
@@ -839,7 +934,9 @@ async function completeDownload(id, gcsPath, totalBytes, isMultiFile = false) {
   if (!isMultiFile) {
     try {
       const gcsCreatedAt = await resolveGcsTimestamp(gcsPath);
-      const metadata = await enrichMediaMetadata(gcsPath, totalBytes, job.name || '');
+      const metadata = await enrichMediaMetadata(gcsPath, totalBytes, job.name || '', {
+        category: job.category || '',
+      });
       const saved = await mediaDB.upsert({
         ...metadata,
         gcs_path: gcsPath,
@@ -871,13 +968,16 @@ function failDownload(id, errorMsg) {
 }
 
 function broadcastProgress(data) {
-  const { torrent, currentReadStream, currentWriteStream, ...cleanData } = data;
+  const { torrent, currentReadStream, currentWriteStream, childProcess, ...cleanData } = data;
   downloadEvents.emit('progress', cleanData);
 }
 
 export function pauseDownload(id) {
   const job = activeJobs.get(id);
   if (job) {
+    if (job.childProcess) {
+      try { job.childProcess.kill('SIGKILL'); } catch (_) {}
+    }
     if (job.torrent) {
       try { job.torrent.destroy({ destroyStore: true }); } catch (_) {}
     }
@@ -924,11 +1024,14 @@ export async function resumeDownload(id) {
   broadcastProgress(job);
   ensureWorkerKeepalive();
 
-  if (job.source_type === 'magnet' || job.source_type === 'torrent') {
+  const socialPlatform = typeof job.source_url === 'string' ? detectSocialPlatform(job.source_url) : null;
+  if (socialPlatform) {
+    processSocialDownload(id, job.source_url, '', job.category || 'others');
+  } else if (job.source_type === 'magnet' || job.source_type === 'torrent') {
     const cleanSource = typeof job.source_url === 'string' ? sanitizeMagnetUri(job.source_url) : job.source_url;
-    processTorrentDownload(id, cleanSource, job.name);
+    processTorrentDownload(id, cleanSource, job.name, job.category || '');
   } else if (job.source_type === 'direct') {
-    processDirectDownload(id, job.source_url, job.name);
+    processDirectDownload(id, job.source_url, job.name, job.category || '');
   }
 
   return job;
@@ -937,6 +1040,9 @@ export async function resumeDownload(id) {
 export function cancelDownload(id, shouldUpsert = true) {
   const job = activeJobs.get(id);
   if (job) {
+    if (job.childProcess) {
+      try { job.childProcess.kill('SIGKILL'); } catch (_) {}
+    }
     if (job.torrent) {
       try { job.torrent.destroy({ destroyStore: true }); } catch (_) {}
     }

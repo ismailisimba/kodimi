@@ -249,10 +249,17 @@ export function renderMediaCard(item) {
 
   const startTime = item.current_time || 0;
   const isResume = startTime > 10;
+  const categoryBadge =
+    item.type === 'documentary'
+      ? 'DOC'
+      : item.type === 'others'
+        ? 'OTHER'
+        : '';
 
   return `
     <div class="media-card" data-id="${item.id}" data-time="${startTime}">
       <img class="card-poster" src="${poster}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="if(this.src.indexOf('/thumbnail') === -1) { this.src='${thumbUrl}'; } else { this.src='https://placehold.co/640x360/1e1e1e/white?text=${encodeURIComponent(item.title.slice(0, 16))}'; }" />
+      ${categoryBadge ? `<span class="card-badge" style="left: 8px; right: auto; background: rgba(0, 173, 181, 0.9); color: #fff;">${categoryBadge}</span>` : ''}
       ${item.resolution ? `<span class="card-badge">${item.resolution}</span>` : ''}
       ${progressPct > 0 ? `
         <div class="card-progress-bar">
@@ -492,6 +499,7 @@ export function renderLiveChannelCard(ch) {
 
   const next = ch.nextProgram;
   const timeLabel = cur.startTime && cur.stopTime ? `${cur.startTime} - ${cur.stopTime}` : 'Live Now';
+  const isVerified = ch.healthStatus === 'verified';
 
   return `
     <div class="live-channel-card" data-channel-id="${ch.id}" data-stream-url="${escapeHtml(ch.streamUrl)}" data-name="${escapeHtml(ch.name)}">
@@ -502,6 +510,7 @@ export function renderLiveChannelCard(ch) {
             <div class="live-channel-name">${escapeHtml(ch.name)}</div>
             <div class="live-channel-meta">
               <span class="live-badge">🔴 LIVE</span>
+              ${isVerified ? `<span class="chip" style="font-size: 9px; padding: 1px 6px; background: rgba(76, 175, 80, 0.2); color: #81c784; border: 1px solid rgba(76, 175, 80, 0.45);">✓ VERIFIED</span>` : ''}
               <span class="chip chip-outline" style="font-size: 10px; padding: 1px 6px;">${ch.resolution || '720P'}</span>
               <span class="chip" style="font-size: 10px; padding: 1px 6px;">${escapeHtml(ch.category || 'General')}</span>
             </div>
@@ -592,7 +601,8 @@ export function renderScheduleModalContent(data) {
   `;
 }
 
-export function renderSeriesModalContent(seriesData, activeSeason = 1) {
+export function renderSeriesModalContent(seriesData, activeSeason = 1, options = {}) {
+  const isOwner = options.isOwner !== false;
   const series = seriesData.series || {};
   const seasonsMap = seriesData.seasons || {};
   const seasonNumbers = seriesData.seasonNumbers || [1];
@@ -676,27 +686,31 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1) {
               <span>Play S${activeSeason} E01</span>
             </button>
           ` : ''}
-          <button type="button" class="btn-tonal" id="series-retag-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" title="Re-enrich series & episode synopses with Gemini Search Grounding">
-            <span class="material-symbols-outlined">auto_awesome</span>
-            <span>Re-tag Series</span>
-          </button>
-          <button type="button" class="btn-tonal" id="series-fix-match-toggle-btn" title="Specify exact show title, year, or network to fix synopses">
-            <span class="material-symbols-outlined">edit_note</span>
-            <span>Fix Match</span>
-          </button>
+          ${isOwner ? `
+            <button type="button" class="btn-tonal" id="series-retag-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" title="Re-enrich series & episode synopses with Gemini Search Grounding">
+              <span class="material-symbols-outlined">auto_awesome</span>
+              <span>Re-tag Series</span>
+            </button>
+            <button type="button" class="btn-tonal" id="series-fix-match-toggle-btn" title="Specify exact show title, year, or network to fix synopses">
+              <span class="material-symbols-outlined">edit_note</span>
+              <span>Fix Match</span>
+            </button>
+          ` : ''}
         </div>
-        <div id="series-fix-match-row" class="fix-match-bar" style="display: none; margin-top: 12px; max-width: 680px;">
-          <input
-            type="text"
-            id="series-fix-match-input"
-            class="fix-match-input"
-            placeholder="Exact show hint (e.g. &quot;Dark Matter (2024 Apple TV+ series)&quot; or &quot;Succession (HBO)&quot;)"
-          />
-          <button type="button" class="btn-filled" id="series-fix-match-apply-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" style="padding: 8px 16px; font-size: 13px; white-space: nowrap;">
-            <span class="material-symbols-outlined" style="font-size: 16px;">travel_explore</span>
-            <span>Match &amp; Re-tag All</span>
-          </button>
-        </div>
+        ${isOwner ? `
+          <div id="series-fix-match-row" class="fix-match-bar" style="display: none; margin-top: 12px; max-width: 680px;">
+            <input
+              type="text"
+              id="series-fix-match-input"
+              class="fix-match-input"
+              placeholder="Exact show hint (e.g. &quot;MobLand (2025 Paramount+)&quot; or &quot;Dark Matter (2024 Apple TV+)&quot;)"
+            />
+            <button type="button" class="btn-filled" id="series-fix-match-apply-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" style="padding: 8px 16px; font-size: 13px; white-space: nowrap;">
+              <span class="material-symbols-outlined" style="font-size: 16px;">travel_explore</span>
+              <span>Match &amp; Re-tag All</span>
+            </button>
+          </div>
+        ` : ''}
       </div>
     </div>
 
@@ -727,14 +741,17 @@ export function escapeHtml(str) {
 export function renderProfileCard(profile, isManaging = false) {
   const color = profile.color || '#e50914';
   const icon = profile.avatar || 'account_circle';
+  const isOwner = profile.role === 'owner' || profile.id === 'default';
+  const needsCode = profile.has_passcode === false;
   return `
     <div class="profile-card" data-profile-id="${profile.id}">
       <div class="profile-card-avatar" style="background-color: ${color};">
         <span class="material-symbols-outlined" style="font-size: 52px; color: white;">${icon}</span>
-        ${profile.is_kids ? '<span class="profile-card-badge">Kids</span>' : ''}
+        ${profile.is_kids ? '<span class="profile-card-badge">Kids</span>' : isOwner ? '<span class="profile-card-badge" style="background:#e50914;color:white;">Owner</span>' : ''}
         ${isManaging ? '<div class="profile-card-edit-overlay"><span class="material-symbols-outlined" style="font-size: 32px;">edit</span></div>' : ''}
       </div>
       <span class="profile-card-name">${escapeHtml(profile.name)}</span>
+      ${needsCode ? '<span style="font-size: 10px; color: #ffb74d; margin-top: 2px; font-weight: 600;">No login code set</span>' : '<span style="font-size: 10px; color: #81c784; margin-top: 2px;">Code protected</span>'}
     </div>
   `;
 }

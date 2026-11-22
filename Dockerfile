@@ -16,6 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        else \
          apt-get install -y --no-install-recommends ffmpeg; \
        fi \
+    && YT_BIN="$( [ "$ARCH" = "aarch64" ] && echo "yt-dlp_linux_aarch64" || echo "yt-dlp_linux" )" \
+    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YT_BIN}" -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp \
+    && /usr/local/bin/yt-dlp --version \
     && apt-get purge -y --auto-remove curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
 

@@ -1,18 +1,19 @@
 import express from 'express';
-import { requireAuth } from '../services/auth.js';
+import { requireAuth, extractTokenFromRequest } from '../services/auth.js';
 import {
   getChannels,
   getCategories,
   getChannelSchedule,
   proxyHlsStream,
   transcodeLiveStream,
+  recordChannelRuntimeHealth,
 } from '../services/iptvService.js';
 
 const router = express.Router();
 
 /**
  * GET /api/iptv/categories
- * Returns all categories and countries with live channel counts.
+ * Returns all categories and 6 countries / 3 continents with active live channel counts.
  */
 router.get('/categories', requireAuth, async (req, res) => {
   try {
@@ -25,15 +26,17 @@ router.get('/categories', requireAuth, async (req, res) => {
 
 /**
  * GET /api/iptv/channels
- * Returns channels with EPG now-playing & up-next info.
+ * Returns verified-first channels with EPG now-playing & up-next info.
  */
 router.get('/channels', requireAuth, async (req, res) => {
   try {
-    const { category, country, search, limit, offset } = req.query;
+    const { category, country, search, verifiedOnly, includeOffline, limit, offset } = req.query;
     const data = await getChannels({
       category,
       country,
       search,
+      verifiedOnly: verifiedOnly === 'true' || verifiedOnly === '1',
+      includeOffline: includeOffline === 'true' || includeOffline === '1',
       limit: limit ? parseInt(limit, 10) : 60,
       offset: offset ? parseInt(offset, 10) : 0,
     });
@@ -66,6 +69,17 @@ router.get('/channels/:id/schedule', requireAuth, async (req, res) => {
 });
 
 /**
+ * POST /api/iptv/channels/:id/report-offline
+ * Trips the runtime circuit breaker when the player detects an unreachable live channel.
+ */
+router.post('/channels/:id/report-offline', requireAuth, (req, res) => {
+  const { id } = req.params;
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 80) : 'client-reported-offline';
+  recordChannelRuntimeHealth(id, false, reason || 'client-reported-offline');
+  res.json({ success: true });
+});
+
+/**
  * OPTIONS /api/iptv/proxy
  * Handle CORS preflight requests for HLS stream segments.
  */
@@ -79,28 +93,34 @@ router.options('/proxy', (req, res) => {
 
 /**
  * GET /api/iptv/proxy
- * Proxies live HLS streams and segments with dynamic manifest rewriting to bypass CORS restrictions.
+ * Auth-protected & SSRF-safe live HLS proxy with post-redirect manifest rewriting and Referer/UA forwarding.
  */
-router.get('/proxy', async (req, res) => {
-  const { url } = req.query;
+router.get('/proxy', requireAuth, async (req, res) => {
+  const { url, channelId } = req.query;
   if (!url) {
     return res.status(400).send('Stream URL parameter is required');
   }
 
-  await proxyHlsStream(url, req, res);
+  const token = extractTokenFromRequest(req) || '';
+  await proxyHlsStream(String(url), req, res, {
+    channelId: channelId ? String(channelId) : '',
+    token,
+  });
 });
 
 /**
  * GET /api/iptv/transcode
- * Streams real-time downscaled live stream on-the-go (720p, 480p, 360p) for fixed feeds.
+ * Auth-protected & SSRF-safe real-time downscaled/codec-compatible live transcode (720p, 480p, 360p).
  */
-router.get('/transcode', async (req, res) => {
-  const { url, quality } = req.query;
+router.get('/transcode', requireAuth, async (req, res) => {
+  const { url, quality, channelId } = req.query;
   if (!url) {
     return res.status(400).send('Stream URL parameter is required');
   }
 
-  await transcodeLiveStream(url, quality || '480p', req, res);
+  await transcodeLiveStream(String(url), quality ? String(quality) : '480p', req, res, {
+    channelId: channelId ? String(channelId) : '',
+  });
 });
 
 export default router;

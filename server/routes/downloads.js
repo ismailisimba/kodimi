@@ -13,14 +13,16 @@ import {
   hasActiveDownloads,
   downloadEvents,
 } from '../services/downloader.js';
-import { requireAuth, generateToken } from '../services/auth.js';
+import { requireAuth, requireOwner, generateToken } from '../services/auth.js';
 import { getSignedWriteUrl, fileExists } from '../config/gcs.js';
 
 const router = express.Router();
 
 async function forwardToWorker(req, res, targetPath) {
   try {
-    const token = req.headers.authorization || `Bearer ${generateToken({ user: 'admin' })}`;
+    const token =
+      req.headers.authorization ||
+      `Bearer ${generateToken({ id: 'default', name: 'Owner', role: 'owner', is_kids: false })}`;
     const url = `${config.workerServiceUrl.replace(/\/$/, '')}${targetPath}`;
     const response = await fetch(url, {
       method: req.method,
@@ -38,24 +40,24 @@ async function forwardToWorker(req, res, targetPath) {
   }
 }
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireOwner, async (req, res) => {
   const downloads = await downloadsDB.getAllAsync();
   res.json({ downloads });
 });
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireOwner, async (req, res) => {
   if (config.workerServiceUrl && !config.isWorker) {
     return forwardToWorker(req, res, '/api/downloads');
   }
 
-  const { url, name } = req.body;
+  const { url, name, category } = req.body || {};
 
   if (!url) {
     return res.status(400).json({ error: 'Download URL is required' });
   }
 
   try {
-    const job = await startDownload(url, name);
+    const job = await startDownload(url, name, { category });
     res.json({ success: true, download: job });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -63,10 +65,10 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 /**
- * Request a GCS signed write URL to upload a video or media file directly from browser.
+ * Request a GCS signed write URL to upload a video or media file directly from browser (Owner-only).
  */
-router.post('/request-upload', requireAuth, async (req, res) => {
-  const { filename, size } = req.body;
+router.post('/request-upload', requireAuth, requireOwner, async (req, res) => {
+  const { filename, size, category } = req.body || {};
 
   if (!filename) {
     return res.status(400).json({ error: 'Filename is required' });
@@ -76,7 +78,7 @@ router.post('/request-upload', requireAuth, async (req, res) => {
 
   try {
     const uploadUrl = await getSignedWriteUrl(cleanFilename, 180);
-    const downloadRecord = registerDirectUpload(cleanFilename, size || 0);
+    const downloadRecord = registerDirectUpload(cleanFilename, size || 0, category || '');
 
     res.json({
       success: true,
@@ -91,10 +93,10 @@ router.post('/request-upload', requireAuth, async (req, res) => {
 });
 
 /**
- * Complete direct upload: auto-indexes and tags file with Gemini AI into the catalog.
+ * Complete direct upload: auto-indexes and tags file with Gemini AI into the catalog (Owner-only).
  */
-router.post('/complete-upload', requireAuth, async (req, res) => {
-  const { filename, size, downloadId } = req.body;
+router.post('/complete-upload', requireAuth, requireOwner, async (req, res) => {
+  const { filename, size, downloadId, category } = req.body || {};
 
   if (!filename) {
     return res.status(400).json({ error: 'Filename is required' });
@@ -108,7 +110,7 @@ router.post('/complete-upload', requireAuth, async (req, res) => {
       return res.status(400).json({ error: `File "${cleanFilename}" was not found in bucket.` });
     }
 
-    const saved = await completeDirectUpload(downloadId, cleanFilename, size || 0);
+    const saved = await completeDirectUpload(downloadId, cleanFilename, size || 0, category || '');
     res.json({ success: true, item: saved });
   } catch (err) {
     console.error('[Upload Complete Error]:', err);
@@ -117,14 +119,14 @@ router.post('/complete-upload', requireAuth, async (req, res) => {
 });
 
 /**
- * Ingest an uploaded .torrent file buffer.
+ * Ingest an uploaded .torrent file buffer (Owner-only).
  */
-router.post('/upload-torrent', requireAuth, async (req, res) => {
+router.post('/upload-torrent', requireAuth, requireOwner, async (req, res) => {
   if (config.workerServiceUrl && !config.isWorker) {
     return forwardToWorker(req, res, '/api/downloads/upload-torrent');
   }
 
-  const { filename, data } = req.body;
+  const { filename, data, category } = req.body || {};
 
   if (!data) {
     return res.status(400).json({ error: 'Torrent data is required' });
@@ -133,7 +135,7 @@ router.post('/upload-torrent', requireAuth, async (req, res) => {
   try {
     const buffer = Buffer.from(data, 'base64');
     const cleanFilename = path.basename(filename || `torrent-${Date.now()}.torrent`);
-    const job = await startTorrentFromBuffer(buffer, cleanFilename);
+    const job = await startTorrentFromBuffer(buffer, cleanFilename, { category });
     res.json({ success: true, download: job });
   } catch (err) {
     console.error('[Upload Torrent Error]:', err);
@@ -141,7 +143,7 @@ router.post('/upload-torrent', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:id/pause', requireAuth, (req, res) => {
+router.post('/:id/pause', requireAuth, requireOwner, (req, res) => {
   if (config.workerServiceUrl && !config.isWorker) {
     return forwardToWorker(req, res, `/api/downloads/${req.params.id}/pause`);
   }
@@ -151,7 +153,7 @@ router.post('/:id/pause', requireAuth, (req, res) => {
   res.json({ success: true, paused });
 });
 
-router.post('/:id/resume', requireAuth, async (req, res) => {
+router.post('/:id/resume', requireAuth, requireOwner, async (req, res) => {
   if (config.workerServiceUrl && !config.isWorker) {
     return forwardToWorker(req, res, `/api/downloads/${req.params.id}/resume`);
   }
@@ -165,7 +167,7 @@ router.post('/:id/resume', requireAuth, async (req, res) => {
   }
 });
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireOwner, async (req, res) => {
   if (config.workerServiceUrl && !config.isWorker) {
     return forwardToWorker(req, res, `/api/downloads/${req.params.id}`);
   }
@@ -227,7 +229,7 @@ router.get('/worker-keepalive', (req, res) => {
  * Streams real-time progress to clients from local jobs or worker jobs synced via MongoDB.
  * Automatically closes when no downloads are active so idle browser tabs never keep Cloud Run awake.
  */
-router.get('/events', requireAuth, async (req, res) => {
+router.get('/events', requireAuth, requireOwner, async (req, res) => {
   let activeDownloads = [];
   try {
     const all = await downloadsDB.getAllAsync();

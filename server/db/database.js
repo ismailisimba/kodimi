@@ -5,11 +5,12 @@ try {
 } catch (_) {}
 
 import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import config from '../config/env.js';
-import { heuristicParseFilename } from '../services/aiTagger.js';
+import { heuristicParseFilename, isPlaceholderOrGenericPlot } from '../services/aiTagger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,8 +66,20 @@ const ProfileSchema = new mongoose.Schema({
   avatar: { type: String, default: 'account_circle' },
   color: { type: String, default: '#e50914' },
   is_kids: { type: Boolean, default: false },
+  role: { type: String, enum: ['owner', 'member'], default: 'member' },
+  passcode_hash: { type: String, default: null },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
+});
+
+const IptvHealthSchema = new mongoose.Schema({
+  channel_id: { type: String, required: true, unique: true, index: true },
+  status: { type: String, enum: ['verified', 'offline', 'unknown'], default: 'unknown' },
+  latency_ms: { type: Number, default: 0 },
+  fail_count: { type: Number, default: 0 },
+  last_error: { type: String, default: null },
+  stream_url: { type: String, default: null },
+  checked_at: { type: Date, default: Date.now, expires: 21600 }, // 6h TTL
 });
 
 const WatchlistSchema = new mongoose.Schema({
@@ -109,6 +122,17 @@ export const PlaybackModel = mongoose.model('Playback', PlaybackSchema);
 export const DownloadModel = mongoose.model('Download', DownloadSchema);
 export const ProfileModel = mongoose.model('Profile', ProfileSchema);
 export const WatchlistModel = mongoose.model('Watchlist', WatchlistSchema);
+export const IptvHealthModel = mongoose.model('IptvHealth', IptvHealthSchema);
+
+export function sanitizeProfile(profile) {
+  if (!profile) return null;
+  const { passcode_hash, _id, __v, ...rest } = profile;
+  return {
+    ...rest,
+    role: rest.role || (rest.id === 'default' ? 'owner' : 'member'),
+    has_passcode: Boolean(passcode_hash),
+  };
+}
 
 // In-Memory caches for high-speed synchronous retrieval
 let mediaCache = new Map();
@@ -138,10 +162,7 @@ export function getEffectiveAddedTime(item) {
 }
 
 function isGenericFallbackPlot(text) {
-  if (!text || typeof text !== 'string') return true;
-  const t = text.trim();
-  if (!t) return true;
-  return /^(Enjoy|Watch)\s+.+\s+(streaming|in high definition)\s+on\s+(your personal\s+)?Kodimi/i.test(t);
+  return isPlaceholderOrGenericPlot(text);
 }
 
 export async function ensureMediaCacheFresh(force = false) {
@@ -230,7 +251,11 @@ async function refreshCache() {
       { $set: { profile_id: 'default' } }
     ).catch(() => {});
 
-    // Ensure initial default profile exists
+    // Ensure initial default Owner profile exists and has migrated role + hashed passcode
+    const defaultPasscodeHash = config.adminPassword?.startsWith('$2')
+      ? config.adminPassword
+      : bcrypt.hashSync(String(config.adminPassword || 'kodimi123'), 10);
+
     let defaultProfile = await ProfileModel.findOne({ id: 'default' });
     if (!defaultProfile) {
       const count = await ProfileModel.countDocuments();
@@ -241,10 +266,30 @@ async function refreshCache() {
           avatar: 'account_circle',
           color: '#e50914',
           is_kids: false,
+          role: 'owner',
+          passcode_hash: defaultPasscodeHash,
         });
-        console.log('[DB] Seeded initial default profile: "Owner"');
+        console.log('[DB] Seeded initial default Owner profile with hashed login code.');
       }
+    } else if (!defaultProfile.passcode_hash || defaultProfile.role !== 'owner') {
+      await ProfileModel.updateOne(
+        { id: 'default' },
+        {
+          $set: {
+            role: 'owner',
+            passcode_hash: defaultProfile.passcode_hash || defaultPasscodeHash,
+            updated_at: new Date(),
+          },
+        }
+      );
+      console.log('[DB] Migrated Owner profile to per-profile authentication.');
     }
+
+    // Backfill member role on any legacy non-owner profiles
+    await ProfileModel.updateMany(
+      { id: { $ne: 'default' }, role: { $exists: false } },
+      { $set: { role: 'member' } }
+    ).catch(() => {});
 
     const allProfiles = await ProfileModel.find({}).lean();
     profileCache.clear();
@@ -347,7 +392,23 @@ export const mediaDB = {
     }
 
     if (type) {
-      list = list.filter((m) => m.type === type);
+      const normType = String(type).toLowerCase().trim();
+      if (normType === 'documentary') {
+        list = list.filter(
+          (m) =>
+            m.type === 'documentary' ||
+            (Array.isArray(m.genres) && m.genres.some((g) => String(g).toLowerCase() === 'documentary')) ||
+            (Array.isArray(m.tags) && m.tags.some((t) => String(t).toLowerCase() === 'documentary'))
+        );
+      } else if (normType === 'others') {
+        list = list.filter(
+          (m) =>
+            m.type === 'others' ||
+            (Array.isArray(m.tags) && m.tags.some((t) => String(t).toLowerCase() === 'others'))
+        );
+      } else {
+        list = list.filter((m) => m.type === normType);
+      }
     }
 
     if (genre) {
@@ -453,6 +514,54 @@ export const mediaDB = {
     if (mongoose.connection.readyState === 1) {
       await MediaModel.deleteOne({ id }).catch((err) => console.error('[DB Delete Error]:', err.message));
     }
+  },
+
+  updateCategory: async (id, category) => {
+    const existing = mediaCache.get(id);
+    if (!existing) return null;
+    const cat = String(category || '').toLowerCase().trim();
+    const allowed = new Set(['movie', 'series', 'documentary', 'others']);
+    if (!allowed.has(cat)) {
+      throw new Error('Invalid category. Allowed: movie, series, documentary, others');
+    }
+
+    let genres = Array.isArray(existing.genres) ? [...existing.genres] : [];
+    let tags = Array.isArray(existing.tags) ? [...existing.tags] : [];
+
+    const addUnique = (arr, val) => {
+      if (!arr.some((x) => String(x).toLowerCase() === val.toLowerCase())) arr.push(val);
+    };
+    const removeCI = (arr, val) => arr.filter((x) => String(x).toLowerCase() !== val.toLowerCase());
+
+    let nextType = cat;
+    if (cat === 'documentary') {
+      addUnique(genres, 'Documentary');
+      addUnique(tags, 'Documentary');
+      tags = removeCI(tags, 'Others');
+      // Keep episodic docuseries grouped as series while tagged Documentary
+      nextType = existing.season != null && existing.episode != null ? 'series' : 'documentary';
+    } else if (cat === 'others') {
+      addUnique(tags, 'Others');
+      if (genres.length === 0) genres = ['Others'];
+      nextType = 'others';
+    } else if (cat === 'movie') {
+      tags = removeCI(tags, 'Others');
+      nextType = 'movie';
+    } else if (cat === 'series') {
+      tags = removeCI(tags, 'Others');
+      nextType = 'series';
+    }
+
+    return mediaDB.upsert(
+      {
+        ...existing,
+        type: nextType,
+        series_name: nextType === 'series' ? (existing.series_name || existing.title) : null,
+        genres,
+        tags,
+      },
+      true
+    );
   },
 
   getCanonicalSeriesName: (name) => {
@@ -837,58 +946,159 @@ export const profilesDB = {
   getAll: () => {
     const list = Array.from(profileCache.values());
     list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    return list.map(sanitizeProfile);
+  },
+
+  getAllRaw: () => {
+    const list = Array.from(profileCache.values());
+    list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     return list;
   },
 
   getById: (id) => {
+    return sanitizeProfile(profileCache.get(id) || null);
+  },
+
+  getRawById: (id) => {
     return profileCache.get(id) || null;
+  },
+
+  isPasscodeInUse: (plainCode, excludeProfileId = null) => {
+    if (!plainCode) return false;
+    const candidate = String(plainCode).trim();
+    for (const p of profileCache.values()) {
+      if (excludeProfileId && p.id === excludeProfileId) continue;
+      if (!p.passcode_hash) continue;
+      try {
+        if (bcrypt.compareSync(candidate, p.passcode_hash)) {
+          return true;
+        }
+      } catch (_) {}
+    }
+    return false;
   },
 
   create: async (data) => {
     const id = data.id || `prof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    let passcodeHash = data.passcode_hash || null;
+
+    if (data.passcode !== undefined && data.passcode !== null && String(data.passcode).trim() !== '') {
+      const cleanCode = String(data.passcode).trim();
+      if (cleanCode.length < 4) {
+        const err = new Error('Login code must be at least 4 characters');
+        err.statusCode = 400;
+        throw err;
+      }
+      if (profilesDB.isPasscodeInUse(cleanCode)) {
+        const err = new Error('That login code is already used by another profile. Please choose a unique code.');
+        err.statusCode = 409;
+        throw err;
+      }
+      passcodeHash = bcrypt.hashSync(cleanCode, 10);
+    }
+
+    const role = data.role === 'owner' ? 'owner' : (id === 'default' ? 'owner' : 'member');
     const profile = {
       id,
       name: (data.name || 'New Profile').trim(),
       avatar: data.avatar || 'account_circle',
       color: data.color || '#e50914',
       is_kids: Boolean(data.is_kids),
+      role,
+      passcode_hash: passcodeHash,
       created_at: new Date(),
       updated_at: new Date(),
     };
     profileCache.set(id, profile);
-    await ProfileModel.create(profile);
-    return profile;
+    if (mongoose.connection.readyState === 1) {
+      await ProfileModel.create(profile);
+    }
+    return sanitizeProfile(profile);
   },
 
   update: async (id, data) => {
     const existing = profileCache.get(id);
     if (!existing) return null;
+
+    let nextPasscodeHash = existing.passcode_hash || null;
+    if (data.passcode !== undefined && data.passcode !== null && String(data.passcode).trim() !== '') {
+      const cleanCode = String(data.passcode).trim();
+      if (cleanCode.length < 4) {
+        const err = new Error('Login code must be at least 4 characters');
+        err.statusCode = 400;
+        throw err;
+      }
+      if (profilesDB.isPasscodeInUse(cleanCode, id)) {
+        const err = new Error('That login code is already used by another profile. Please choose a unique code.');
+        err.statusCode = 409;
+        throw err;
+      }
+      nextPasscodeHash = bcrypt.hashSync(cleanCode, 10);
+    }
+
+    const nextRole =
+      existing.id === 'default'
+        ? 'owner'
+        : data.role === 'owner' || data.role === 'member'
+          ? data.role
+          : existing.role || 'member';
+
     const updated = {
       ...existing,
-      name: data.name !== undefined ? data.name.trim() : existing.name,
+      name: data.name !== undefined ? String(data.name).trim() : existing.name,
       avatar: data.avatar !== undefined ? data.avatar : existing.avatar,
       color: data.color !== undefined ? data.color : existing.color,
       is_kids: data.is_kids !== undefined ? Boolean(data.is_kids) : existing.is_kids,
+      role: nextRole,
+      passcode_hash: nextPasscodeHash,
       updated_at: new Date(),
     };
     profileCache.set(id, updated);
-    await ProfileModel.findOneAndUpdate({ id }, { $set: updated });
-    return updated;
+    if (mongoose.connection.readyState === 1) {
+      await ProfileModel.findOneAndUpdate({ id }, { $set: updated });
+    }
+    return sanitizeProfile(updated);
   },
 
   delete: async (id) => {
-    if (profileCache.size <= 1) {
-      throw new Error('Cannot delete the only remaining profile');
+    if (id === 'default') {
+      const err = new Error('Cannot delete the primary Owner profile');
+      err.statusCode = 400;
+      throw err;
     }
+    if (profileCache.size <= 1) {
+      const err = new Error('Cannot delete the only remaining profile');
+      err.statusCode = 400;
+      throw err;
+    }
+    const target = profileCache.get(id);
+    if (!target) {
+      const err = new Error('Profile not found');
+      err.statusCode = 404;
+      throw err;
+    }
+    if ((target.role || 'member') === 'owner') {
+      const otherOwners = Array.from(profileCache.values()).filter(
+        (p) => p.id !== id && (p.role === 'owner' || p.id === 'default')
+      );
+      if (otherOwners.length === 0) {
+        const err = new Error('Cannot delete the last Owner profile');
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
     profileCache.delete(id);
     watchlistCache.delete(id);
     const prefix = `${id}:`;
     for (const key of playbackCache.keys()) {
       if (key.startsWith(prefix)) playbackCache.delete(key);
     }
-    await ProfileModel.deleteOne({ id });
-    await PlaybackModel.deleteMany({ profile_id: id });
-    await WatchlistModel.deleteMany({ profile_id: id });
+    if (mongoose.connection.readyState === 1) {
+      await ProfileModel.deleteOne({ id });
+      await PlaybackModel.deleteMany({ profile_id: id });
+      await WatchlistModel.deleteMany({ profile_id: id });
+    }
     return true;
   },
 
@@ -914,11 +1124,15 @@ export const profilesDB = {
     const has = set.has(mediaId);
     if (has) {
       set.delete(mediaId);
-      await WatchlistModel.deleteOne({ profile_id: profileId, media_id: mediaId });
+      if (mongoose.connection.readyState === 1) {
+        await WatchlistModel.deleteOne({ profile_id: profileId, media_id: mediaId });
+      }
       return { inWatchlist: false };
     } else {
       set.add(mediaId);
-      await WatchlistModel.create({ profile_id: profileId, media_id: mediaId });
+      if (mongoose.connection.readyState === 1) {
+        await WatchlistModel.create({ profile_id: profileId, media_id: mediaId });
+      }
       return { inWatchlist: true };
     }
   },
@@ -964,8 +1178,8 @@ export const downloadsDB = {
   },
 
   upsert: (dl) => {
-    // Strip runtime stream & torrent instances that cannot be serialized to MongoDB
-    const { torrent, currentReadStream, currentWriteStream, ...cleanData } = dl;
+    // Strip runtime stream, childProcess & torrent instances that cannot be serialized to MongoDB
+    const { torrent, currentReadStream, currentWriteStream, childProcess, ...cleanData } = dl;
     const docData = {
       ...cleanData,
       updated_at: new Date(),
@@ -999,10 +1213,40 @@ function safeJsonParse(str, fallback) {
   }
 }
 
+export const iptvHealthDB = {
+  loadAll: async () => {
+    if (mongoose.connection.readyState !== 1) return [];
+    try {
+      return await IptvHealthModel.find({}).lean();
+    } catch (err) {
+      console.warn('[IPTV Health DB Load Warning]:', err.message);
+      return [];
+    }
+  },
+
+  upsertMany: async (records = []) => {
+    if (mongoose.connection.readyState !== 1 || !records.length) return;
+    try {
+      await IptvHealthModel.bulkWrite(
+        records.map((r) => ({
+          updateOne: {
+            filter: { channel_id: r.channel_id },
+            update: { $set: { ...r, checked_at: new Date() } },
+            upsert: true,
+          },
+        }))
+      );
+    } catch (err) {
+      console.warn('[IPTV Health DB Upsert Warning]:', err.message);
+    }
+  },
+};
+
 export default {
   initDatabase,
   mediaDB,
   playbackDB,
   profilesDB,
   downloadsDB,
+  iptvHealthDB,
 };

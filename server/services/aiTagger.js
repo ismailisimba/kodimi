@@ -4,13 +4,24 @@ import { config } from '../config/env.js';
 import { mediaDB } from '../db/database.js';
 
 let aiClient = null;
+let cachedApiKey = null;
+
+export function resetAIClient() {
+  aiClient = null;
+  cachedApiKey = null;
+}
 
 function getAIClient() {
-  if (!aiClient && config.geminiApiKey) {
+  const apiKey = process.env.GEMINI_API_KEY || config.geminiApiKey;
+  if (!apiKey) return null;
+  if (!aiClient || cachedApiKey !== apiKey) {
     try {
-      aiClient = new GoogleGenAI({ apiKey: config.geminiApiKey });
+      aiClient = new GoogleGenAI({ apiKey });
+      cachedApiKey = apiKey;
     } catch (err) {
       console.warn('[AI] Failed to initialize GoogleGenAI client:', err.message);
+      aiClient = null;
+      cachedApiKey = null;
     }
   }
   return aiClient;
@@ -191,7 +202,7 @@ export const MEDIA_METADATA_JSON_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string' },
-    type: { type: 'string', enum: ['movie', 'series'] },
+    type: { type: 'string', enum: ['movie', 'series', 'documentary', 'others'] },
     series_name: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     season: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
     episode: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
@@ -215,7 +226,7 @@ export function isPlaceholderOrGenericPlot(plot) {
   if (!plot || typeof plot !== 'string') return true;
   const t = plot.trim();
   if (t.length < 24) return true;
-  if (/^(Enjoy|Watch)\s+.+\s+(streaming|in high definition)\s+on\s+(your personal\s+)?Kodimi/i.test(t)) {
+  if (/^(Enjoy|Watch)\s+.+\s+(streaming(?:\s+in\s+\S+)?|in\s+high\s+definition)\s+on\s+(your\s+personal\s+)?Kodimi/i.test(t)) {
     return true;
   }
   if (/^(No synopsis available|Stream seamlessly on Kodimi|Browse all seasons and episodes|Stream this episode in full high definition)/i.test(t)) {
@@ -290,9 +301,43 @@ function isUnsupportedStructuredGroundingError(err) {
   const msg = String(err?.message || err || '');
   const status = err?.status || err?.code;
   if (status === 400 || /\b400\b|INVALID_ARGUMENT/i.test(msg)) {
-    return /tool|google_?search|response_?mime_?type|schema|json/i.test(msg);
+    return /tool|google_?search|response_?mime_?type|response_?format|schema|json/i.test(msg);
   }
   return false;
+}
+
+function extractInteractionText(interaction) {
+  if (!interaction) return '';
+  if (typeof interaction.output_text === 'string' && interaction.output_text.trim()) {
+    return interaction.output_text;
+  }
+  if (Array.isArray(interaction.steps)) {
+    for (let i = interaction.steps.length - 1; i >= 0; i--) {
+      const step = interaction.steps[i];
+      if (step?.type === 'model_output' && Array.isArray(step.content)) {
+        const text = step.content
+          .filter((c) => c?.type === 'text' && typeof c.text === 'string')
+          .map((c) => c.text)
+          .join('');
+        if (text.trim()) return text;
+      }
+    }
+  }
+  if (typeof interaction.text === 'string') return interaction.text;
+  return '';
+}
+
+function choosePreferredSeriesName(candidate, existingCanonical) {
+  if (!existingCanonical) return candidate;
+  if (!candidate) return existingCanonical;
+  // Prefer official mixed-case branding (e.g. "MobLand" over "Mobland") or punctuation/subtitles (e.g. "X-Men '97", "Special Ops: Lioness")
+  const candHasCamel = /[a-z][A-Z]/.test(candidate);
+  const existHasCamel = /[a-z][A-Z]/.test(existingCanonical);
+  if (candHasCamel && !existHasCamel) return candidate;
+  const candHasPunct = /[:'!?-]/.test(candidate);
+  const existHasPunct = /[:'!?-]/.test(existingCanonical);
+  if (candHasPunct && !existHasPunct) return candidate;
+  return existingCanonical;
 }
 
 async function generateGroundedMetadataJson(client, prompt) {
@@ -302,30 +347,32 @@ async function generateGroundedMetadataJson(client, prompt) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const configObj = useStructuredSchema
-        ? {
-            temperature: 0.1,
-            tools: [{ googleSearch: {} }],
-            responseMimeType: 'application/json',
-            responseJsonSchema: MEDIA_METADATA_JSON_SCHEMA,
-          }
-        : {
-            temperature: 0.1,
-            tools: [{ googleSearch: {} }],
-          };
-
-      const response = await client.models.generateContent({
+      const interactionParams = {
         model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: configObj,
-      });
+        input: prompt,
+        tools: [{ type: 'google_search' }],
+        generation_config: {
+          thinking_level: 'low',
+        },
+        store: false,
+      };
 
-      return extractJsonObject(response.text || '');
+      if (useStructuredSchema) {
+        interactionParams.response_format = {
+          type: 'text',
+          mime_type: 'application/json',
+          schema: MEDIA_METADATA_JSON_SCHEMA,
+        };
+      }
+
+      const interaction = await client.interactions.create(interactionParams);
+      const rawText = extractInteractionText(interaction);
+      return extractJsonObject(rawText);
     } catch (err) {
       lastError = err;
       if (useStructuredSchema && isUnsupportedStructuredGroundingError(err)) {
         useStructuredSchema = false;
-        attempt--; // Retry immediately without structured MIME constraint while keeping Google Search grounding
+        attempt--; // Retry immediately without structured schema constraint while keeping Google Search grounding
         continue;
       }
       if (attempt < maxAttempts && isRetryableGeminiError(err)) {
@@ -341,11 +388,12 @@ async function generateGroundedMetadataJson(client, prompt) {
 }
 
 /**
- * Enriches media metadata using Google Gemini AI with Google Search Grounding.
+ * Enriches media metadata using Google Gemini AI (Interactions API) with Google Search Grounding.
  * Falls back to heuristic parsing if API is unavailable.
  */
 export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = '', options = {}) {
   const matchHint = typeof options?.matchHint === 'string' ? options.matchHint.trim() : '';
+  const categoryOverride = typeof options?.category === 'string' ? options.category.trim().toLowerCase() : '';
   const parsed = heuristicParseFilename(filename, contextHint);
 
   // If adult content, avoid sending to general safety filters and generate structured tags
@@ -365,7 +413,7 @@ export async function enrichMediaMetadata(filename, fileSize = 0, contextHint = 
   const client = getAIClient();
   if (!client) {
     // Generate fallback visuals
-    return generateFallbackMetadata(parsed, fileSize);
+    return applyCategoryOverride(generateFallbackMetadata(parsed, fileSize), categoryOverride);
   }
 
   try {
@@ -388,31 +436,38 @@ Analyze this video file name: "${filename}" ${contextHint ? `(from release: "${c
 Heuristic parse -> Detected Type: "${parsed.type}", Season: ${parsed.season ?? 'null'}, Episode: ${parsed.episode ?? 'null'}, Inferred Year: ${parsed.year ?? 'null'}, Inferred Series: "${parsed.series_name || ''}", Inferred Title: "${parsed.title || ''}", Inferred Episode Title: "${parsed.episode_title || ''}".${existingSeriesNote}${userHintBlock}
 
 MANDATORY VERIFICATION & ACCURACY RULES:
-1. USE GOOGLE SEARCH GROUNDING to verify the real-world movie or TV show, exact release year, cast/characters, overarching series premise, and official Season/Episode guide before writing any synopsis. NEVER invent or hallucinate plot points, character names, or fake episode storylines.
+1. USE GOOGLE SEARCH GROUNDING to verify the real-world movie, documentary, or TV show, exact release year, cast/characters, overarching series premise, and official Season/Episode guide before writing any synopsis. NEVER invent or hallucinate plot points, character names, or fake episode storylines.
 2. If this is adult/pornographic/XXX/18+ explicit content, set "is_adult": true, "type": "movie", "series_name": null, "series_plot": null.
 3. If this is a TV series episode (contains SxxExx / Season-Episode pattern, or user hint indicates a TV series):
-   - Set "type": "series"
-   - Set "series_name": Canonical official name of the TV show (e.g. "Slow Horses", "Dark Matter", "Succession")
+   - Set "type": "series" (even for multi-episode docuseries, keep "type": "series" and include "Documentary" in "genres")
+   - Set "series_name": Canonical official name of the TV show with official casing (e.g. "MobLand", "Slow Horses", "Dark Matter", "Succession")
    - Set "season": Season number (integer)
    - Set "episode": Episode number (integer)
    - Set "episode_title": Verified official title of Season {season}, Episode {episode} (or null if untitled)
    - Set "title": MUST be formatted as "{series_name} S{XX}E{XX}: {episode_title}" (or "{series_name} S{XX}E{XX}" if episode_title is null)
-   - Set "year": Premiere year of this TV series adaptation (e.g. 2024 for Apple TV+'s Dark Matter)
+   - Set "year": Premiere year of this TV series adaptation (e.g. 2025 for Paramount+'s MobLand, 2024 for Apple TV+'s Dark Matter)
    - Set "series_plot": Verified 2-3 sentence overarching synopsis of the TV series as a whole
    - Set "plot": Verified 2-3 sentence synopsis of THIS SPECIFIC EPISODE (Season {season}, Episode {episode}). If this specific episode's official synopsis has not been published yet, write a concise factual 1-2 sentence description referencing verified Season {season} context without fabricating scenes.
-4. If this is a standalone Movie:
+4. If this is a standalone Documentary film (non-episodic documentary feature/special):
+   - Set "type": "documentary"
+   - Include "Documentary" in "genres" and "tags"
+   - Set "series_name": null, "season": null, "episode": null, "episode_title": null, "series_plot": null
+5. If this is a standalone Movie:
    - Set "type": "movie"
    - Set "series_name": null, "season": null, "episode": null, "episode_title": null, "series_plot": null
    - Set "title": Canonical official movie title (keep numbers that belong to the title, e.g. "1917", "Blade Runner 2049", "2001: A Space Odyssey")
    - Set "year": Verified theatrical/streaming release year of this exact film
    - Set "plot": Verified 2-3 sentence factual synopsis of this exact film (matching its real cast and release year).
-5. DISAMBIGUATION RULE:
+6. If this is a non-film clip, social media video, YouTube talk, podcast, lecture, or miscellaneous video:
+   - Set "type": "others"
+   - Include "Others" in "tags"
+7. DISAMBIGUATION RULE:
    Unless an explicit release year or user match hint specifies an older version, prefer the modern/recent well-known release (including 2024–2026 films and streaming series).
 
 Return ONLY a strictly valid JSON object matching:
 {
   "title": string,
-  "type": "movie" | "series",
+  "type": "movie" | "series" | "documentary" | "others",
   "series_name": string | null,
   "season": integer | null,
   "episode": integer | null,
@@ -454,13 +509,16 @@ Return ONLY a strictly valid JSON object matching:
       };
     }
 
-    let finalType = parsed.type === 'series' && !matchHint ? 'series' : (aiData.type || parsed.type);
+    const allowedTypes = new Set(['movie', 'series', 'documentary', 'others']);
+    const aiType = allowedTypes.has(aiData.type) ? aiData.type : parsed.type;
+    let finalType = parsed.type === 'series' && !matchHint ? 'series' : aiType;
     let seriesName = aiData.series_name || parsed.series_name;
 
     if (finalType === 'series') {
       // Reconcile with canonical series name if already in catalog (unless overridden by explicit matchHint)
       if (!matchHint && seriesName && mediaDB.getCanonicalSeriesName) {
-        seriesName = mediaDB.getCanonicalSeriesName(seriesName);
+        const existingCanon = mediaDB.getCanonicalSeriesName(seriesName);
+        seriesName = choosePreferredSeriesName(seriesName, existingCanon);
       }
     }
 
@@ -488,7 +546,7 @@ Return ONLY a strictly valid JSON object matching:
         ? (!isPlaceholderOrGenericPlot(aiData.series_plot) ? aiData.series_plot : (existingSeries?.series_plot || null))
         : null;
 
-    return {
+    const result = {
       ...parsed,
       is_adult: false,
       size_bytes: fileSize,
@@ -505,10 +563,56 @@ Return ONLY a strictly valid JSON object matching:
       poster_url: cleanPoster,
       backdrop_url: cleanBackdrop,
     };
+
+    return applyCategoryOverride(result, categoryOverride);
   } catch (err) {
     console.warn(`[AI] Gemini enrichment failed for "${filename}": ${err.message}. Using fallback.`);
-    return generateFallbackMetadata(parsed, fileSize);
+    return applyCategoryOverride(generateFallbackMetadata(parsed, fileSize), categoryOverride);
   }
+}
+
+export function applyCategoryOverride(meta, categoryOverride = '') {
+  if (!meta || !categoryOverride || categoryOverride === 'auto') return meta;
+  const cat = String(categoryOverride).toLowerCase().trim();
+  const genres = Array.isArray(meta.genres) ? [...meta.genres] : [];
+  const tags = Array.isArray(meta.tags) ? [...meta.tags] : [];
+
+  const ensureUnique = (arr, val) => {
+    if (!arr.some((x) => String(x).toLowerCase() === val.toLowerCase())) {
+      arr.push(val);
+    }
+  };
+
+  if (cat === 'documentary') {
+    ensureUnique(genres, 'Documentary');
+    ensureUnique(tags, 'Documentary');
+    // Keep multi-episode docuseries grouped as 'series' while tagging Documentary
+    return {
+      ...meta,
+      type: meta.type === 'series' ? 'series' : 'documentary',
+      genres,
+      tags,
+    };
+  }
+  if (cat === 'others') {
+    ensureUnique(tags, 'Others');
+    return {
+      ...meta,
+      type: 'others',
+      series_name: null,
+      season: null,
+      episode: null,
+      genres: genres.length > 0 ? genres : ['Others'],
+      tags,
+    };
+  }
+  if (cat === 'movie') {
+    return { ...meta, type: 'movie', series_name: null, season: null, episode: null };
+  }
+  if (cat === 'series') {
+    return { ...meta, type: 'series', series_name: meta.series_name || meta.title };
+  }
+  return meta;
 }
 
 function generateFallbackMetadata(parsed, fileSize) {
@@ -573,4 +677,6 @@ export default {
   isPlaceholderOrGenericPlot,
   extractJsonObject,
   enrichMediaMetadata,
+  applyCategoryOverride,
+  resetAIClient,
 };

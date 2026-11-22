@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=28';
-import KodimiPlayer from './player.js?v=28';
+import { api, authState, vaultState, profileState } from './api.js?v=29';
+import KodimiPlayer from './player.js?v=29';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -16,11 +16,10 @@ import {
   renderScheduleModalContent,
   renderProfileCard,
   renderAddProfileCard,
-  renderProfileDropdownItem,
   buildRecentlyAddedFeed,
   sortMoviesList,
   escapeHtml,
-} from './components.js?v=28';
+} from './components.js?v=29';
 
 class KodimiApp {
   constructor() {
@@ -34,6 +33,10 @@ class KodimiApp {
     this.activeLiveCategory = 'all';
     this.activeLiveCountry = 'all';
     this.liveSearchTerm = '';
+    this.liveVerifiedOnly = true;
+    this.liveOffset = 0;
+    this.livePageLimit = 60;
+    this.liveTotalCount = 0;
     this.currentSeriesData = null;
     this.activeSeason = 1;
     this.activeFilter = 'all';
@@ -79,7 +82,10 @@ class KodimiApp {
     this.livetvContainer = document.getElementById('livetv-container');
     this.livetvCategoryChips = document.getElementById('livetv-category-chips');
     this.livetvCountryChips = document.getElementById('livetv-country-chips');
+    this.livetvVerifiedToggle = document.getElementById('livetv-verified-toggle');
     this.livetvGrid = document.getElementById('livetv-grid');
+    this.livetvLoadMoreContainer = document.getElementById('livetv-load-more-container');
+    this.livetvLoadMoreBtn = document.getElementById('livetv-load-more-btn');
     this.livetvSearchInput = document.getElementById('livetv-search-input');
     this.livetvEmptyState = document.getElementById('livetv-empty-state');
     this.livetvTotalBadge = document.getElementById('livetv-total-badge');
@@ -89,6 +95,20 @@ class KodimiApp {
     this.loginForm = document.getElementById('login-form');
     this.loginPassword = document.getElementById('login-password');
     this.loginError = document.getElementById('login-error');
+
+    this.switchProfileModal = document.getElementById('switch-profile-modal');
+    this.switchProfileForm = document.getElementById('switch-profile-form');
+    this.switchProfileCode = document.getElementById('switch-profile-code');
+    this.switchProfileError = document.getElementById('switch-profile-error');
+    this.switchProfileCancel = document.getElementById('switch-profile-cancel');
+
+    this.changeCodeModal = document.getElementById('change-code-modal');
+    this.changeCodeForm = document.getElementById('change-code-form');
+    this.changeCodeCurrent = document.getElementById('change-code-current');
+    this.changeCodeNew = document.getElementById('change-code-new');
+    this.changeCodeConfirm = document.getElementById('change-code-confirm');
+    this.changeCodeError = document.getElementById('change-code-error');
+    this.changeCodeCancel = document.getElementById('change-code-cancel');
 
     this.vaultModal = document.getElementById('vault-modal');
     this.vaultForm = document.getElementById('vault-form');
@@ -100,6 +120,9 @@ class KodimiApp {
     this.downloadForm = document.getElementById('download-form');
     this.downloadUrlInput = document.getElementById('download-url-input');
     this.downloadNameInput = document.getElementById('download-name-input');
+    this.downloadCategorySelect = document.getElementById('download-category-select');
+    this.uploadCategorySelect = document.getElementById('upload-category-select');
+    this.ingestPlatformBadge = document.getElementById('ingest-platform-badge');
     this.downloadQueueList = document.getElementById('download-queue-list');
     this.downloadCountBadge = document.getElementById('download-badge');
 
@@ -147,15 +170,21 @@ class KodimiApp {
     this.detailVaultBtn = document.getElementById('detail-vault-btn');
     this.detailVaultIcon = document.getElementById('detail-vault-icon');
     this.detailVaultText = document.getElementById('detail-vault-text');
+    this.detailCategorySection = document.getElementById('detail-category-section');
+    this.detailCategoryPills = document.getElementById('detail-category-pills');
 
     // Multi-Profile Elements
     this.profileSwitcherBtn = document.getElementById('profile-switcher-btn');
     this.navProfileAvatar = document.getElementById('nav-profile-avatar');
     this.navProfileName = document.getElementById('nav-profile-name');
     this.profileDropdown = document.getElementById('profile-dropdown');
-    this.profileDropdownList = document.getElementById('profile-dropdown-list');
+    this.profileDropdownHeader = document.getElementById('profile-dropdown-header');
+    this.dropdownSwitchProfileBtn = document.getElementById('dropdown-switch-profile-btn');
+    this.dropdownChangeCodeBtn = document.getElementById('dropdown-change-code-btn');
+    this.dropdownOwnerDivider = document.getElementById('dropdown-owner-divider');
     this.dropdownManageProfilesBtn = document.getElementById('dropdown-manage-profiles-btn');
     this.profileModal = document.getElementById('profile-modal');
+    this.profileModalClose = document.getElementById('profile-modal-close');
     this.profilesGrid = document.getElementById('profiles-grid');
     this.manageProfilesBtn = document.getElementById('manage-profiles-btn');
     this.manageProfilesBtnText = document.getElementById('manage-profiles-btn-text');
@@ -165,6 +194,8 @@ class KodimiApp {
     this.profileEditTitle = document.getElementById('profile-edit-title');
     this.profileEditId = document.getElementById('profile-edit-id');
     this.profileEditName = document.getElementById('profile-edit-name-input');
+    this.profileEditPasscode = document.getElementById('profile-edit-passcode-input');
+    this.profileEditPasscodeHint = document.getElementById('profile-edit-passcode-hint');
     this.profileEditAvatarPreview = document.getElementById('profile-edit-avatar-preview');
     this.profileColorSwatches = document.getElementById('profile-color-swatches');
     this.profileEditKidsToggle = document.getElementById('profile-edit-kids-toggle');
@@ -192,6 +223,9 @@ class KodimiApp {
       btn.addEventListener('click', async () => {
         const filter = btn.dataset.filter;
         if (filter === 'vault') {
+          if (!profileState.isOwner()) {
+            return;
+          }
           if (!vaultState.isUnlocked()) {
             this.openVaultModal();
             return;
@@ -230,13 +264,20 @@ class KodimiApp {
       }, 250);
     });
 
-    // Ingest FAB & Modal
-    this.fabIngest.addEventListener('click', () => this.openDownloadModal());
+    // Ingest FAB & Modal (Owner-only)
+    this.fabIngest.addEventListener('click', () => {
+      if (!profileState.isOwner()) return;
+      this.openDownloadModal();
+    });
     document.getElementById('download-modal-close').addEventListener('click', () => {
       this.closeDownloadModal();
     });
 
     this.downloadForm.addEventListener('submit', (e) => this.handleStartDownload(e));
+
+    if (this.downloadUrlInput) {
+      this.downloadUrlInput.addEventListener('input', () => this.updateIngestPlatformHint());
+    }
 
     // Ingest Modal Tabs
     if (this.tabBtnLink && this.tabBtnUpload) {
@@ -298,13 +339,62 @@ class KodimiApp {
 
     // Logout Button
     this.logoutBtn.addEventListener('click', () => {
+      this.closeDownloadStream();
       authState.clearToken();
       vaultState.lock();
+      profileState.setActiveProfile(null);
+      this.profiles = [];
+      this.privateItems = [];
+      this.applyRolePermissionsUI();
       this.loginModal.classList.add('open');
+      if (this.loginPassword) this.loginPassword.focus();
     });
 
     // Login Form
     this.loginForm.addEventListener('submit', (e) => this.handleLogin(e));
+
+    // Switch Profile (Code-only) Form
+    if (this.switchProfileForm) {
+      this.switchProfileForm.addEventListener('submit', (e) => this.handleSwitchProfile(e));
+    }
+    if (this.switchProfileCancel) {
+      this.switchProfileCancel.addEventListener('click', () => {
+        if (this.switchProfileModal) this.switchProfileModal.classList.remove('open');
+      });
+    }
+
+    // Change Own Login Code Form
+    if (this.changeCodeForm) {
+      this.changeCodeForm.addEventListener('submit', (e) => this.handleChangeCode(e));
+    }
+    if (this.changeCodeCancel) {
+      this.changeCodeCancel.addEventListener('click', () => {
+        if (this.changeCodeModal) this.changeCodeModal.classList.remove('open');
+      });
+    }
+
+    // Detail Category Reclassification Pills (Owner-only)
+    if (this.detailCategoryPills) {
+      this.detailCategoryPills.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.detail-category-chip');
+        if (!btn || !this.activeMedia || !profileState.isOwner()) return;
+        const category = btn.dataset.category;
+        if (!category) return;
+        try {
+          btn.disabled = true;
+          const res = await api.updateMediaCategory(this.activeMedia.id, category);
+          if (res && res.item) {
+            this.activeMedia = res.item;
+            this.openDetailModal(res.item);
+            await this.loadData();
+          }
+        } catch (err) {
+          alert(`Failed to update category: ${err.message}`);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    }
 
     // Vault Form
     this.vaultForm.addEventListener('submit', (e) => this.handleVaultUnlock(e));
@@ -424,15 +514,32 @@ class KodimiApp {
       });
     }
 
-    // Live TV Search Input Listener
+    // Live TV Search Input, Verified Toggle & Load More Listeners
     if (this.livetvSearchInput) {
       let liveDebounce = null;
       this.livetvSearchInput.addEventListener('input', (e) => {
         clearTimeout(liveDebounce);
         liveDebounce = setTimeout(() => {
           this.liveSearchTerm = e.target.value.trim().toLowerCase();
-          this.fetchLiveChannels();
+          this.fetchLiveChannels(false);
         }, 300);
+      });
+    }
+
+    if (this.livetvVerifiedToggle) {
+      this.livetvVerifiedToggle.addEventListener('click', () => {
+        this.liveVerifiedOnly = !this.liveVerifiedOnly;
+        this.livetvVerifiedToggle.classList.toggle('active', this.liveVerifiedOnly);
+        this.livetvVerifiedToggle.textContent = this.liveVerifiedOnly
+          ? '✓ Verified Working Only'
+          : 'All Channels (Unchecked Included)';
+        this.fetchLiveChannels(false);
+      });
+    }
+
+    if (this.livetvLoadMoreBtn) {
+      this.livetvLoadMoreBtn.addEventListener('click', () => {
+        this.fetchLiveChannels(true);
       });
     }
 
@@ -657,7 +764,17 @@ class KodimiApp {
     });
 
     // Close Modals on Backdrop Click
-    [this.downloadModal, this.detailModal, this.vaultModal, this.seriesModal, this.scheduleModal, this.profileEditModal].forEach((modal) => {
+    [
+      this.downloadModal,
+      this.detailModal,
+      this.vaultModal,
+      this.seriesModal,
+      this.scheduleModal,
+      this.profileModal,
+      this.profileEditModal,
+      this.switchProfileModal,
+      this.changeCodeModal,
+    ].forEach((modal) => {
       if (!modal) return;
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -673,7 +790,10 @@ class KodimiApp {
     this.initProfileEvents();
 
     window.addEventListener('kodimi_auth_required', () => {
+      this.closeDownloadStream();
+      this.applyRolePermissionsUI();
       this.loginModal.classList.add('open');
+      if (this.loginPassword) this.loginPassword.focus();
     });
 
     window.addEventListener('kodimi_player_closed', () => {
@@ -696,25 +816,54 @@ class KodimiApp {
       }
     });
 
-    if (this.dropdownManageProfilesBtn) {
-      this.dropdownManageProfilesBtn.addEventListener('click', () => {
+    if (this.dropdownSwitchProfileBtn) {
+      this.dropdownSwitchProfileBtn.addEventListener('click', () => {
         this.profileDropdown.style.display = 'none';
+        if (this.switchProfileModal) {
+          this.switchProfileCode.value = '';
+          this.switchProfileError.style.display = 'none';
+          this.switchProfileModal.classList.add('open');
+          this.switchProfileCode.focus();
+        }
+      });
+    }
+
+    if (this.dropdownChangeCodeBtn) {
+      this.dropdownChangeCodeBtn.addEventListener('click', () => {
+        this.profileDropdown.style.display = 'none';
+        if (this.changeCodeModal) {
+          this.changeCodeCurrent.value = '';
+          this.changeCodeNew.value = '';
+          this.changeCodeConfirm.value = '';
+          this.changeCodeError.style.display = 'none';
+          this.changeCodeModal.classList.add('open');
+          this.changeCodeCurrent.focus();
+        }
+      });
+    }
+
+    if (this.dropdownManageProfilesBtn) {
+      this.dropdownManageProfilesBtn.addEventListener('click', async () => {
+        this.profileDropdown.style.display = 'none';
+        if (!profileState.isOwner()) return;
+        await this.loadProfiles();
         this.openProfileModal(true);
       });
     }
 
+    if (this.profileModalClose) {
+      this.profileModalClose.addEventListener('click', () => this.closeProfileModal());
+    }
+
     if (this.manageProfilesBtn) {
       this.manageProfilesBtn.addEventListener('click', () => {
-        this.isManagingProfiles = !this.isManagingProfiles;
-        if (this.manageProfilesBtnText) {
-          this.manageProfilesBtnText.textContent = this.isManagingProfiles ? 'Done' : 'Manage Profiles';
-        }
-        this.renderProfileSelector();
+        this.closeProfileModal();
       });
     }
 
     if (this.addProfileBtn) {
       this.addProfileBtn.addEventListener('click', () => {
+        if (!profileState.isOwner()) return;
         this.openProfileEditModal(null);
       });
     }
@@ -741,27 +890,44 @@ class KodimiApp {
     if (this.profileEditForm) {
       this.profileEditForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (!profileState.isOwner()) return;
         const id = this.profileEditId.value;
         const name = this.profileEditName.value.trim();
         const color = this.selectedProfileColor;
         const isKids = this.profileEditKidsToggle ? this.profileEditKidsToggle.checked : false;
+        const passcode = this.profileEditPasscode ? this.profileEditPasscode.value.trim() : '';
 
         this.profileEditError.style.display = 'none';
+        if (!id && passcode.length < 4) {
+          this.profileEditError.textContent = 'A unique login code (at least 4 characters) is required for new profiles.';
+          this.profileEditError.style.display = 'block';
+          return;
+        }
+        if (passcode && passcode.length < 4) {
+          this.profileEditError.textContent = 'Login code must be at least 4 characters.';
+          this.profileEditError.style.display = 'block';
+          return;
+        }
+
         try {
           if (id) {
-            await api.updateProfile(id, { name, color, is_kids: isKids });
+            const payload = { name, color, is_kids: isKids };
+            if (passcode) payload.passcode = passcode;
+            await api.updateProfile(id, payload);
           } else {
-            await api.createProfile({ name, color, is_kids: isKids });
+            await api.createProfile({ name, color, is_kids: isKids, passcode });
           }
           this.closeProfileEditModal();
           await this.loadProfiles();
           this.renderProfileSelector();
-          this.renderProfileDropdown();
 
           const current = profileState.getActiveProfile();
           if (current && current.id === id) {
             const updated = this.profiles.find((p) => p.id === id);
-            if (updated) this.selectProfile(updated);
+            if (updated) {
+              profileState.setActiveProfile(updated);
+              this.applyRolePermissionsUI();
+            }
           }
         } catch (err) {
           this.profileEditError.textContent = err.message || 'Failed to save profile';
@@ -773,7 +939,7 @@ class KodimiApp {
     if (this.profileEditDeleteBtn) {
       this.profileEditDeleteBtn.addEventListener('click', async () => {
         const id = this.profileEditId.value;
-        if (!id) return;
+        if (!id || !profileState.isOwner()) return;
         if (!confirm('Are you sure you want to delete this profile? Playback history and watchlist for this profile will be permanently removed.')) {
           return;
         }
@@ -782,13 +948,7 @@ class KodimiApp {
           await api.deleteProfile(id);
           this.closeProfileEditModal();
           await this.loadProfiles();
-          const active = profileState.getActiveProfile();
-          if (active && active.id === id) {
-            const fallback = this.profiles[0];
-            if (fallback) this.selectProfile(fallback);
-          }
           this.renderProfileSelector();
-          this.renderProfileDropdown();
         } catch (err) {
           this.profileEditError.textContent = err.message || 'Cannot delete profile';
           this.profileEditError.style.display = 'block';
@@ -798,75 +958,69 @@ class KodimiApp {
   }
 
   async loadProfiles() {
+    if (!profileState.isOwner()) {
+      this.profiles = [];
+      return;
+    }
     try {
       const res = await api.getProfiles();
       this.profiles = res.profiles || [];
     } catch (err) {
       console.warn('[Profiles] Could not load profiles:', err);
-      this.profiles = [{ id: 'default', name: 'Owner', color: '#e50914', avatar: 'account_circle' }];
+      this.profiles = [];
     }
   }
 
-  updateNavProfileBadge() {
-    const active = profileState.getActiveProfile() || this.profiles[0];
-    if (!active) return;
+  applyRolePermissionsUI() {
+    const active = profileState.getActiveProfile();
+    const isOwner = profileState.isOwner();
 
-    if (this.navProfileName) {
-      this.navProfileName.textContent = active.name;
-    }
-    if (this.navProfileAvatar) {
-      this.navProfileAvatar.style.backgroundColor = active.color || '#e50914';
-      const icon = active.avatar || 'account_circle';
-      this.navProfileAvatar.innerHTML = `<span class="material-symbols-outlined" style="font-size: 16px;">${icon}</span>`;
+    if (active) {
+      if (this.navProfileName) this.navProfileName.textContent = active.name;
+      if (this.navProfileAvatar) {
+        this.navProfileAvatar.style.backgroundColor = active.color || '#e50914';
+        const icon = active.avatar || 'account_circle';
+        this.navProfileAvatar.innerHTML = `<span class="material-symbols-outlined" style="font-size: 16px;">${icon}</span>`;
+      }
+      if (this.profileDropdownHeader) {
+        const roleLabel = isOwner ? 'Owner • Admin' : active.is_kids ? 'Kids Profile' : 'Member';
+        this.profileDropdownHeader.textContent = `${active.name} (${roleLabel})`;
+      }
+    } else {
+      if (this.navProfileName) this.navProfileName.textContent = 'Sign In';
+      if (this.profileDropdownHeader) this.profileDropdownHeader.textContent = 'Not Signed In';
     }
 
-    // Parental Control: Hide Vault if kids profile
+    // Strictly hide Owner-only controls from non-owner profiles
+    if (this.fabIngest) this.fabIngest.style.display = isOwner ? 'flex' : 'none';
+    if (this.syncBtn) this.syncBtn.style.display = isOwner ? 'flex' : 'none';
+    if (this.dropdownManageProfilesBtn) this.dropdownManageProfilesBtn.style.display = isOwner ? 'flex' : 'none';
+    if (this.dropdownOwnerDivider) this.dropdownOwnerDivider.style.display = isOwner ? 'block' : 'none';
+
     const vaultBtns = [this.navVaultBtn, document.getElementById('mobile-nav-vault-btn')];
     vaultBtns.forEach((btn) => {
-      if (btn) {
-        btn.style.display = active.is_kids ? 'none' : 'flex';
-      }
+      if (btn) btn.style.display = isOwner ? 'flex' : 'none';
     });
 
-    if (active.is_kids && this.activeFilter === 'vault') {
+    if (!isOwner && this.activeFilter === 'vault') {
+      vaultState.lock();
+      this.privateItems = [];
       this.activeFilter = 'all';
       this.navItems.forEach((b) => b.classList.remove('active'));
       document.querySelectorAll('.nav-item[data-filter="all"]').forEach((b) => b.classList.add('active'));
     }
   }
 
-  renderProfileDropdown() {
-    if (!this.profileDropdownList) return;
-    const active = profileState.getActiveProfile() || this.profiles[0];
-    this.profileDropdownList.innerHTML = this.profiles
-      .map((p) => renderProfileDropdownItem(p, active && active.id === p.id))
-      .join('');
-
-    this.profileDropdownList.querySelectorAll('.profile-dropdown-item').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.dataset.profileId;
-        const target = this.profiles.find((p) => p.id === id);
-        if (target) {
-          this.selectProfile(target);
-          this.profileDropdown.style.display = 'none';
-        }
-      });
-    });
-  }
-
   renderProfileSelector() {
-    if (!this.profilesGrid) return;
+    if (!this.profilesGrid || !profileState.isOwner()) return;
     const active = profileState.getActiveProfile();
     let html = this.profiles
-      .map((p) => renderProfileCard(p, this.isManagingProfiles))
+      .map((p) => renderProfileCard(p, true))
       .join('');
-
-    if (!this.isManagingProfiles) {
-      html += renderAddProfileCard();
-    }
+    html += renderAddProfileCard();
 
     this.profilesGrid.innerHTML = html;
-    this.profilesGrid.classList.toggle('managing-profiles', this.isManagingProfiles);
+    this.profilesGrid.classList.add('managing-profiles');
 
     this.profilesGrid.querySelectorAll('.profile-card').forEach((card) => {
       if (card.id === 'profile-card-add') {
@@ -882,28 +1036,14 @@ class KodimiApp {
       }
 
       card.addEventListener('click', () => {
-        if (this.isManagingProfiles) {
-          this.openProfileEditModal(profile);
-        } else {
-          this.selectProfile(profile);
-          this.closeProfileModal();
-        }
+        this.openProfileEditModal(profile);
       });
     });
   }
 
-  selectProfile(profile) {
-    profileState.setActiveProfile(profile);
-    this.updateNavProfileBadge();
-    this.renderProfileDropdown();
-    this.loadData();
-  }
-
-  openProfileModal(manageMode = false) {
-    this.isManagingProfiles = manageMode;
-    if (this.manageProfilesBtnText) {
-      this.manageProfilesBtnText.textContent = manageMode ? 'Done' : 'Manage Profiles';
-    }
+  openProfileModal() {
+    if (!profileState.isOwner()) return;
+    this.isManagingProfiles = true;
     this.renderProfileSelector();
     if (this.profileModal) this.profileModal.classList.add('open');
   }
@@ -914,27 +1054,50 @@ class KodimiApp {
   }
 
   openProfileEditModal(profile = null) {
-    if (!this.profileEditModal) return;
+    if (!this.profileEditModal || !profileState.isOwner()) return;
     this.profileEditError.style.display = 'none';
 
     if (profile) {
-      this.profileEditTitle.textContent = 'Edit Profile';
+      this.profileEditTitle.textContent = `Edit Profile: ${profile.name}`;
       this.profileEditId.value = profile.id;
       this.profileEditName.value = profile.name;
       this.selectedProfileColor = profile.color || '#e50914';
+      if (this.profileEditPasscode) {
+        this.profileEditPasscode.value = '';
+        this.profileEditPasscode.required = false;
+        this.profileEditPasscode.placeholder = profile.has_passcode
+          ? 'Leave blank to keep current login code'
+          : 'Set a unique login code to unlock this profile';
+      }
+      if (this.profileEditPasscodeHint) {
+        this.profileEditPasscodeHint.textContent = profile.has_passcode
+          ? '(optional — enter to change)'
+          : '(not set yet — required for this profile to sign in)';
+      }
       if (this.profileEditKidsToggle) {
         this.profileEditKidsToggle.checked = Boolean(profile.is_kids);
+        this.profileEditKidsToggle.disabled = profile.id === 'default' || profile.role === 'owner';
       }
       if (this.profileEditDeleteBtn) {
-        this.profileEditDeleteBtn.style.display = this.profiles.length > 1 ? 'flex' : 'none';
+        this.profileEditDeleteBtn.style.display =
+          profile.id !== 'default' && profile.role !== 'owner' && this.profiles.length > 1 ? 'flex' : 'none';
       }
     } else {
       this.profileEditTitle.textContent = 'Add Profile';
       this.profileEditId.value = '';
       this.profileEditName.value = '';
       this.selectedProfileColor = '#007aff';
+      if (this.profileEditPasscode) {
+        this.profileEditPasscode.value = '';
+        this.profileEditPasscode.required = true;
+        this.profileEditPasscode.placeholder = 'Enter unique login code (min 4 chars)';
+      }
+      if (this.profileEditPasscodeHint) {
+        this.profileEditPasscodeHint.textContent = '(required, must be unique)';
+      }
       if (this.profileEditKidsToggle) {
         this.profileEditKidsToggle.checked = false;
+        this.profileEditKidsToggle.disabled = false;
       }
       if (this.profileEditDeleteBtn) {
         this.profileEditDeleteBtn.style.display = 'none';
@@ -961,63 +1124,108 @@ class KodimiApp {
 
   async checkSessionAndLoad() {
     if (!authState.isAuthenticated()) {
+      this.applyRolePermissionsUI();
       this.loginModal.classList.add('open');
+      if (this.loginPassword) this.loginPassword.focus();
       return;
     }
 
     try {
       await api.checkAuth();
       this.loginModal.classList.remove('open');
-
-      await this.loadProfiles();
-      const currentProfile = profileState.getActiveProfile();
-      const validProfile = currentProfile && this.profiles.find((p) => p.id === currentProfile.id);
-
-      if (!validProfile) {
-        this.openProfileModal(false);
-      } else {
-        this.updateNavProfileBadge();
-        this.renderProfileDropdown();
-      }
+      this.applyRolePermissionsUI();
 
       this.loadData();
-      this.loadDownloads();
+      if (profileState.isOwner()) {
+        this.loadProfiles();
+        this.loadDownloads();
+      }
     } catch {
+      this.applyRolePermissionsUI();
       this.loginModal.classList.add('open');
     }
   }
 
   async handleLogin(e) {
     e.preventDefault();
-    const pwd = this.loginPassword.value;
-    if (!pwd) return;
+    const code = this.loginPassword.value.trim();
+    if (!code) return;
 
     this.loginError.style.display = 'none';
     try {
-      await api.login(pwd);
+      await api.login(code);
       this.loginModal.classList.remove('open');
       this.loginPassword.value = '';
 
-      await this.loadProfiles();
-      const currentProfile = profileState.getActiveProfile();
-      const validProfile = currentProfile && this.profiles.find((p) => p.id === currentProfile.id);
-
-      if (!validProfile) {
-        this.openProfileModal(false);
-      } else {
-        this.updateNavProfileBadge();
-        this.renderProfileDropdown();
-      }
-
+      this.applyRolePermissionsUI();
       this.loadData();
-      this.loadDownloads();
+      if (profileState.isOwner()) {
+        this.loadProfiles();
+        this.loadDownloads();
+      } else {
+        this.closeDownloadStream();
+      }
     } catch (err) {
-      this.loginError.textContent = err.message || 'Incorrect password';
+      this.loginError.textContent = err.message || 'Invalid login code';
       this.loginError.style.display = 'block';
     }
   }
 
+  async handleSwitchProfile(e) {
+    e.preventDefault();
+    const code = this.switchProfileCode.value.trim();
+    if (!code) return;
+
+    this.switchProfileError.style.display = 'none';
+    try {
+      this.closeDownloadStream();
+      await api.login(code);
+      this.switchProfileCode.value = '';
+      if (this.switchProfileModal) this.switchProfileModal.classList.remove('open');
+
+      this.privateItems = [];
+      this.applyRolePermissionsUI();
+      this.loadData();
+      if (profileState.isOwner()) {
+        this.loadProfiles();
+        this.loadDownloads();
+      }
+    } catch (err) {
+      this.switchProfileError.textContent = err.message || 'Invalid login code';
+      this.switchProfileError.style.display = 'block';
+    }
+  }
+
+  async handleChangeCode(e) {
+    e.preventDefault();
+    const currentCode = this.changeCodeCurrent.value.trim();
+    const newCode = this.changeCodeNew.value.trim();
+    const confirmCode = this.changeCodeConfirm.value.trim();
+
+    this.changeCodeError.style.display = 'none';
+    if (newCode.length < 4) {
+      this.changeCodeError.textContent = 'New login code must be at least 4 characters.';
+      this.changeCodeError.style.display = 'block';
+      return;
+    }
+    if (newCode !== confirmCode) {
+      this.changeCodeError.textContent = 'New login codes do not match.';
+      this.changeCodeError.style.display = 'block';
+      return;
+    }
+
+    try {
+      await api.changeCode(currentCode, newCode);
+      if (this.changeCodeModal) this.changeCodeModal.classList.remove('open');
+      alert('Your personal login code has been updated!');
+    } catch (err) {
+      this.changeCodeError.textContent = err.message || 'Failed to update login code';
+      this.changeCodeError.style.display = 'block';
+    }
+  }
+
   openVaultModal() {
+    if (!profileState.isOwner()) return;
     this.vaultModal.classList.add('open');
     this.vaultPinInput.value = '';
     this.vaultError.style.display = 'none';
@@ -1208,6 +1416,52 @@ class KodimiApp {
     return media || null;
   }
 
+  isDocumentaryItem(item) {
+    if (!item) return false;
+    if (item.type === 'documentary') return true;
+    if (Array.isArray(item.genres) && item.genres.some((g) => String(g).toLowerCase() === 'documentary')) return true;
+    if (Array.isArray(item.tags) && item.tags.some((t) => String(t).toLowerCase() === 'documentary')) return true;
+    return false;
+  }
+
+  isOthersItem(item) {
+    if (!item) return false;
+    if (item.type === 'others') return true;
+    if (Array.isArray(item.tags) && item.tags.some((t) => String(t).toLowerCase() === 'others')) return true;
+    return false;
+  }
+
+  detectClientSocialPlatform(rawUrl) {
+    try {
+      const parsed = new URL(String(rawUrl || '').trim());
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+      const h = parsed.hostname.toLowerCase().replace(/^www\./, '');
+      if (h === 'youtube.com' || h.endsWith('.youtube.com') || h === 'youtu.be') return 'YouTube';
+      if (h === 'instagram.com' || h.endsWith('.instagram.com') || h === 'instagr.am') return 'Instagram';
+      if (h === 'twitter.com' || h.endsWith('.twitter.com') || h === 'x.com' || h.endsWith('.x.com')) return 'Twitter / X';
+      if (h === 'reddit.com' || h.endsWith('.reddit.com') || h === 'v.redd.it' || h === 'redd.it') return 'Reddit';
+      if (h === 'linkedin.com' || h.endsWith('.linkedin.com') || h === 'lnkd.in') return 'LinkedIn';
+      if (h === 'facebook.com' || h.endsWith('.facebook.com') || h === 'fb.watch' || h === 'fb.com') return 'Facebook';
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  updateIngestPlatformHint() {
+    if (!this.downloadUrlInput || !this.ingestPlatformBadge) return;
+    const platform = this.detectClientSocialPlatform(this.downloadUrlInput.value);
+    if (platform) {
+      this.ingestPlatformBadge.textContent = `${platform} link detected`;
+      this.ingestPlatformBadge.style.display = 'inline-flex';
+      if (this.downloadCategorySelect && !this.downloadCategorySelect.value) {
+        this.downloadCategorySelect.value = 'others';
+      }
+    } else {
+      this.ingestPlatformBadge.style.display = 'none';
+    }
+  }
+
   renderView() {
     // If Live TV is active, show the Live TV container and hide standard views
     if (this.activeFilter === 'livetv') {
@@ -1262,6 +1516,22 @@ class KodimiApp {
         html += renderCarousel('movies', 'Movies', movies);
       }
 
+      const documentaries = sortMoviesList(
+        this.mediaItems.filter((m) => this.isDocumentaryItem(m)),
+        'recent'
+      );
+      if (documentaries.length > 0) {
+        html += renderCarousel('documentary', 'Documentaries', documentaries);
+      }
+
+      const others = sortMoviesList(
+        this.mediaItems.filter((m) => this.isOthersItem(m)),
+        'recent'
+      );
+      if (others.length > 0) {
+        html += renderCarousel('others', 'Others & Social Clips', others);
+      }
+
       const action = this.mediaItems.filter((m) => m.genres?.includes('Action') || m.genres?.includes('Thriller'));
       if (action.length > 0) {
         html += renderCarousel('action', 'Action & Thrillers', action);
@@ -1278,9 +1548,10 @@ class KodimiApp {
       this.heroSection.style.display = 'none';
       this.carouselsContainer.style.display = 'none';
       this.gridContainer.style.display = 'block';
+      const showSortBar = ['movie', 'documentary', 'others'].includes(this.activeFilter);
       if (this.gridSortBar) {
-        this.gridSortBar.style.display = this.activeFilter === 'movie' ? 'flex' : 'none';
-        if (this.activeFilter === 'movie') {
+        this.gridSortBar.style.display = showSortBar ? 'flex' : 'none';
+        if (showSortBar) {
           this.gridSortBar.querySelectorAll('.movie-sort-chip').forEach((chip) => {
             chip.classList.toggle('active', chip.dataset.movieSort === this.movieSortOrder);
           });
@@ -1348,6 +1619,18 @@ class KodimiApp {
           this.movieSortOrder
         );
         this.gridTitle.textContent = `Movies (${filtered.length})`;
+      } else if (this.activeFilter === 'documentary') {
+        filtered = sortMoviesList(
+          filtered.filter((m) => this.isDocumentaryItem(m)),
+          this.movieSortOrder
+        );
+        this.gridTitle.textContent = `Documentary (${filtered.length})`;
+      } else if (this.activeFilter === 'others') {
+        filtered = sortMoviesList(
+          filtered.filter((m) => this.isOthersItem(m)),
+          this.movieSortOrder
+        );
+        this.gridTitle.textContent = `Others & Clips (${filtered.length})`;
       } else if (this.activeFilter === 'continue') {
         filtered = this.continueWatching;
         this.gridTitle.textContent = `Continue Watching (${filtered.length})`;
@@ -1425,6 +1708,28 @@ class KodimiApp {
         <span class="material-symbols-outlined fill">play_arrow</span>
         <span>Play</span>
       `;
+    }
+
+    // Enforce Owner-only admin buttons inside Media Details Modal
+    const isOwner = profileState.isOwner();
+    [this.detailRetagBtn, this.detailFixMatchBtn, this.detailSubtitleBtn, this.detailVaultBtn, this.detailDeleteBtn].forEach((btn) => {
+      if (btn) btn.style.display = isOwner ? 'inline-flex' : 'none';
+    });
+
+    if (this.detailCategorySection) {
+      this.detailCategorySection.style.display = isOwner ? 'block' : 'none';
+      if (isOwner && this.detailCategoryPills) {
+        const activeCat = this.isDocumentaryItem(item)
+          ? 'documentary'
+          : this.isOthersItem(item)
+            ? 'others'
+            : item.type === 'series'
+              ? 'series'
+              : 'movie';
+        this.detailCategoryPills.querySelectorAll('.detail-category-chip').forEach((chip) => {
+          chip.classList.toggle('active', chip.dataset.category === activeCat);
+        });
+      }
     }
 
     // Set Vault Button state
@@ -1560,6 +1865,10 @@ class KodimiApp {
   }
 
   async loadDownloads(isSilent = false) {
+    if (!profileState.isOwner()) {
+      this.closeDownloadStream();
+      return;
+    }
     try {
       const res = await api.getDownloads();
       const list = res.downloads || [];
@@ -1604,14 +1913,18 @@ class KodimiApp {
 
   async handleStartDownload(e) {
     e.preventDefault();
+    if (!profileState.isOwner()) return;
     const url = this.downloadUrlInput.value.trim();
     const name = this.downloadNameInput.value.trim();
+    const category = this.downloadCategorySelect ? this.downloadCategorySelect.value : '';
     if (!url) return;
 
     try {
-      await api.startDownload(url, name);
+      await api.startDownload(url, name, category);
       this.downloadUrlInput.value = '';
       this.downloadNameInput.value = '';
+      if (this.downloadCategorySelect) this.downloadCategorySelect.value = '';
+      if (this.ingestPlatformBadge) this.ingestPlatformBadge.style.display = 'none';
       this.loadDownloads();
     } catch (err) {
       alert(`Download failed: ${err.message}`);
@@ -1619,7 +1932,9 @@ class KodimiApp {
   }
 
   async handleDirectFilesUpload(fileList) {
+    if (!profileState.isOwner()) return;
     if (!fileList || fileList.length === 0) return;
+    const uploadCategory = this.uploadCategorySelect ? this.uploadCategorySelect.value : '';
 
     for (const file of Array.from(fileList)) {
       // Check if .torrent file
@@ -1630,7 +1945,7 @@ class KodimiApp {
             try {
               const dataUrl = reader.result;
               const base64 = dataUrl.split(',')[1];
-              await api.uploadTorrentFile(file.name, base64);
+              await api.uploadTorrentFile(file.name, base64, uploadCategory);
               this.loadDownloads();
               // Switch back to remote link tab to show download queue
               if (this.tabBtnLink) this.tabBtnLink.click();
@@ -1681,7 +1996,7 @@ class KodimiApp {
       const statusEl = itemEl.querySelector('.upload-status');
 
       try {
-        const reqRes = await api.requestUploadUrl(file.name, file.size, file.type || 'application/octet-stream');
+        const reqRes = await api.requestUploadUrl(file.name, file.size, file.type || 'application/octet-stream', uploadCategory);
         const uploadUrl = reqRes.uploadUrl;
         const downloadId = reqRes.downloadId;
 
@@ -1725,7 +2040,7 @@ class KodimiApp {
             }
 
             try {
-              await api.completeUpload(file.name, file.size, downloadId);
+              await api.completeUpload(file.name, file.size, downloadId, uploadCategory);
               if (statusEl) {
                 statusEl.style.color = '#4caf50';
                 statusEl.textContent = '✓ Saved & added to library!';
@@ -1847,15 +2162,20 @@ class KodimiApp {
     }
 
     try {
+      this.liveOffset = 0;
       const [catsRes, channelsRes] = await Promise.all([
         api.getLiveCategories(),
-        api.getLiveChannels({ limit: 120 }),
+        api.getLiveChannels({
+          limit: this.livePageLimit,
+          offset: 0,
+          verifiedOnly: this.liveVerifiedOnly ? 'true' : 'false',
+        }),
       ]);
 
       this.liveCategories = catsRes.categories || [];
       this.liveCountries = catsRes.countries || [];
       this.liveChannels = channelsRes.channels || channelsRes.items || [];
-      this.liveTotalCount = channelsRes.total ?? catsRes.totalChannels ?? this.liveChannels.length;
+      this.liveTotalCount = channelsRes.total ?? this.liveChannels.length;
       this.renderLiveTv();
     } catch (err) {
       console.error('Failed to load Live TV channels:', err);
@@ -1869,7 +2189,7 @@ class KodimiApp {
     }
   }
 
-  async fetchLiveChannels() {
+  async fetchLiveChannels(append = false) {
     if (!this.livetvGrid) return;
 
     // Immediately toggle chip active states in DOM
@@ -1885,8 +2205,18 @@ class KodimiApp {
     }
 
     try {
-      this.livetvGrid.style.opacity = '0.4';
-      const params = { limit: 120 };
+      if (!append) {
+        this.liveOffset = 0;
+        this.livetvGrid.style.opacity = '0.4';
+      } else {
+        this.liveOffset = this.liveChannels.length;
+      }
+
+      const params = {
+        limit: this.livePageLimit,
+        offset: this.liveOffset,
+        verifiedOnly: this.liveVerifiedOnly ? 'true' : 'false',
+      };
       if (this.activeLiveCategory && this.activeLiveCategory !== 'all') {
         params.category = this.activeLiveCategory;
       }
@@ -1898,7 +2228,8 @@ class KodimiApp {
       }
 
       const res = await api.getLiveChannels(params);
-      this.liveChannels = res.channels || res.items || [];
+      const nextItems = res.channels || res.items || [];
+      this.liveChannels = append ? [...this.liveChannels, ...nextItems] : nextItems;
       this.liveTotalCount = res.total ?? this.liveChannels.length;
       this.renderLiveTvGrid();
     } catch (err) {
@@ -1929,7 +2260,7 @@ class KodimiApp {
       }).join('');
     }
 
-    // Render Countries
+    // Render Countries (6 countries / 3 continents + Global)
     if (this.livetvCountryChips) {
       const allCountries = [
         { id: 'all', name: 'All Regions' },
@@ -1957,7 +2288,9 @@ class KodimiApp {
 
     if (this.livetvTotalBadge) {
       const badgeCount = this.liveTotalCount ?? channels.length;
-      this.livetvTotalBadge.textContent = `${badgeCount} Channels`;
+      this.livetvTotalBadge.textContent = this.liveVerifiedOnly
+        ? `${badgeCount} Verified Channels`
+        : `${badgeCount} Channels`;
     }
 
     if (channels.length === 0) {
@@ -1966,6 +2299,11 @@ class KodimiApp {
     } else {
       if (this.livetvEmptyState) this.livetvEmptyState.style.display = 'none';
       this.livetvGrid.innerHTML = channels.map(renderLiveChannelCard).join('');
+    }
+
+    if (this.livetvLoadMoreContainer) {
+      const hasMore = channels.length < (this.liveTotalCount || 0);
+      this.livetvLoadMoreContainer.style.display = hasMore ? 'block' : 'none';
     }
   }
 
@@ -1997,7 +2335,9 @@ class KodimiApp {
 
   renderSeriesModal(seriesData, seasonNum) {
     if (!this.seriesModalBody) return;
-    this.seriesModalBody.innerHTML = renderSeriesModalContent(seriesData, seasonNum);
+    this.seriesModalBody.innerHTML = renderSeriesModalContent(seriesData, seasonNum, {
+      isOwner: profileState.isOwner(),
+    });
   }
 
   async openScheduleModal(channelId) {

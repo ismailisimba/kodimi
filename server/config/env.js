@@ -22,6 +22,20 @@ export const config = {
   isWorker: process.env.IS_WORKER === 'true',
   workerServiceUrl: process.env.WORKER_SERVICE_URL || null,
   serviceUrl: process.env.SERVICE_URL || 'https://kodimi.mnembo.com',
+  ytDlpPath: process.env.YT_DLP_PATH || '',
+  ytDlpCookiesB64: process.env.YT_DLP_COOKIES_B64 || '',
 };
+
+if (config.nodeEnv === 'production') {
+  if (config.jwtSecret === 'kodimi_default_dev_secret_key_2026') {
+    console.warn('[Security Warning] JWT_SECRET is using the default dev fallback in production!');
+  }
+  if (config.adminPassword === 'kodimi123') {
+    console.warn('[Security Warning] ADMIN_PASSWORD is using the default dev fallback in production!');
+  }
+  if (config.privatePin === '1234') {
+    console.warn('[Security Warning] PRIVATE_PIN is using the default dev fallback in production!');
+  }
+}
 
 export default config;

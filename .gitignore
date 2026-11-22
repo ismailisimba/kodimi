@@ -7,7 +7,7 @@ data/
 *.db-journal
 tmp/
 temp/
-tests/
+_scratch/
 scripts/private/
 private/
 .DS_Store

@@ -10,21 +10,15 @@ import {
   deleteCustomSubtitle,
   RESOLUTION_PROFILES,
 } from '../services/transcoder.js';
-import { requireAuth } from '../services/auth.js';
+import { requireAuth, requireOwner, isVaultAuthorized } from '../services/auth.js';
 import config from '../config/env.js';
 
 const router = express.Router();
 
-function isVaultAuthorized(req) {
-  const pin = req.headers['x-vault-pin'] || req.query.pin;
-  return req.user?.vault === true || (pin && pin.toString().trim() === config.privatePin.toString().trim());
-}
-
 function resolveSessionKey(req, mediaId) {
   if (req.query.sid) return String(req.query.sid).slice(0, 80);
-  const profileId = req.headers['x-profile-id'] || req.query.profile || 'default';
-  const user = req.user?.user || 'admin';
-  return `${user}:${profileId}:${mediaId}`;
+  const profileId = req.user?.profileId || 'default';
+  return `${profileId}:${mediaId}`;
 }
 
 async function getMediaItemFresh(id) {
@@ -155,9 +149,9 @@ router.get('/:id/subtitles/tracks', requireAuth, async (req, res) => {
 });
 
 /**
- * Upload & Persist Manual Subtitle (.srt, .vtt, .ass, .ssa) to GCS (.subtitles/) + MongoDB.
+ * Upload & Persist Manual Subtitle (.srt, .vtt, .ass, .ssa) to GCS (.subtitles/) + MongoDB (Owner-only).
  */
-router.post('/:id/subtitles/custom', requireAuth, async (req, res) => {
+router.post('/:id/subtitles/custom', requireAuth, requireOwner, async (req, res) => {
   const item = mediaDB.getById(req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Media not found' });
@@ -193,9 +187,9 @@ router.post('/:id/subtitles/custom', requireAuth, async (req, res) => {
 });
 
 /**
- * Delete a persisted custom subtitle track from GCS & MongoDB.
+ * Delete a persisted custom subtitle track from GCS & MongoDB (Owner-only).
  */
-router.delete('/:id/subtitles/custom/:subId', requireAuth, async (req, res) => {
+router.delete('/:id/subtitles/custom/:subId', requireAuth, requireOwner, async (req, res) => {
   const item = mediaDB.getById(req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Media not found' });

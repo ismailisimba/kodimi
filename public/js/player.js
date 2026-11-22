@@ -3,7 +3,18 @@
  * Enhanced with AV1/HEVC Low-Bandwidth Codec Negotiation, Smart 1080p-Low,
  * Debounced Zero-429 Seeking, and Persistent GCS Manual Subtitles (.SRT / .VTT / .ASS)
  */
-import { api, vaultState } from './api.js?v=28';
+import { api, vaultState, profileState } from './api.js?v=29';
+
+function escapePlayerHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/[&<>'"]/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#39;',
+    '"': '&quot;',
+  }[ch] || ch));
+}
 
 /**
  * Parses WebVTT (.vtt), SubRip (.srt), or SubStation Alpha (.ass / .ssa) text into sorted cues:
@@ -491,6 +502,11 @@ export class KodimiPlayer {
     this.subOffsetPlusBtn = document.getElementById('player-sub-offset-plus');
     this.loader = document.getElementById('player-loader');
     this.loaderText = document.querySelector('.player-loader-text');
+    this.liveErrorCard = document.getElementById('player-live-error');
+    this.liveErrorText = document.getElementById('player-live-error-text');
+    this.liveRetryProxyBtn = document.getElementById('player-live-retry-proxy-btn');
+    this.liveTryTranscodeBtn = document.getElementById('player-live-try-transcode-btn');
+    this.liveErrorCloseBtn = document.getElementById('player-live-error-close-btn');
     this.backBtn = document.getElementById('player-back-btn');
     this.titleDisplay = document.getElementById('player-title-display');
     this.overlayTop = document.getElementById('player-overlay-top');
@@ -540,6 +556,10 @@ export class KodimiPlayer {
     this.progressInterval = null;
     this.hls = null;
     this.liveTranscodeQuality = null;
+    this.liveUrlCandidates = [];
+    this.liveUrlIndex = 0;
+    this.liveMediaErrorCount = 0;
+    this.liveTriedTranscode = false;
 
     // Series Autoplay queue state
     this.seriesSeasonsCache = new Map();
@@ -924,6 +944,31 @@ export class KodimiPlayer {
     this.fullscreenBtn.addEventListener('click', () => this.toggleFullscreen());
     this.backBtn.addEventListener('click', () => this.close());
 
+    if (this.liveRetryProxyBtn) {
+      this.liveRetryProxyBtn.addEventListener('click', () => {
+        if (!this.currentMedia || !this.isLive) return;
+        this.hideLiveError();
+        this.liveMediaErrorCount = 0;
+        this.liveTriedTranscode = false;
+        const url = this.liveUrlCandidates[this.liveUrlIndex] || this.currentMedia.streamUrl;
+        if (url) {
+          this.showLoader(`Connecting via Kodimi Proxy...`);
+          this.startHlsStream(api.getLiveProxyUrl(url, this.currentMedia.id), url);
+        }
+      });
+    }
+    if (this.liveTryTranscodeBtn) {
+      this.liveTryTranscodeBtn.addEventListener('click', () => {
+        if (!this.currentMedia || !this.isLive) return;
+        this.hideLiveError();
+        this.liveTriedTranscode = true;
+        this.setFixedLiveQuality('720p');
+      });
+    }
+    if (this.liveErrorCloseBtn) {
+      this.liveErrorCloseBtn.addEventListener('click', () => this.close());
+    }
+
     // Activity auto-hide
     this.container.addEventListener('mousemove', () => this.onUserActivity());
 
@@ -936,6 +981,10 @@ export class KodimiPlayer {
     this.cancelPendingTimers();
     this.stopPlaybackSyncLoop();
     this.hideUpNextCard();
+    this.hideLiveError();
+    if (this.subtitleUploadBtn) {
+      this.subtitleUploadBtn.style.display = profileState.isOwner() ? 'flex' : 'none';
+    }
     this.isLive = false;
     this.liveTranscodeQuality = null;
     this.currentMedia = media;
@@ -1033,8 +1082,15 @@ export class KodimiPlayer {
     this.cancelPendingTimers();
     this.stopPlaybackSyncLoop();
     this.hideUpNextCard();
+    this.hideLiveError();
     this.isLive = true;
     this.liveTranscodeQuality = null;
+    this.liveUrlCandidates = Array.from(
+      new Set([channel.streamUrl, ...(Array.isArray(channel.fallbackUrls) ? channel.fallbackUrls : [])].filter(Boolean))
+    );
+    this.liveUrlIndex = 0;
+    this.liveMediaErrorCount = 0;
+    this.liveTriedTranscode = false;
     this.nextEpisode = null;
     this.upNextDismissedForId = null;
     this.currentMedia = {
@@ -1048,8 +1104,8 @@ export class KodimiPlayer {
     this.renderLiveQualityMenu();
     this.titleDisplay.innerHTML = `
       <span class="live-badge" style="margin-right: 8px;">🔴 LIVE</span>
-      <span>${channel.name}</span>
-      ${channel.currentProgram ? `<span style="font-size: 13px; opacity: 0.8; font-weight: 400; margin-left: 8px;">• ${channel.currentProgram.title}</span>` : ''}
+      <span>${escapePlayerHtml(channel.name)}</span>
+      ${channel.currentProgram ? `<span style="font-size: 13px; opacity: 0.8; font-weight: 400; margin-left: 8px;">• ${escapePlayerHtml(channel.currentProgram.title)}</span>` : ''}
     `;
     this.totalDuration = 0;
     this.seekTimeOffset = 0;
@@ -1257,8 +1313,44 @@ export class KodimiPlayer {
     }
   }
 
+  showLiveError(message = 'Live stream is currently unreachable') {
+    this.hideLoader();
+    if (this.liveErrorCard) {
+      if (this.liveErrorText) this.liveErrorText.textContent = message;
+      this.liveErrorCard.style.display = 'flex';
+    } else {
+      this.showLoader(message);
+    }
+  }
+
+  hideLiveError() {
+    if (this.liveErrorCard) {
+      this.liveErrorCard.style.display = 'none';
+    }
+  }
+
+  tryNextLiveFallbackOrFail(reason = 'stream-unreachable') {
+    if (!this.isLive || !this.currentMedia) return false;
+    if (this.liveUrlIndex + 1 < this.liveUrlCandidates.length) {
+      this.liveUrlIndex += 1;
+      const nextUrl = this.liveUrlCandidates[this.liveUrlIndex];
+      console.log(`[Live TV] Switching to fallback stream #${this.liveUrlIndex + 1}: ${nextUrl}`);
+      this.liveMediaErrorCount = 0;
+      this.loadLiveSource(nextUrl);
+      return true;
+    }
+
+    if (this.currentMedia.id) {
+      api.reportLiveChannelOffline(this.currentMedia.id, reason).catch(() => {});
+    }
+    this.destroyHls();
+    this.showLiveError(`${this.currentMedia.name || 'Live channel'} is currently unavailable (${reason}).`);
+    return false;
+  }
+
   loadLiveSource(streamUrl) {
     this.destroyHls();
+    this.hideLiveError();
     this.video.pause();
     this.video.volume = this.currentVolume;
     this.video.muted = this.isMuted;
@@ -1266,8 +1358,13 @@ export class KodimiPlayer {
     this.showLoader(`Connecting to ${this.currentMedia?.name || 'Live Channel'}...`);
 
     const isMixedContent = window.location.protocol === 'https:' && streamUrl.startsWith('http:');
-    const initialUrl = (isMixedContent || streamUrl.includes('primetv.cc.cd'))
-      ? api.getLiveProxyUrl(streamUrl)
+    const mustUseProxy =
+      Boolean(this.currentMedia?.requiresProxy) ||
+      isMixedContent ||
+      streamUrl.startsWith('http://');
+
+    const initialUrl = mustUseProxy
+      ? api.getLiveProxyUrl(streamUrl, this.currentMedia?.id || '')
       : streamUrl;
 
     this.startHlsStream(initialUrl, streamUrl);
@@ -1276,6 +1373,8 @@ export class KodimiPlayer {
   startHlsStream(playUrl, originalStreamUrl) {
     this.destroyHls();
 
+    const channelId = this.currentMedia?.id || '';
+
     if (window.Hls && window.Hls.isSupported()) {
       const hls = new window.Hls({
         enableWorker: true,
@@ -1283,9 +1382,9 @@ export class KodimiPlayer {
         backBufferLength: 30,
         maxBufferLength: 30,
         maxMaxBufferLength: 60,
-        manifestLoadingTimeOut: 12000,
-        manifestLoadingMaxRetry: 3,
-        levelLoadingTimeOut: 12000,
+        manifestLoadingTimeOut: 15000,
+        manifestLoadingMaxRetry: 2,
+        levelLoadingTimeOut: 15000,
         fragLoadingTimeOut: 15000,
       });
       this.hls = hls;
@@ -1295,8 +1394,10 @@ export class KodimiPlayer {
 
       hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
         console.log('[Live TV] HLS manifest parsed successfully with', this.hls?.levels?.length, 'levels');
+        this.liveMediaErrorCount = 0;
         this.renderLiveQualityMenu();
         this.hideLoader();
+        this.hideLiveError();
         this.video.play().catch((err) => {
           console.warn('[Live TV] Autoplay prevented:', err.message);
         });
@@ -1317,22 +1418,30 @@ export class KodimiPlayer {
           switch (data.type) {
             case window.Hls.ErrorTypes.NETWORK_ERROR:
               if (playUrl === originalStreamUrl) {
-                console.log('[Live TV] Direct stream network error, switching to Kodimi proxy...');
-                this.startHlsStream(api.getLiveProxyUrl(originalStreamUrl), originalStreamUrl);
+                console.log('[Live TV] Direct stream network/CORS error, switching to Kodimi proxy...');
+                this.showLoader('Routing through Kodimi Proxy...');
+                this.startHlsStream(api.getLiveProxyUrl(originalStreamUrl, channelId), originalStreamUrl);
                 return;
               }
-              console.error('[Live TV] Fatal network error on stream proxy.');
-              this.destroyHls();
-              this.showLoader('Live stream temporarily unavailable');
+              console.warn('[Live TV] Fatal network error on stream proxy, checking fallbacks...');
+              this.tryNextLiveFallbackOrFail(data.details || 'network-error');
               break;
             case window.Hls.ErrorTypes.MEDIA_ERROR:
-              console.log('[Live TV] Fatal media error, recovering...');
-              hls.recoverMediaError();
+              this.liveMediaErrorCount += 1;
+              if (this.liveMediaErrorCount <= 2) {
+                console.log(`[Live TV] Fatal media error (#${this.liveMediaErrorCount}), recovering...`);
+                hls.recoverMediaError();
+              } else if (!this.liveTriedTranscode) {
+                console.warn('[Live TV] Persistent media/codec error — switching to Live H.264/AAC Transcode fallback...');
+                this.liveTriedTranscode = true;
+                this.setFixedLiveQuality('720p');
+              } else {
+                this.tryNextLiveFallbackOrFail(data.details || 'codec-error');
+              }
               break;
             default:
               console.error('[Live TV] Fatal unrecoverable HLS error:', data.details);
-              this.destroyHls();
-              this.showLoader('Live stream playback error');
+              this.tryNextLiveFallbackOrFail(data.details || 'playback-error');
               break;
           }
         }
@@ -1344,17 +1453,17 @@ export class KodimiPlayer {
         playPromise.catch(() => {
           if (playUrl === originalStreamUrl) {
             console.warn('[Live TV] Native HLS failed, trying proxy...');
-            this.video.src = api.getLiveProxyUrl(originalStreamUrl);
+            this.video.src = api.getLiveProxyUrl(originalStreamUrl, channelId);
             this.video.play().catch(() => {
-              this.showLoader('Live stream unavailable');
+              this.tryNextLiveFallbackOrFail('native-hls-error');
             });
           } else {
-            this.showLoader('Live stream unavailable');
+            this.tryNextLiveFallbackOrFail('native-hls-proxy-error');
           }
         });
       }
     } else {
-      this.showLoader('HLS playback is not supported on this browser');
+      this.showLiveError('HLS playback is not supported on this browser.');
     }
   }
 
@@ -1407,6 +1516,7 @@ export class KodimiPlayer {
     this.releaseWakeLock();
     this.destroyHls();
     this.hideUpNextCard();
+    this.hideLiveError();
 
     const savePromise = (!this.isLive && this.currentMedia)
       ? this.persistPlaybackProgress({ keepalive: true })
@@ -1814,15 +1924,17 @@ export class KodimiPlayer {
     this.renderLiveQualityMenu();
 
     this.destroyHls();
+    this.hideLiveError();
     this.video.pause();
     this.showLoader(`Starting Live ${quality.toUpperCase()} Transcode...`);
 
-    const transcodeUrl = api.getLiveTranscodeUrl(this.currentMedia.streamUrl, quality);
+    const activeStreamUrl = this.liveUrlCandidates[this.liveUrlIndex] || this.currentMedia.streamUrl;
+    const transcodeUrl = api.getLiveTranscodeUrl(activeStreamUrl, quality, this.currentMedia.id || '');
     this.video.src = transcodeUrl;
     this.video.load();
     this.video.play().catch((err) => {
       console.warn('[Live Transcode Play Warning]:', err.message);
-      this.showLoader('Live stream temporarily unavailable');
+      this.showLiveError('Live transcode stream is currently unavailable.');
     });
   }
 
@@ -1906,7 +2018,7 @@ export class KodimiPlayer {
       this.availableSubtitles.forEach((t) => {
         const isActive = this.activeSubtitleId === t.id;
         const safeLabel = (t.label || 'Subtitle').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
-        if (t.isCustom && t.customId) {
+        if (t.isCustom && t.customId && profileState.isOwner()) {
           html += `
             <div class="subtitle-track-row">
               <button class="quality-option ${isActive ? 'active' : ''}" data-track-id="${t.id}">
@@ -2350,6 +2462,7 @@ export class KodimiPlayer {
       this.stopUpNextCountdown();
       if (this.upNextMode === 'preview') {
         this.hideUpNextCard();
+    this.hideLiveError();
       } else if (this.upNextMode === 'countdown' && this.nextEpisode) {
         this.showUpNextCard('manual');
       }
@@ -2431,6 +2544,7 @@ export class KodimiPlayer {
       }
     } else if (this.upNextMode === 'preview' && remaining > 23) {
       this.hideUpNextCard();
+    this.hideLiveError();
     }
   }
 
@@ -2489,6 +2603,7 @@ export class KodimiPlayer {
       this.upNextDismissedForId = this.currentMedia.id;
     }
     this.hideUpNextCard();
+    this.hideLiveError();
   }
 
   startUpNextCountdown(seconds = 5) {
@@ -2538,6 +2653,7 @@ export class KodimiPlayer {
     }
 
     this.hideUpNextCard();
+    this.hideLiveError();
     this.open(targetEpisode, 0, { preserveSessionSettings: true });
     return true;
   }

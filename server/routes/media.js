@@ -5,7 +5,7 @@ import { mediaDB, playbackDB, ensureMediaCacheFresh, normalizeSeriesKey } from '
 import { scanAndIndexBucket, syncGcsTimestampsOnly, getScanStatus } from '../services/scanner.js';
 import { enrichMediaMetadata, isPlaceholderOrGenericPlot } from '../services/aiTagger.js';
 import { getThumbnailRedirectUrl, getOrGenerateThumbnail, getOrProbeDuration } from '../services/transcoder.js';
-import { requireAuth } from '../services/auth.js';
+import { requireAuth, requireOwner, isVaultAuthorized } from '../services/auth.js';
 import config from '../config/env.js';
 
 const router = express.Router();
@@ -38,13 +38,8 @@ function sendFallbackThumbnail(res) {
   res.status(200).send(DEFAULT_SVG_THUMB);
 }
 
-function isVaultAuthorized(req) {
-  const pin = req.headers['x-vault-pin'] || req.query.pin;
-  return req.user?.vault === true || (pin && pin.toString().trim() === config.privatePin.toString().trim());
-}
-
 function getProfileId(req) {
-  return req.headers['x-profile-id'] || 'default';
+  return req.user?.profileId || 'default';
 }
 
 // Public/Auth protected media listing
@@ -134,8 +129,8 @@ router.get('/series/:name/seasons', requireAuth, async (req, res) => {
   res.json(data);
 });
 
-// Re-tag all episodes of a TV series with optional disambiguation matchHint
-router.post('/series/:name/retag', requireAuth, async (req, res) => {
+// Re-tag all episodes of a TV series with optional disambiguation matchHint (Owner-only)
+router.post('/series/:name/retag', requireAuth, requireOwner, async (req, res) => {
   await ensureMediaCacheFresh();
   const seriesName = decodeURIComponent(req.params.name);
   const matchHint = typeof req.body?.matchHint === 'string' ? req.body.matchHint.trim() : '';
@@ -192,11 +187,11 @@ router.post('/series/:name/retag', requireAuth, async (req, res) => {
   res.json({ success: true, updatedCount, seriesName: finalSeriesName, data: seriesData });
 });
 
-router.get('/retag-status', requireAuth, (req, res) => {
+router.get('/retag-status', requireAuth, requireOwner, (req, res) => {
   res.json(retagBatchState);
 });
 
-router.post('/retag-inaccurate', requireAuth, async (req, res) => {
+router.post('/retag-inaccurate', requireAuth, requireOwner, async (req, res) => {
   if (retagBatchState.inProgress) {
     return res.json({ message: 'Synopsis backfill already in progress', status: retagBatchState });
   }
@@ -259,11 +254,11 @@ router.post('/retag-inaccurate', requireAuth, async (req, res) => {
   res.json({ message: 'GCS timestamp sync & synopsis backfill initiated in background', status: retagBatchState });
 });
 
-router.get('/sync-status', requireAuth, (req, res) => {
+router.get('/sync-status', requireAuth, requireOwner, (req, res) => {
   res.json(getScanStatus());
 });
 
-router.post('/sync-bucket', requireAuth, (req, res) => {
+router.post('/sync-bucket', requireAuth, requireOwner, (req, res) => {
   // Run scan in background
   scanAndIndexBucket();
   res.json({ message: 'Bucket scan initiated in background', status: getScanStatus() });
@@ -355,7 +350,7 @@ router.get('/:id', requireAuth, async (req, res) => {
   res.json({ item, progress });
 });
 
-router.post('/:id/retag', requireAuth, async (req, res) => {
+router.post('/:id/retag', requireAuth, requireOwner, async (req, res) => {
   const item = mediaDB.getById(req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Media not found' });
@@ -381,7 +376,23 @@ router.post('/:id/retag', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:id/vault-toggle', requireAuth, async (req, res) => {
+router.patch('/:id/category', requireAuth, requireOwner, async (req, res) => {
+  const { category } = req.body || {};
+  if (!category) {
+    return res.status(400).json({ error: 'category is required (movie, series, documentary, or others)' });
+  }
+  try {
+    const updated = await mediaDB.updateCategory(req.params.id, category);
+    if (!updated) {
+      return res.status(404).json({ error: 'Media not found' });
+    }
+    res.json({ success: true, item: updated });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/vault-toggle', requireAuth, requireOwner, async (req, res) => {
   const item = mediaDB.getById(req.params.id);
   if (!item) {
     return res.status(404).json({ error: 'Media not found' });
@@ -402,7 +413,7 @@ router.post('/:id/vault-toggle', requireAuth, async (req, res) => {
   res.json({ success: true, item: updated, is_adult: newAdultState });
 });
 
-router.delete('/:id', requireAuth, (req, res) => {
+router.delete('/:id', requireAuth, requireOwner, (req, res) => {
   mediaDB.delete(req.params.id);
   res.json({ success: true });
 });

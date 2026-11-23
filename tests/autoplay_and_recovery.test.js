@@ -8,7 +8,7 @@ import {
   formatEpisodeCode,
   resolveNextSeriesEpisode,
 } from '../public/js/player.js';
-import { api } from '../public/js/api.js?v=30';
+import { api } from '../public/js/api.js?v=31';
 import { rejectNonZeroByteRange } from '../server/services/transcoder.js';
 import { mediaDB, playbackDB, isPlaybackCompleted } from '../server/db/database.js';
 

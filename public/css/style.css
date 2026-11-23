@@ -103,8 +103,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  background: linear-gradient(180deg, rgba(15, 15, 17, 0.95) 0%, rgba(15, 15, 17, 0.75) 70%, transparent 100%);
+  gap: 16px;
+  padding: 0 20px;
+  background: linear-gradient(180deg, rgba(15, 15, 17, 0.96) 0%, rgba(15, 15, 17, 0.8) 70%, transparent 100%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   z-index: 40;
@@ -116,15 +117,25 @@ body {
   box-shadow: var(--md-sys-elevation-2);
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .brand-container {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .brand-logo {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 900;
   letter-spacing: 2px;
   color: var(--md-sys-color-primary);
@@ -145,23 +156,34 @@ body {
 .nav-links {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-left: 24px;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .nav-item {
   background: transparent;
   border: none;
   color: var(--md-sys-color-on-surface-variant);
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 500;
-  padding: 8px 16px;
+  line-height: 1.25;
+  padding: 8px 12px;
   border-radius: var(--md-shape-corner-full);
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.2s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.nav-item .material-symbols-outlined {
+  font-size: 18px;
+  flex-shrink: 0;
 }
 
 .nav-item:hover {
@@ -169,16 +191,125 @@ body {
   color: var(--md-sys-color-on-surface);
 }
 
-.nav-item.active {
+.nav-item:focus-visible,
+.nav-more-btn:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+.nav-item.active,
+.nav-item[aria-current="page"] {
   background-color: var(--md-sys-color-surface-container-highest);
   color: var(--md-sys-color-on-surface);
   font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--md-sys-color-primary);
+}
+
+.nav-more-wrapper {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.nav-more-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  padding: 8px 12px;
+  border-radius: var(--md-shape-corner-full);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.nav-more-btn:hover {
+  background-color: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+}
+
+.nav-more-btn.active {
+  background-color: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--md-sys-color-primary);
+}
+
+/* Native Top-Layer Navigation Overflow Popover */
+.nav-more-popover {
+  padding: 6px;
+  min-inline-size: 196px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background-color: rgba(24, 24, 28, 0.98);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: var(--md-sys-elevation-3);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  opacity: 0;
+  translate: 0 -4px;
+  transition: opacity 0.16s ease, translate 0.16s ease, display 0.16s ease, overlay 0.16s ease;
+  transition-behavior: allow-discrete;
+}
+
+.nav-more-popover:is(:popover-open, .\:popover-open) {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  opacity: 1;
+  translate: 0 0;
+}
+
+@starting-style {
+  .nav-more-popover:is(:popover-open, .\:popover-open) {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-more-popover {
+    transition: none;
+    translate: none;
+  }
+}
+
+@supports (position-area: block-end) {
+  .nav-more-popover {
+    inset: auto;
+    margin: 0;
+    margin-block-start: 8px;
+    height: auto;
+    position-area: block-end span-inline-end;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+}
+
+@supports not (position-area: block-end) {
+  .nav-more-popover {
+    position: fixed;
+    margin: 0;
+  }
+}
+
+.nav-popover-item {
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: 10px;
+  padding: 10px 12px;
 }
 
 .app-bar-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 /* Material Search Input */
@@ -193,23 +324,24 @@ body {
   left: 12px;
   color: var(--md-sys-color-outline);
   pointer-events: none;
+  font-size: 20px;
 }
 
 .search-input {
   background-color: var(--md-sys-color-surface-container-high);
   border: 1px solid transparent;
   border-radius: var(--md-shape-corner-full);
-  padding: 8px 16px 8px 40px;
+  padding: 8px 14px 8px 38px;
   color: var(--md-sys-color-on-surface);
-  font-size: 14px;
-  width: 220px;
-  transition: all 0.2s ease;
+  font-size: 13.5px;
+  width: 190px;
+  transition: width 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
 }
 
 .search-input:focus {
   outline: none;
   border-color: var(--md-sys-color-primary);
-  width: 300px;
+  width: 245px;
   background-color: var(--md-sys-color-surface-container-highest);
 }
 
@@ -1232,10 +1364,35 @@ body {
   display: none;
 }
 
+/* Compact Laptop Adjustments (<= 1360px) */
+@media (max-width: 1360px) {
+  .brand-badge {
+    display: none;
+  }
+  .top-app-bar {
+    padding: 0 16px;
+    gap: 12px;
+  }
+  .header-left {
+    gap: 10px;
+  }
+  .nav-item,
+  .nav-more-btn {
+    padding: 7px 10px;
+    font-size: 13px;
+    gap: 5px;
+  }
+  .search-input {
+    width: 170px;
+  }
+  .search-input:focus {
+    width: 210px;
+  }
+}
+
 /* Tablet & Landscape Adjustments (769px to 1150px) */
 @media (max-width: 1150px) {
   .nav-links {
-    margin-left: 14px;
     gap: 4px;
     overflow-x: auto;
     white-space: nowrap;
@@ -1245,16 +1402,17 @@ body {
   .nav-links::-webkit-scrollbar {
     display: none;
   }
-  .nav-item {
-    padding: 6px 12px;
+  .nav-item,
+  .nav-more-btn {
+    padding: 6px 10px;
     font-size: 13px;
     gap: 4px;
   }
   .search-input {
-    width: 160px;
+    width: 145px;
   }
   .search-input:focus {
-    width: 200px;
+    width: 185px;
   }
 }
 
@@ -1271,7 +1429,8 @@ body {
   .brand-badge {
     display: none;
   }
-  .nav-links {
+  .nav-links,
+  .nav-more-wrapper {
     display: none; /* Replaced by bottom nav */
   }
   .app-bar-actions {

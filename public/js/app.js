@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=30';
-import KodimiPlayer from './player.js?v=30';
+import { api, authState, vaultState, profileState } from './api.js?v=31';
+import KodimiPlayer from './player.js?v=31';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -20,7 +20,12 @@ import {
   collapseGroupedMedia,
   sortMoviesList,
   escapeHtml,
-} from './components.js?v=30';
+} from './components.js?v=31';
+
+// Feature-detect native Popover API and load polyfill only when missing
+if (typeof HTMLElement !== 'undefined' && !Object.hasOwn(HTMLElement.prototype, 'popover')) {
+  import('https://unpkg.com/@oddbird/popover-polyfill@latest/dist/popover.min.js').catch(() => {});
+}
 
 class KodimiApp {
   constructor() {
@@ -68,6 +73,9 @@ class KodimiApp {
     this.logoutBtn = document.getElementById('logout-btn');
     this.navItems = document.querySelectorAll('.nav-item');
     this.navVaultBtn = document.getElementById('nav-vault-btn');
+    this.navMoreBtn = document.getElementById('nav-more-btn');
+    this.navMoreLabel = document.getElementById('nav-more-label');
+    this.navMorePopover = document.getElementById('nav-more-popover');
 
     // Main Content Containers
     this.heroSection = document.getElementById('hero-section');
@@ -223,10 +231,39 @@ class KodimiApp {
       }
     });
 
+    // Navigation Overflow Popover (sync aria-expanded & fallback anchor positioning for Firefox/older Safari)
+    if (this.navMorePopover && this.navMoreBtn) {
+      const positionFallbackPopover = () => {
+        if (typeof CSS !== 'undefined' && CSS.supports && CSS.supports('position-area', 'block-end')) {
+          return;
+        }
+        const trigRect = this.navMoreBtn.getBoundingClientRect();
+        const popRect = this.navMorePopover.getBoundingClientRect();
+        const gap = 8;
+        let top = trigRect.bottom + gap;
+        if (top + popRect.height > window.innerHeight - gap && trigRect.top - popRect.height - gap >= gap) {
+          top = trigRect.top - popRect.height - gap;
+        }
+        const left = Math.max(gap, Math.min(trigRect.left, window.innerWidth - popRect.width - gap));
+        this.navMorePopover.style.top = `${Math.round(top)}px`;
+        this.navMorePopover.style.left = `${Math.round(left)}px`;
+      };
+
+      this.navMorePopover.addEventListener('toggle', (event) => {
+        const isOpen = event.newState === 'open';
+        this.navMoreBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        if (isOpen) {
+          requestAnimationFrame(positionFallbackPopover);
+        }
+      });
+    }
+
     // Navigation Tabs
     this.navItems.forEach((btn) => {
       btn.addEventListener('click', async () => {
         const filter = btn.dataset.filter;
+        this.closeMoreNavPopover();
+
         if (filter === 'vault') {
           if (!profileState.isOwner()) {
             return;
@@ -242,16 +279,15 @@ class KodimiApp {
           this.selectNextFeaturedItem();
         }
 
-        this.navItems.forEach((b) => b.classList.remove('active'));
-        document.querySelectorAll(`.nav-item[data-filter="${filter}"]`).forEach((b) => b.classList.add('active'));
+        this.setActiveNavFilter(filter);
         this.activeFilter = filter;
         this.renderView();
       });
     });
 
     document.getElementById('brand-home').addEventListener('click', () => {
-      this.navItems.forEach((b) => b.classList.remove('active'));
-      document.querySelectorAll('.nav-item[data-filter="all"]').forEach((b) => b.classList.add('active'));
+      this.closeMoreNavPopover();
+      this.setActiveNavFilter('all');
       this.activeFilter = 'all';
       this.searchInput.value = '';
       this.searchTerm = '';
@@ -976,6 +1012,34 @@ class KodimiApp {
     }
   }
 
+  closeMoreNavPopover() {
+    if (!this.navMorePopover) return;
+    try {
+      if (this.navMorePopover.matches(':popover-open') || this.navMorePopover.classList.contains(':popover-open')) {
+        this.navMorePopover.hidePopover();
+      }
+    } catch (_) {}
+  }
+
+  setActiveNavFilter(filter) {
+    this.navItems.forEach((b) => {
+      b.classList.remove('active');
+      b.removeAttribute('aria-current');
+    });
+    document.querySelectorAll(`.nav-item[data-filter="${filter}"]`).forEach((b) => {
+      b.classList.add('active');
+      b.setAttribute('aria-current', 'page');
+    });
+    if (this.navMoreBtn) {
+      const inMoreMenu = filter === 'continue' || filter === 'vault';
+      this.navMoreBtn.classList.toggle('active', inMoreMenu);
+      if (this.navMoreLabel) {
+        this.navMoreLabel.textContent =
+          filter === 'vault' ? 'Private' : filter === 'continue' ? 'Continue' : 'More';
+      }
+    }
+  }
+
   applyRolePermissionsUI() {
     const active = profileState.getActiveProfile();
     const isOwner = profileState.isOwner();
@@ -1011,8 +1075,7 @@ class KodimiApp {
       vaultState.lock();
       this.privateItems = [];
       this.activeFilter = 'all';
-      this.navItems.forEach((b) => b.classList.remove('active'));
-      document.querySelectorAll('.nav-item[data-filter="all"]').forEach((b) => b.classList.add('active'));
+      this.setActiveNavFilter('all');
     }
   }
 
@@ -1248,8 +1311,7 @@ class KodimiApp {
       vaultState.setPin(pin);
       this.vaultModal.classList.remove('open');
 
-      this.navItems.forEach((b) => b.classList.remove('active'));
-      document.querySelectorAll('.nav-item[data-filter="vault"]').forEach((b) => b.classList.add('active'));
+      this.setActiveNavFilter('vault');
       this.activeFilter = 'vault';
 
       await this.loadVaultData();
@@ -1674,8 +1736,7 @@ class KodimiApp {
             lockBtn.onclick = () => {
               vaultState.lock();
               this.privateItems = [];
-              this.navItems.forEach((b) => b.classList.remove('active'));
-              document.querySelectorAll('.nav-item[data-filter="all"]').forEach((b) => b.classList.add('active'));
+              this.setActiveNavFilter('all');
               this.activeFilter = 'all';
               this.renderView();
             };

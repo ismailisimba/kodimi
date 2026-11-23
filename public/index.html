@@ -21,97 +21,115 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 
   <!-- Custom Material Design Stylesheet -->
-  <link rel="stylesheet" href="/css/style.css?v=30" />
+  <link rel="stylesheet" href="/css/style.css?v=31" />
 </head>
 <body>
 
   <!-- Top App Bar -->
   <header class="top-app-bar" id="top-app-bar">
-    <div style="display: flex; align-items: center; min-width: 0; overflow-x: auto;" class="no-scrollbar">
+    <div class="header-left">
       <div class="brand-container" id="brand-home">
         <span class="brand-logo">KODIMI</span>
         <span class="brand-badge">Stream</span>
       </div>
 
-      <nav class="nav-links">
-        <button class="nav-item active" data-filter="all">
-          <span class="material-symbols-outlined" style="font-size: 18px;">home</span>
+      <nav class="nav-links no-scrollbar" aria-label="Primary">
+        <button type="button" class="nav-item active" data-filter="all" aria-current="page">
+          <span class="material-symbols-outlined" aria-hidden="true">home</span>
           <span>Home</span>
         </button>
-        <button class="nav-item" data-filter="movie">
-          <span class="material-symbols-outlined" style="font-size: 18px;">movie</span>
+        <button type="button" class="nav-item" data-filter="movie">
+          <span class="material-symbols-outlined" aria-hidden="true">movie</span>
           <span>Movies</span>
         </button>
-        <button class="nav-item" data-filter="series">
-          <span class="material-symbols-outlined" style="font-size: 18px;">tv</span>
+        <button type="button" class="nav-item" data-filter="series">
+          <span class="material-symbols-outlined" aria-hidden="true">tv</span>
           <span>TV Shows</span>
         </button>
-        <button class="nav-item" data-filter="documentary">
-          <span class="material-symbols-outlined" style="font-size: 18px;">history_edu</span>
+        <button type="button" class="nav-item" data-filter="documentary">
+          <span class="material-symbols-outlined" aria-hidden="true">history_edu</span>
           <span>Documentary</span>
         </button>
-        <button class="nav-item" data-filter="others">
-          <span class="material-symbols-outlined" style="font-size: 18px;">video_library</span>
+        <button type="button" class="nav-item" data-filter="others">
+          <span class="material-symbols-outlined" aria-hidden="true">video_library</span>
           <span>Others</span>
         </button>
-        <button class="nav-item" data-filter="livetv" id="nav-livetv-btn">
-          <span class="material-symbols-outlined" style="font-size: 18px; color: #ff5252;">live_tv</span>
+        <button type="button" class="nav-item" data-filter="livetv" id="nav-livetv-btn">
+          <span class="material-symbols-outlined" aria-hidden="true" style="color: #ff5252;">live_tv</span>
           <span>Live TV</span>
         </button>
-        <button class="nav-item" data-filter="continue">
-          <span class="material-symbols-outlined" style="font-size: 18px;">history</span>
-          <span>Continue</span>
-        </button>
-        <button class="nav-item" data-filter="vault" id="nav-vault-btn" style="display: none;">
-          <span class="material-symbols-outlined" style="font-size: 18px;">lock</span>
-          <span>Private</span>
-        </button>
       </nav>
+
+      <div class="nav-more-wrapper">
+        <button
+          type="button"
+          class="nav-more-btn"
+          id="nav-more-btn"
+          popovertarget="nav-more-popover"
+          popovertargetaction="toggle"
+          aria-controls="nav-more-popover"
+          aria-expanded="false"
+        >
+          <span id="nav-more-label">More</span>
+          <span class="material-symbols-outlined" aria-hidden="true" style="font-size: 18px;">expand_more</span>
+        </button>
+
+        <div id="nav-more-popover" class="nav-more-popover" popover="auto">
+          <button type="button" class="nav-item nav-popover-item" data-filter="continue">
+            <span class="material-symbols-outlined" aria-hidden="true">history</span>
+            <span>Continue Watching</span>
+          </button>
+          <button type="button" class="nav-item nav-popover-item" data-filter="vault" id="nav-vault-btn" style="display: none;">
+            <span class="material-symbols-outlined" aria-hidden="true">lock</span>
+            <span>Private Vault</span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="app-bar-actions">
       <!-- Search Input -->
       <div class="search-box">
-        <span class="material-symbols-outlined">search</span>
-        <input type="text" id="search-input" class="search-input" placeholder="Search titles, tags, genres..." />
+        <span class="material-symbols-outlined" aria-hidden="true">search</span>
+        <input type="text" id="search-input" class="search-input" placeholder="Search titles, tags, genres" aria-label="Search library" />
       </div>
 
       <!-- Sync GCS Bucket Button (Owner-only) -->
-      <button class="icon-btn" id="sync-btn" title="Scan & Sync GCS Bucket" style="display: none;">
-        <span class="material-symbols-outlined" id="sync-icon">sync</span>
+      <button type="button" class="icon-btn" id="sync-btn" title="Scan and sync GCS bucket" aria-label="Scan and sync GCS bucket" style="display: none;">
+        <span class="material-symbols-outlined" id="sync-icon" aria-hidden="true">sync</span>
       </button>
 
       <!-- Profile Button & Dropdown Menu -->
       <div class="profile-menu-container" style="position: relative;">
-        <button class="profile-nav-btn" id="profile-switcher-btn" title="Profile & Account">
+        <button type="button" class="profile-nav-btn" id="profile-switcher-btn" title="Profile and account" aria-label="Profile and account">
           <div class="profile-nav-avatar" id="nav-profile-avatar" style="background-color: #e50914;">
-            <span class="material-symbols-outlined" style="font-size: 16px;">account_circle</span>
+            <span class="material-symbols-outlined" aria-hidden="true" style="font-size: 16px;">account_circle</span>
           </div>
           <span class="profile-nav-name" id="nav-profile-name">Profile</span>
-          <span class="material-symbols-outlined" style="font-size: 16px; opacity: 0.7;">expand_more</span>
+          <span class="material-symbols-outlined" aria-hidden="true" style="font-size: 16px; opacity: 0.7;">expand_more</span>
         </button>
 
         <div class="profile-dropdown" id="profile-dropdown" style="display: none;">
           <div class="profile-dropdown-header" id="profile-dropdown-header">Signed In</div>
-          <button class="profile-dropdown-item" id="dropdown-switch-profile-btn">
-            <span class="material-symbols-outlined">switch_account</span>
-            <span>Switch Profile (Code)</span>
+          <button type="button" class="profile-dropdown-item" id="dropdown-switch-profile-btn">
+            <span class="material-symbols-outlined" aria-hidden="true">switch_account</span>
+            <span>Switch profile</span>
           </button>
-          <button class="profile-dropdown-item" id="dropdown-change-code-btn">
-            <span class="material-symbols-outlined">key</span>
-            <span>Change Login Code</span>
+          <button type="button" class="profile-dropdown-item" id="dropdown-change-code-btn">
+            <span class="material-symbols-outlined" aria-hidden="true">key</span>
+            <span>Change login code</span>
           </button>
           <div class="profile-dropdown-divider" id="dropdown-owner-divider" style="display: none;"></div>
-          <button class="profile-dropdown-item" id="dropdown-manage-profiles-btn" style="display: none;">
-            <span class="material-symbols-outlined">manage_accounts</span>
-            <span>Manage Profiles</span>
+          <button type="button" class="profile-dropdown-item" id="dropdown-manage-profiles-btn" style="display: none;">
+            <span class="material-symbols-outlined" aria-hidden="true">manage_accounts</span>
+            <span>Manage profiles</span>
           </button>
         </div>
       </div>
 
       <!-- Logout Button -->
-      <button class="icon-btn" id="logout-btn" title="Sign Out">
-        <span class="material-symbols-outlined">logout</span>
+      <button type="button" class="icon-btn" id="logout-btn" title="Sign out" aria-label="Sign out">
+        <span class="material-symbols-outlined" aria-hidden="true">logout</span>
       </button>
     </div>
   </header>
@@ -968,6 +986,6 @@
   </nav>
 
   <!-- Application Entrypoint Module -->
-  <script type="module" src="/js/app.js?v=30"></script>
+  <script type="module" src="/js/app.js?v=31"></script>
 </body>
 </html>

@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=31';
-import KodimiPlayer from './player.js?v=31';
+import { api, authState, vaultState, profileState } from './api.js?v=32';
+import KodimiPlayer from './player.js?v=32';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -20,7 +20,7 @@ import {
   collapseGroupedMedia,
   sortMoviesList,
   escapeHtml,
-} from './components.js?v=31';
+} from './components.js?v=32';
 
 // Feature-detect native Popover API and load polyfill only when missing
 if (typeof HTMLElement !== 'undefined' && !Object.hasOwn(HTMLElement.prototype, 'popover')) {
@@ -170,6 +170,9 @@ class KodimiApp {
     this.detailPlot = document.getElementById('detail-plot');
     this.detailGenres = document.getElementById('detail-genres');
     this.detailTags = document.getElementById('detail-tags');
+    this.detailTagEditorForm = document.getElementById('detail-tag-editor-form');
+    this.detailTagKindSelect = document.getElementById('detail-tag-kind-select');
+    this.detailTagInput = document.getElementById('detail-tag-input');
     this.detailGcsPath = document.getElementById('detail-gcs-path');
     this.detailPlayBtn = document.getElementById('detail-play-btn');
     this.detailRetagBtn = document.getElementById('detail-retag-btn');
@@ -437,6 +440,80 @@ class KodimiApp {
       });
     }
 
+    // Detail Modal Individual Tag / Genre Editor (Owner-only)
+    if (this.detailTagEditorForm) {
+      this.detailTagEditorForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!this.activeMedia || !profileState.isOwner() || !this.detailTagInput) return;
+        const raw = this.detailTagInput.value.trim();
+        if (!raw) return;
+        const values = raw.split(',').map((s) => s.trim()).filter(Boolean);
+        if (values.length === 0) return;
+        const kind = this.detailTagKindSelect ? this.detailTagKindSelect.value : 'tag';
+        const payload = kind === 'genre' ? { addGenres: values } : { addTags: values };
+        try {
+          const res = await api.updateMediaTags(this.activeMedia.id, payload);
+          if (res?.item) {
+            this.detailTagInput.value = '';
+            this.activeMedia = res.item;
+            this.openDetailModal(res.item);
+            await this.loadData();
+          }
+        } catch (err) {
+          alert(`Failed to add ${kind}: ${err.message}`);
+        }
+      });
+    }
+
+    const handleDetailChipRemove = async (e) => {
+      const btn = e.target.closest('.detail-remove-tag-btn, .detail-remove-genre-btn');
+      if (!btn || !this.activeMedia || !profileState.isOwner()) return;
+      const isGenre = btn.classList.contains('detail-remove-genre-btn');
+      const val = isGenre ? btn.dataset.genre : btn.dataset.tag;
+      if (!val) return;
+      try {
+        btn.disabled = true;
+        const payload = isGenre ? { removeGenres: [val] } : { removeTags: [val] };
+        const res = await api.updateMediaTags(this.activeMedia.id, payload);
+        if (res?.item) {
+          this.activeMedia = res.item;
+          this.openDetailModal(res.item);
+          await this.loadData();
+        }
+      } catch (err) {
+        alert(`Failed to remove ${isGenre ? 'genre' : 'tag'}: ${err.message}`);
+      }
+    };
+    if (this.detailGenres) this.detailGenres.addEventListener('click', handleDetailChipRemove);
+    if (this.detailTags) this.detailTags.addEventListener('click', handleDetailChipRemove);
+
+    // Series / Playlist Modal Tag / Genre Editor submit (Owner-only)
+    document.addEventListener('submit', async (e) => {
+      const form = e.target.closest('#series-tag-editor-form');
+      if (!form || !profileState.isOwner()) return;
+      e.preventDefault();
+      const seriesName = form.dataset.seriesName;
+      const input = form.querySelector('#series-tag-input');
+      const kindEl = form.querySelector('#series-tag-kind-select');
+      const raw = input ? input.value.trim() : '';
+      if (!seriesName || !raw) return;
+      const values = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      if (values.length === 0) return;
+      const kind = kindEl ? kindEl.value : 'tag';
+      const payload = kind === 'genre' ? { addGenres: values } : { addTags: values };
+      try {
+        const isAdult = Boolean(this.currentSeriesData?.series?.is_adult);
+        const res = await api.updateSeriesTags(seriesName, payload, isAdult);
+        if (res?.data) {
+          this.currentSeriesData = res.data;
+          this.renderSeriesModal(this.currentSeriesData, this.activeSeason || 1);
+          await this.loadData();
+        }
+      } catch (err) {
+        alert(`Failed to tag collection: ${err.message}`);
+      }
+    });
+
     // Vault Form
     this.vaultForm.addEventListener('submit', (e) => this.handleVaultUnlock(e));
     this.vaultCancelBtn.addEventListener('click', () => {
@@ -657,6 +734,50 @@ class KodimiApp {
         const hint = seriesRetagBtn.id === 'series-fix-match-apply-btn' && input ? input.value.trim() : '';
         if (seriesName) {
           this.handleRetagSeries(seriesName, hint);
+        }
+        return;
+      }
+
+      // 3c2. Series / Playlist Bulk Category Move & Tag/Genre Removal (Owner-only)
+      const seriesCatChip = e.target.closest('.series-category-chip');
+      if (seriesCatChip && profileState.isOwner()) {
+        const seriesName = seriesCatChip.dataset.seriesName;
+        const category = seriesCatChip.dataset.category;
+        if (seriesName && category) {
+          seriesCatChip.disabled = true;
+          const isAdult = Boolean(this.currentSeriesData?.series?.is_adult);
+          api.updateSeriesCategory(seriesName, category, isAdult)
+            .then(async (res) => {
+              if (res?.data) {
+                this.currentSeriesData = res.data;
+                this.renderSeriesModal(this.currentSeriesData, this.activeSeason || 1);
+                await this.loadData();
+              }
+            })
+            .catch((err) => alert(`Failed to move collection: ${err.message}`))
+            .finally(() => { seriesCatChip.disabled = false; });
+        }
+        return;
+      }
+
+      const seriesRemoveChip = e.target.closest('.series-remove-tag-btn, .series-remove-genre-btn');
+      if (seriesRemoveChip && profileState.isOwner()) {
+        const seriesName = seriesRemoveChip.dataset.seriesName;
+        const isGenre = seriesRemoveChip.classList.contains('series-remove-genre-btn');
+        const val = isGenre ? seriesRemoveChip.dataset.genre : seriesRemoveChip.dataset.tag;
+        if (seriesName && val) {
+          seriesRemoveChip.disabled = true;
+          const isAdult = Boolean(this.currentSeriesData?.series?.is_adult);
+          const payload = isGenre ? { removeGenres: [val] } : { removeTags: [val] };
+          api.updateSeriesTags(seriesName, payload, isAdult)
+            .then(async (res) => {
+              if (res?.data) {
+                this.currentSeriesData = res.data;
+                this.renderSeriesModal(this.currentSeriesData, this.activeSeason || 1);
+                await this.loadData();
+              }
+            })
+            .catch((err) => alert(`Failed to remove ${isGenre ? 'genre' : 'tag'}: ${err.message}`));
         }
         return;
       }
@@ -1821,16 +1942,35 @@ class KodimiApp {
     this.detailPlot.textContent = item.plot || 'No synopsis available.';
     this.detailGcsPath.textContent = `gs://torrentz/${item.gcs_path}`;
 
+    const isOwner = profileState.isOwner();
+
     if (item.genres && item.genres.length > 0) {
-      this.detailGenres.innerHTML = item.genres.map((g) => `<span class="chip">${g}</span>`).join('');
+      this.detailGenres.innerHTML = item.genres
+        .map((g) =>
+          isOwner
+            ? `<span class="chip chip-removable">${escapeHtml(g)}<button type="button" class="chip-remove-btn detail-remove-genre-btn" data-genre="${escapeHtml(g)}" aria-label="Remove genre ${escapeHtml(g)}">&times;</button></span>`
+            : `<span class="chip">${escapeHtml(g)}</span>`
+        )
+        .join('');
     } else {
       this.detailGenres.innerHTML = '';
     }
 
     if (item.tags && item.tags.length > 0) {
-      this.detailTags.innerHTML = item.tags.map((t) => `<span class="chip chip-outline">#${t}</span>`).join('');
+      this.detailTags.innerHTML = item.tags
+        .map((t) =>
+          isOwner
+            ? `<span class="chip chip-outline chip-removable">#${escapeHtml(t)}<button type="button" class="chip-remove-btn detail-remove-tag-btn" data-tag="${escapeHtml(t)}" aria-label="Remove tag ${escapeHtml(t)}">&times;</button></span>`
+            : `<span class="chip chip-outline">#${escapeHtml(t)}</span>`
+        )
+        .join('');
     } else {
       this.detailTags.innerHTML = '';
+    }
+
+    if (this.detailTagEditorForm) {
+      this.detailTagEditorForm.style.display = isOwner ? 'flex' : 'none';
+      if (this.detailTagInput) this.detailTagInput.value = '';
     }
 
     // Set Resume or Play label
@@ -1849,7 +1989,6 @@ class KodimiApp {
     }
 
     // Enforce Owner-only admin buttons inside Media Details Modal
-    const isOwner = profileState.isOwner();
     [this.detailRetagBtn, this.detailFixMatchBtn, this.detailSubtitleBtn, this.detailVaultBtn, this.detailDeleteBtn].forEach((btn) => {
       if (btn) btn.style.display = isOwner ? 'inline-flex' : 'none';
     });

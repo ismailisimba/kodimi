@@ -3,7 +3,7 @@
  * Enhanced with AV1/HEVC Low-Bandwidth Codec Negotiation, Smart 1080p-Low,
  * Debounced Zero-429 Seeking, and Persistent GCS Manual Subtitles (.SRT / .VTT / .ASS)
  */
-import { api, vaultState, profileState } from './api.js?v=31';
+import { api, vaultState, profileState } from './api.js?v=32';
 
 function escapePlayerHtml(str) {
   if (!str) return '';

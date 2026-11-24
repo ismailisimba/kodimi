@@ -139,8 +139,12 @@ export function collapseGroupedMedia(mediaItems, seriesList = []) {
     const st = groupStats.get(key);
     const sample = st?.firstEp || st?.sample || item;
     const isPlaylist = Boolean(st?.isPlaylist || isPlaylistCollection(existingSeries) || isPlaylistCollection(item));
+    const useExistingSeries =
+      Boolean(existingSeries) &&
+      existingSeries.type === (item.type || 'series') &&
+      (!st || st.episodesCount >= (existingSeries.episodes_count || 1));
 
-    if (existingSeries) {
+    if (useExistingSeries) {
       out.push({
         ...existingSeries,
         is_series_group: true,
@@ -740,6 +744,26 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1, options =
 
   const isPlaylist = isPlaylistCollection(series);
   const totalItems = Object.values(seasonsMap).flat().length;
+  const seriesGenres = Array.isArray(series.genres) ? series.genres : [];
+  const seriesTags = Array.isArray(series.tags) ? series.tags : [];
+  const activeSeriesCat =
+    series.type === 'documentary' || seriesGenres.some((g) => String(g).toLowerCase() === 'documentary')
+      ? 'documentary'
+      : series.type === 'others' || seriesTags.some((t) => String(t).toLowerCase() === 'others')
+        ? 'others'
+        : 'series';
+
+  const seriesGenresHtml = seriesGenres.map((g) =>
+    isOwner
+      ? `<span class="chip chip-removable">${escapeHtml(g)}<button type="button" class="chip-remove-btn series-remove-genre-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" data-genre="${escapeHtml(g)}" aria-label="Remove genre ${escapeHtml(g)}">&times;</button></span>`
+      : `<span class="chip">${escapeHtml(g)}</span>`
+  ).join('');
+
+  const seriesTagsHtml = seriesTags.map((t) =>
+    isOwner
+      ? `<span class="chip chip-outline chip-removable">#${escapeHtml(t)}<button type="button" class="chip-remove-btn series-remove-tag-btn" data-series-name="${escapeHtml(canonicalSeriesName)}" data-tag="${escapeHtml(t)}" aria-label="Remove tag ${escapeHtml(t)}">&times;</button></span>`
+      : `<span class="chip chip-outline">#${escapeHtml(t)}</span>`
+  ).join('');
 
   // Season Tabs HTML (hidden when single-list social playlist)
   const seasonTabsHtml = (isPlaylist && seasonNumbers.length <= 1)
@@ -843,6 +867,36 @@ export function renderSeriesModalContent(seriesData, activeSeason = 1, options =
             </button>
           </div>
         ` : ''}
+        ${isOwner ? `
+          <div class="series-organize-panel">
+            <div class="series-organize-row">
+              <span class="series-organize-label">Move category:</span>
+              <div class="series-category-pills">
+                <button type="button" class="filter-chip series-category-chip ${activeSeriesCat === 'series' ? 'active' : ''}" data-series-name="${escapeHtml(canonicalSeriesName)}" data-category="series">TV Series</button>
+                <button type="button" class="filter-chip series-category-chip ${activeSeriesCat === 'documentary' ? 'active' : ''}" data-series-name="${escapeHtml(canonicalSeriesName)}" data-category="documentary">Documentary</button>
+                <button type="button" class="filter-chip series-category-chip ${activeSeriesCat === 'others' ? 'active' : ''}" data-series-name="${escapeHtml(canonicalSeriesName)}" data-category="others">Others</button>
+              </div>
+            </div>
+            <div class="series-organize-chips">
+              ${seriesGenresHtml}
+              ${seriesTagsHtml}
+            </div>
+            <form id="series-tag-editor-form" class="tag-editor-row" data-series-name="${escapeHtml(canonicalSeriesName)}">
+              <select id="series-tag-kind-select" class="tag-editor-select" aria-label="Tag type">
+                <option value="tag">Tag</option>
+                <option value="genre">Genre</option>
+              </select>
+              <input
+                type="text"
+                id="series-tag-input"
+                class="tag-editor-input"
+                placeholder="Add tag or genre to all items (comma-separated)"
+                aria-label="Add tag or genre to collection"
+              />
+              <button type="submit" class="btn-tonal" style="padding: 6px 12px; font-size: 12px;">Add</button>
+            </form>
+          </div>
+        ` : (seriesGenresHtml || seriesTagsHtml ? `<div class="series-organize-chips" style="margin-top: 12px;">${seriesGenresHtml}${seriesTagsHtml}</div>` : '')}
       </div>
     </div>
 

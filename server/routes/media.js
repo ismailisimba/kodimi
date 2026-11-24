@@ -187,6 +187,61 @@ router.post('/series/:name/retag', requireAuth, requireOwner, async (req, res) =
   res.json({ success: true, updatedCount, seriesName: finalSeriesName, data: seriesData });
 });
 
+// Move an entire TV series or social playlist to another category (Owner-only)
+router.patch('/series/:name/category', requireAuth, requireOwner, async (req, res) => {
+  await ensureMediaCacheFresh();
+  const seriesName = decodeURIComponent(req.params.name);
+  const { category } = req.body || {};
+  const showAdult = req.body?.adult === true || req.query.adult === 'true';
+
+  if (showAdult && !isVaultAuthorized(req)) {
+    return res.status(403).json({ error: 'Vault PIN required', vaultRequired: true });
+  }
+  if (!category) {
+    return res.status(400).json({ error: 'category is required (movie, series, documentary, or others)' });
+  }
+
+  try {
+    const result = await mediaDB.updateSeriesCategory(seriesName, category, showAdult);
+    if (!result) {
+      return res.status(404).json({ error: `No items found for series "${seriesName}"` });
+    }
+    const profileId = getProfileId(req);
+    const data = mediaDB.getSeriesSeasons(result.seriesName, showAdult, profileId);
+    res.json({ success: true, updatedCount: result.updatedCount, seriesName: result.seriesName, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Add or remove tags/genres across an entire TV series or social playlist (Owner-only)
+router.patch('/series/:name/tags', requireAuth, requireOwner, async (req, res) => {
+  await ensureMediaCacheFresh();
+  const seriesName = decodeURIComponent(req.params.name);
+  const { addTags, removeTags, addGenres, removeGenres } = req.body || {};
+  const showAdult = req.body?.adult === true || req.query.adult === 'true';
+
+  if (showAdult && !isVaultAuthorized(req)) {
+    return res.status(403).json({ error: 'Vault PIN required', vaultRequired: true });
+  }
+
+  try {
+    const result = await mediaDB.updateSeriesTags(
+      seriesName,
+      { addTags, removeTags, addGenres, removeGenres },
+      showAdult
+    );
+    if (!result) {
+      return res.status(404).json({ error: `No items found for series "${seriesName}"` });
+    }
+    const profileId = getProfileId(req);
+    const data = mediaDB.getSeriesSeasons(result.seriesName, showAdult, profileId);
+    res.json({ success: true, updatedCount: result.updatedCount, seriesName: result.seriesName, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.get('/retag-status', requireAuth, requireOwner, (req, res) => {
   res.json(retagBatchState);
 });
@@ -383,6 +438,26 @@ router.patch('/:id/category', requireAuth, requireOwner, async (req, res) => {
   }
   try {
     const updated = await mediaDB.updateCategory(req.params.id, category);
+    if (!updated) {
+      return res.status(404).json({ error: 'Media not found' });
+    }
+    res.json({ success: true, item: updated });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Add or remove tags/genres on an individual media item (Owner-only)
+router.patch('/:id/tags', requireAuth, requireOwner, async (req, res) => {
+  await ensureMediaCacheFresh();
+  const { addTags, removeTags, addGenres, removeGenres } = req.body || {};
+  try {
+    const updated = await mediaDB.updateTags(req.params.id, {
+      addTags,
+      removeTags,
+      addGenres,
+      removeGenres,
+    });
     if (!updated) {
       return res.status(404).json({ error: 'Media not found' });
     }

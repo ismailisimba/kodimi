@@ -541,17 +541,25 @@ export const mediaDB = {
     if (cat === 'documentary') {
       addUnique(genres, 'Documentary');
       addUnique(tags, 'Documentary');
+      genres = removeCI(genres, 'Others');
       tags = removeCI(tags, 'Others');
-      // Keep episodic docuseries grouped as series while tagged Documentary
-      nextType = existing.season != null && existing.episode != null ? 'series' : 'documentary';
+      nextType = 'documentary';
     } else if (cat === 'others') {
       addUnique(tags, 'Others');
+      genres = removeCI(genres, 'Documentary');
+      tags = removeCI(tags, 'Documentary');
       if (genres.length === 0) genres = ['Others'];
       nextType = 'others';
     } else if (cat === 'movie') {
+      genres = removeCI(genres, 'Documentary');
+      genres = removeCI(genres, 'Others');
+      tags = removeCI(tags, 'Documentary');
       tags = removeCI(tags, 'Others');
       nextType = 'movie';
     } else if (cat === 'series') {
+      genres = removeCI(genres, 'Documentary');
+      genres = removeCI(genres, 'Others');
+      tags = removeCI(tags, 'Documentary');
       tags = removeCI(tags, 'Others');
       nextType = 'series';
     }
@@ -574,11 +582,110 @@ export const mediaDB = {
           : preserveSeriesName
             ? existing.series_name
             : null,
+        season: nextType === 'movie' ? null : existing.season,
+        episode: nextType === 'movie' ? null : existing.episode,
         genres,
         tags,
       },
       true
     );
+  },
+
+  updateTags: async (id, { addTags = [], removeTags = [], addGenres = [], removeGenres = [] } = {}) => {
+    const existing = mediaCache.get(id);
+    if (!existing) return null;
+
+    const cleanList = (arr) =>
+      (Array.isArray(arr) ? arr : [arr])
+        .map((v) => String(v || '').trim().replace(/^#+/, '').slice(0, 40))
+        .filter(Boolean);
+
+    const toAddTags = cleanList(addTags);
+    const toRemoveTags = cleanList(removeTags).map((s) => s.toLowerCase());
+    const toAddGenres = cleanList(addGenres);
+    const toRemoveGenres = cleanList(removeGenres).map((s) => s.toLowerCase());
+
+    let tags = Array.isArray(existing.tags) ? [...existing.tags] : [];
+    let genres = Array.isArray(existing.genres) ? [...existing.genres] : [];
+
+    if (toRemoveTags.length > 0) {
+      tags = tags.filter((t) => !toRemoveTags.includes(String(t).toLowerCase()));
+    }
+    for (const t of toAddTags) {
+      if (!tags.some((x) => String(x).toLowerCase() === t.toLowerCase())) {
+        tags.push(t);
+      }
+    }
+
+    if (toRemoveGenres.length > 0) {
+      genres = genres.filter((g) => !toRemoveGenres.includes(String(g).toLowerCase()));
+    }
+    for (const g of toAddGenres) {
+      if (!genres.some((x) => String(x).toLowerCase() === g.toLowerCase())) {
+        genres.push(g);
+      }
+    }
+
+    return mediaDB.upsert(
+      {
+        ...existing,
+        tags,
+        genres,
+      },
+      true
+    );
+  },
+
+  findSeriesItems: (seriesName, isAdult = false) => {
+    const cleanName = (seriesName || '').trim().toLowerCase();
+    const targetKey = normalizeSeriesKey(seriesName);
+    if (!cleanName && !targetKey) return [];
+
+    const matched = [];
+    for (const item of mediaCache.values()) {
+      if (item.type !== 'series' && !item.series_name) continue;
+      if (!isAdult && item.is_adult) continue;
+      if (isAdult && !item.is_adult) continue;
+      const curRaw = (item.series_name || item.title || '').trim().toLowerCase();
+      const curKey = normalizeSeriesKey(curRaw);
+      if (curKey === targetKey || curRaw === cleanName) {
+        matched.push(item);
+      }
+    }
+    return matched;
+  },
+
+  updateSeriesCategory: async (seriesName, category, isAdult = false) => {
+    const items = mediaDB.findSeriesItems(seriesName, isAdult);
+    if (items.length === 0) return null;
+
+    const updatedItems = [];
+    for (const ep of items) {
+      const updated = await mediaDB.updateCategory(ep.id, category);
+      if (updated) updatedItems.push(updated);
+    }
+    return {
+      seriesName: updatedItems[0]?.series_name || seriesName,
+      category: String(category).toLowerCase().trim(),
+      updatedCount: updatedItems.length,
+      items: updatedItems,
+    };
+  },
+
+  updateSeriesTags: async (seriesName, payload = {}, isAdult = false) => {
+    const items = mediaDB.findSeriesItems(seriesName, isAdult);
+    if (items.length === 0) return null;
+
+    const updatedItems = [];
+    for (const ep of items) {
+      const updated = await mediaDB.updateTags(ep.id, payload);
+      if (updated) updatedItems.push(updated);
+    }
+    return {
+      seriesName: updatedItems[0]?.series_name || seriesName,
+      updatedCount: updatedItems.length,
+      items: updatedItems,
+    };
   },
 
   getCanonicalSeriesName: (name) => {
@@ -787,7 +894,7 @@ export const mediaDB = {
           series_plot: initialSeriesPlot,
           plot: initialSeriesPlot || item.plot,
           year: item.year,
-          genres: item.genres,
+          genres: Array.isArray(item.genres) ? [...item.genres] : [],
           poster_url: item.poster_url,
           backdrop_url: item.backdrop_url,
           is_adult: item.is_adult,
@@ -819,8 +926,19 @@ export const mediaDB = {
           }
         }
         if (!matchedSeries.year && item.year) matchedSeries.year = item.year;
-        if ((!matchedSeries.genres || matchedSeries.genres.length === 0) && item.genres?.length) {
-          matchedSeries.genres = item.genres;
+        if (Array.isArray(item.genres)) {
+          for (const g of item.genres) {
+            if (g && !matchedSeries.genres.some((x) => String(x).toLowerCase() === String(g).toLowerCase())) {
+              matchedSeries.genres.push(g);
+            }
+          }
+        }
+        if (Array.isArray(item.tags)) {
+          for (const t of item.tags) {
+            if (t && !matchedSeries.tags.some((x) => String(x).toLowerCase() === String(t).toLowerCase())) {
+              matchedSeries.tags.push(t);
+            }
+          }
         }
         if (!matchedSeries.poster_url && item.poster_url) matchedSeries.poster_url = item.poster_url;
         if (!matchedSeries.backdrop_url && item.backdrop_url) matchedSeries.backdrop_url = item.backdrop_url;

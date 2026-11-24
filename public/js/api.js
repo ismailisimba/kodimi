@@ -161,6 +161,24 @@ export const api = {
       body: JSON.stringify({ category }),
     }),
 
+  updateMediaTags: (id, payload = {}) =>
+    request(`/media/${id}/tags`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  updateSeriesCategory: (seriesName, category, adult = false) =>
+    request(`/media/series/${encodeURIComponent(seriesName)}/category`, {
+      method: 'PATCH',
+      body: JSON.stringify({ category, ...(adult ? { adult: true } : {}) }),
+    }),
+
+  updateSeriesTags: (seriesName, payload = {}, adult = false) =>
+    request(`/media/series/${encodeURIComponent(seriesName)}/tags`, {
+      method: 'PATCH',
+      body: JSON.stringify({ ...payload, ...(adult ? { adult: true } : {}) }),
+    }),
+
   retagInaccurate: (options = {}) =>
     request('/media/retag-inaccurate', {
       method: 'POST',

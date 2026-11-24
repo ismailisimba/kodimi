@@ -324,3 +324,108 @@ test('Zero-tmpfs streaming format selection handles multi-GB Twitter progressive
 
   assert.equal(detectSocialAdultContent(normalYtInfo), false);
 });
+
+test('Bulk series/playlist category move and individual/collection tag & genre editing prevent duplicate categorization', async () => {
+  const pl1 = 'test-move-pl-1';
+  const pl2 = 'test-move-pl-2';
+  const expEp1 = 'test-expanse-s01e01';
+  const expSpecial = 'test-expanse-s04e00';
+
+  try {
+    // Seed a 2-video YouTube playlist initially in Others
+    await mediaDB.upsert({
+      id: pl1,
+      type: 'others',
+      series_name: 'Test Bubble Playlist',
+      season: 1,
+      episode: 1,
+      title: 'Test Bubble Playlist - S01E01: Part 1',
+      genres: ['Others', 'YouTube'],
+      tags: ['YouTube', 'Playlist', 'Others'],
+      filename: 'S01E01-Part1.mp4',
+      gcs_path: 'Social/YouTube/TestBubble/S01E01.mp4',
+    });
+    await mediaDB.upsert({
+      id: pl2,
+      type: 'others',
+      series_name: 'Test Bubble Playlist',
+      season: 1,
+      episode: 2,
+      title: 'Test Bubble Playlist - S01E02: Part 2',
+      genres: ['Others', 'YouTube'],
+      tags: ['YouTube', 'Playlist', 'Others'],
+      filename: 'S01E02-Part2.mp4',
+      gcs_path: 'Social/YouTube/TestBubble/S01E02.mp4',
+    });
+
+    // Seed a Sci-Fi series whose bonus special erroneously carried Documentary genre
+    await mediaDB.upsert({
+      id: expEp1,
+      type: 'series',
+      series_name: 'Test Expanse Show',
+      season: 1,
+      episode: 1,
+      title: 'Test Expanse Show S01E01: Dulcinea',
+      genres: ['Sci-Fi', 'Drama'],
+      tags: ['Space'],
+      filename: 'Expanse.S01E01.mkv',
+      gcs_path: 'Shows/TestExpanse.S01E01.mkv',
+    });
+    await mediaDB.upsert({
+      id: expSpecial,
+      type: 'series',
+      series_name: 'Test Expanse Show',
+      season: 4,
+      episode: 0,
+      title: 'Test Expanse Show S04E00: Recap Special',
+      genres: ['Sci-Fi', 'Drama', 'Documentary'],
+      tags: ['Recap'],
+      filename: 'Expanse.S04E00.mkv',
+      gcs_path: 'Shows/TestExpanse.S04E00.mkv',
+    });
+
+    // 1. Move entire playlist from Others -> Documentary
+    const movedPl = await mediaDB.updateSeriesCategory('Test Bubble Playlist', 'documentary');
+    assert.equal(movedPl.updatedCount, 2);
+
+    const inDocs = mediaDB.getAll({ type: 'documentary' }).map((m) => m.id);
+    const inOthers = mediaDB.getAll({ type: 'others' }).map((m) => m.id);
+    const inTvSeries = mediaDB.getSeriesGrouped().map((s) => s.series_name);
+    assert.ok(inDocs.includes(pl1) && inDocs.includes(pl2), 'Moved playlist items must appear in Documentary');
+    assert.ok(!inOthers.includes(pl1) && !inOthers.includes(pl2), 'Moved playlist items must leave Others');
+    assert.ok(!inTvSeries.includes('Test Bubble Playlist'), 'Documentary playlist must NOT duplicate into TV Shows');
+
+    // Playlist remains grouped & playable with Autoplay via getSeriesSeasons
+    const plSeasons = mediaDB.getSeriesSeasons('Test Bubble Playlist');
+    assert.equal(plSeasons.seasons[1].length, 2);
+    assert.equal(plSeasons.series.type, 'documentary');
+    assert.equal(plSeasons.series.is_playlist, true);
+
+    // 2. Tag & untag entire playlist cleanly
+    await mediaDB.updateSeriesTags('Test Bubble Playlist', {
+      addTags: ['History', 'Economics'],
+      removeTags: ['YouTube'],
+    });
+    const updatedPlSeasons = mediaDB.getSeriesSeasons('Test Bubble Playlist');
+    assert.ok(updatedPlSeasons.series.tags.includes('History'));
+    assert.ok(updatedPlSeasons.series.tags.includes('Economics'));
+    assert.ok(!updatedPlSeasons.series.tags.includes('YouTube'));
+
+    // Owner modal renders move-category & tag editor; Member modal hides them
+    const ownerModal = renderSeriesModalContent(updatedPlSeasons, 1, { isOwner: true });
+    const memberModal = renderSeriesModalContent(updatedPlSeasons, 1, { isOwner: false });
+    assert.ok(ownerModal.includes('series-category-chip') && ownerModal.includes('series-tag-editor-form'));
+    assert.ok(!memberModal.includes('series-category-chip') && !memberModal.includes('series-tag-editor-form'));
+
+    // 3. Remove erroneous Documentary genre from individual episode OR move whole series to TV Series
+    await mediaDB.updateTags(expSpecial, { removeGenres: ['Documentary'], addTags: ['Bonus'] });
+    const docsAfterUntag = mediaDB.getAll({ type: 'documentary' }).map((m) => m.id);
+    assert.ok(!docsAfterUntag.includes(expSpecial), 'Untagged Sci-Fi special must no longer appear in Documentary');
+    assert.ok(mediaDB.getById(expSpecial).tags.includes('Bonus'));
+  } finally {
+    await mediaDB.delete(pl1);
+    await mediaDB.delete(pl2);
+    await mediaDB.delete(expEp1);
+    await mediaDB.delete(expSpecial);
+  }
+});

@@ -924,21 +924,126 @@ export function escapeHtml(str) {
   );
 }
 
-export function renderProfileCard(profile, isManaging = false) {
+export function renderProfileCard(profile, isManaging = false, hasPendingReset = false) {
   const color = profile.color || '#e50914';
   const icon = profile.avatar || 'account_circle';
   const isOwner = profile.role === 'owner' || profile.id === 'default';
   const needsCode = profile.has_passcode === false;
   return `
-    <div class="profile-card" data-profile-id="${profile.id}">
+    <div class="profile-card" data-profile-id="${escapeHtml(profile.id)}">
       <div class="profile-card-avatar" style="background-color: ${color};">
-        <span class="material-symbols-outlined" style="font-size: 52px; color: white;">${icon}</span>
+        <span class="material-symbols-outlined" aria-hidden="true" style="font-size: 52px; color: white;">${icon}</span>
         ${profile.is_kids ? '<span class="profile-card-badge">Kids</span>' : isOwner ? '<span class="profile-card-badge" style="background:#e50914;color:white;">Owner</span>' : ''}
-        ${isManaging ? '<div class="profile-card-edit-overlay"><span class="material-symbols-outlined" style="font-size: 32px;">edit</span></div>' : ''}
+        ${isManaging ? '<div class="profile-card-edit-overlay"><span class="material-symbols-outlined" aria-hidden="true" style="font-size: 32px;">edit</span></div>' : ''}
       </div>
       <span class="profile-card-name">${escapeHtml(profile.name)}</span>
-      ${needsCode ? '<span style="font-size: 10px; color: #ffb74d; margin-top: 2px; font-weight: 600;">No login code set</span>' : '<span style="font-size: 10px; color: #81c784; margin-top: 2px;">Code protected</span>'}
+      ${hasPendingReset ? '<span class="profile-reset-pill">Reset requested</span>' : ''}
+      ${needsCode ? '<span style="font-size: 11px; color: #ffb74d; margin-top: 2px; font-weight: 600;">No login code set</span>' : '<span style="font-size: 11px; color: #81c784; margin-top: 2px;">Code protected</span>'}
     </div>
+  `;
+}
+
+export function formatRelativeTime(isoOrDate) {
+  if (!isoOrDate) return 'Just now';
+  const ts = new Date(isoOrDate).getTime();
+  if (!Number.isFinite(ts)) return 'Just now';
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return 'Just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hr ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+}
+
+export function renderResetRequestCard(reqItem, profiles = []) {
+  const safeId = escapeHtml(reqItem.id);
+  const safeRequestedName = escapeHtml(reqItem.requested_name || 'Unknown');
+  const matched = reqItem.matched_profile || null;
+  const matchedId = matched?.id || reqItem.matched_profile_id || '';
+  const attemptsCount = Number(reqItem.failed_attempts || 5);
+  const whenText = formatRelativeTime(reqItem.created_at);
+
+  const profileOptionsHtml = [
+    `<option value="">Select profile to reset</option>`,
+    ...profiles.map((p) => {
+      const selected = p.id === matchedId ? 'selected' : '';
+      const roleTag = p.role === 'owner' || p.id === 'default' ? ' (Owner)' : p.is_kids ? ' (Kids)' : '';
+      return `<option value="${escapeHtml(p.id)}" ${selected}>${escapeHtml(p.name)}${roleTag}</option>`;
+    }),
+  ].join('');
+
+  return `
+    <article class="reset-request-card" data-request-id="${safeId}">
+      <div class="reset-request-card-header">
+        <div class="reset-request-identity">
+          <div class="reset-request-name-row">
+            <h2 class="reset-request-name">${safeRequestedName}</h2>
+            ${
+              matched
+                ? `<span class="reset-match-pill matched">Matched: ${escapeHtml(matched.name)}</span>`
+                : `<span class="reset-match-pill unmatched">No exact match</span>`
+            }
+          </div>
+          <p class="reset-request-meta">
+            <span class="tabular-nums">${attemptsCount} failed attempts</span> • <span>${escapeHtml(whenText)}</span>
+          </p>
+        </div>
+      </div>
+
+      <form class="reset-request-form" data-request-id="${safeId}">
+        <div class="reset-form-field">
+          <label for="reset-profile-select-${safeId}">Profile to reset</label>
+          <select id="reset-profile-select-${safeId}" name="profileId" class="reset-form-control" required>
+            ${profileOptionsHtml}
+          </select>
+        </div>
+
+        <div class="reset-form-field">
+          <label for="reset-new-code-${safeId}">New unique login code</label>
+          <div class="reset-code-input-row">
+            <input
+              type="text"
+              id="reset-new-code-${safeId}"
+              name="newPasscode"
+              class="reset-form-control reset-code-input"
+              minlength="4"
+              maxlength="72"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="none"
+              spellcheck="false"
+              placeholder="Leave blank to auto-generate"
+            />
+            <button
+              type="button"
+              class="btn-tonal reset-generate-btn"
+              data-target-input="reset-new-code-${safeId}"
+              aria-label="Generate unique code for ${safeRequestedName}"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">casino</span>
+              <span>Generate</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="reset-request-error" role="alert" hidden></div>
+
+        <div class="reset-request-actions">
+          <button type="submit" class="btn-filled reset-submit-btn">
+            <span class="material-symbols-outlined" aria-hidden="true">lock_reset</span>
+            <span>Reset code &amp; unlock</span>
+          </button>
+          <button type="button" class="btn-tonal reset-unlock-only-btn" data-request-id="${safeId}">
+            <span>Unlock only</span>
+          </button>
+          <button type="button" class="btn-tonal reset-dismiss-btn" data-request-id="${safeId}">
+            <span>Dismiss</span>
+          </button>
+        </div>
+      </form>
+    </article>
   `;
 }
 

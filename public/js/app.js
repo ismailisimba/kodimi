@@ -2,8 +2,8 @@
  * Kodimi Main Application Controller
  * Enhanced with Private Vault (PIN-protected), Material Design 3, & Multi-Resolution Player
  */
-import { api, authState, vaultState, profileState } from './api.js?v=32';
-import KodimiPlayer from './player.js?v=32';
+import { api, authState, vaultState, profileState } from './api.js?v=33';
+import KodimiPlayer from './player.js?v=33';
 import {
   renderHeroBanner,
   renderMediaCard,
@@ -16,11 +16,12 @@ import {
   renderScheduleModalContent,
   renderProfileCard,
   renderAddProfileCard,
+  renderResetRequestCard,
   buildRecentlyAddedFeed,
   collapseGroupedMedia,
   sortMoviesList,
   escapeHtml,
-} from './components.js?v=32';
+} from './components.js?v=33';
 
 // Feature-detect native Popover API and load polyfill only when missing
 if (typeof HTMLElement !== 'undefined' && !Object.hasOwn(HTMLElement.prototype, 'popover')) {
@@ -54,6 +55,14 @@ class KodimiApp {
     this.eventSource = null;
     this.downloadModalPollInterval = null;
     this.profiles = [];
+    this.resetRequests = [];
+    this.seenResetRequestIds = new Set();
+    this.pendingDeferredToastRequests = [];
+    this.ownerPingPollInterval = null;
+    this.lastOwnerPingCheckAt = 0;
+    this.lockoutFromSwitchProfile = false;
+    this.copyFeedbackTimers = new WeakMap();
+    this.lastCopyAnnouncement = '';
     this.isManagingProfiles = false;
     this.selectedProfileColor = '#e50914';
 
@@ -101,9 +110,31 @@ class KodimiApp {
 
     // Modals
     this.loginModal = document.getElementById('login-modal');
+    this.loginModalTitle = document.getElementById('login-modal-title');
+    this.loginModalSubtitle = document.getElementById('login-modal-subtitle');
+    this.loginCodeStep = document.getElementById('login-code-step');
     this.loginForm = document.getElementById('login-form');
     this.loginPassword = document.getElementById('login-password');
+    this.loginToggleVisibility = document.getElementById('login-toggle-visibility');
+    this.loginSubmitBtn = document.getElementById('login-submit-btn');
     this.loginError = document.getElementById('login-error');
+
+    this.loginLockoutStep = document.getElementById('login-lockout-step');
+    this.loginLockoutHeading = document.getElementById('login-lockout-heading');
+    this.lockoutResetForm = document.getElementById('lockout-reset-form');
+    this.lockoutProfileName = document.getElementById('lockout-profile-name');
+    this.lockoutResetError = document.getElementById('lockout-reset-error');
+    this.lockoutResetSubmit = document.getElementById('lockout-reset-submit');
+    this.lockoutCancelSessionBtn = document.getElementById('lockout-cancel-session-btn');
+
+    this.loginLockoutSentStep = document.getElementById('login-lockout-sent-step');
+    this.loginLockoutSentHeading = document.getElementById('login-lockout-sent-heading');
+    this.lockoutSentSummary = document.getElementById('lockout-sent-summary');
+    this.lockoutWaMessagePreview = document.getElementById('lockout-wa-message-preview');
+    this.lockoutWaLink = document.getElementById('lockout-wa-link');
+    this.lockoutCheckStatusBtn = document.getElementById('lockout-check-status-btn');
+    this.lockoutSentReturnBtn = document.getElementById('lockout-sent-return-btn');
+    this.lockoutStatusFeedback = document.getElementById('lockout-status-feedback');
 
     this.switchProfileModal = document.getElementById('switch-profile-modal');
     this.switchProfileForm = document.getElementById('switch-profile-form');
@@ -189,7 +220,9 @@ class KodimiApp {
     this.detailCategorySection = document.getElementById('detail-category-section');
     this.detailCategoryPills = document.getElementById('detail-category-pills');
 
-    // Multi-Profile Elements
+    // Multi-Profile & Owner Alert Elements
+    this.ownerAlertsBtn = document.getElementById('owner-alerts-btn');
+    this.ownerAlertsBadge = document.getElementById('owner-alerts-badge');
     this.profileSwitcherBtn = document.getElementById('profile-switcher-btn');
     this.navProfileAvatar = document.getElementById('nav-profile-avatar');
     this.navProfileName = document.getElementById('nav-profile-name');
@@ -198,6 +231,8 @@ class KodimiApp {
     this.dropdownSwitchProfileBtn = document.getElementById('dropdown-switch-profile-btn');
     this.dropdownChangeCodeBtn = document.getElementById('dropdown-change-code-btn');
     this.dropdownOwnerDivider = document.getElementById('dropdown-owner-divider');
+    this.dropdownResetRequestsBtn = document.getElementById('dropdown-reset-requests-btn');
+    this.dropdownResetRequestsCount = document.getElementById('dropdown-reset-requests-count');
     this.dropdownManageProfilesBtn = document.getElementById('dropdown-manage-profiles-btn');
     this.profileModal = document.getElementById('profile-modal');
     this.profileModalClose = document.getElementById('profile-modal-close');
@@ -211,6 +246,7 @@ class KodimiApp {
     this.profileEditId = document.getElementById('profile-edit-id');
     this.profileEditName = document.getElementById('profile-edit-name-input');
     this.profileEditPasscode = document.getElementById('profile-edit-passcode-input');
+    this.profileEditGenerateCodeBtn = document.getElementById('profile-edit-generate-code-btn');
     this.profileEditPasscodeHint = document.getElementById('profile-edit-passcode-hint');
     this.profileEditAvatarPreview = document.getElementById('profile-edit-avatar-preview');
     this.profileColorSwatches = document.getElementById('profile-color-swatches');
@@ -218,6 +254,18 @@ class KodimiApp {
     this.profileEditError = document.getElementById('profile-edit-error');
     this.profileEditDeleteBtn = document.getElementById('profile-edit-delete-btn');
     this.profileEditCancelBtn = document.getElementById('profile-edit-cancel-btn');
+
+    // Owner Reset Requests Native Dialog & Notifications
+    this.resetRequestsDialog = document.getElementById('reset-requests-dialog');
+    this.resetRequestsClose = document.getElementById('reset-requests-close');
+    this.resetRequestsList = document.getElementById('reset-requests-list');
+    this.resetSuccessBanner = document.getElementById('reset-success-banner');
+    this.resetSuccessTitle = document.getElementById('reset-success-title');
+    this.resetSuccessBody = document.getElementById('reset-success-body');
+    this.resetNewCodeOutput = document.getElementById('reset-new-code-output');
+    this.resetShareWaLink = document.getElementById('reset-share-wa-link');
+    this.toastRegion = document.getElementById('toast-region');
+    this.srAnnouncer = document.getElementById('sr-announcer');
   }
 
   initPlayer() {
@@ -384,26 +432,75 @@ class KodimiApp {
     // Logout Button
     this.logoutBtn.addEventListener('click', () => {
       this.closeDownloadStream();
+      this.stopOwnerPingMonitoring();
       authState.clearToken();
       vaultState.lock();
       profileState.setActiveProfile(null);
       this.profiles = [];
+      this.resetRequests = [];
       this.privateItems = [];
       this.applyRolePermissionsUI();
-      this.loginModal.classList.add('open');
-      if (this.loginPassword) this.loginPassword.focus();
+      this.openLoginModalWithLockoutCheck();
     });
 
-    // Login Form
+    // Login Form & Lockout Reset Form
     this.loginForm.addEventListener('submit', (e) => this.handleLogin(e));
+    if (this.loginPassword) {
+      this.loginPassword.addEventListener('input', () => {
+        this.loginPassword.removeAttribute('aria-invalid');
+        if (this.loginError) this.loginError.hidden = true;
+      });
+    }
+    if (this.loginToggleVisibility && this.loginPassword) {
+      this.loginToggleVisibility.addEventListener('click', () => {
+        const showing = this.loginPassword.type === 'text';
+        this.loginPassword.type = showing ? 'password' : 'text';
+        this.loginToggleVisibility.setAttribute('aria-pressed', showing ? 'false' : 'true');
+        this.loginToggleVisibility.setAttribute('aria-label', showing ? 'Show login code' : 'Hide login code');
+        const icon = this.loginToggleVisibility.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = showing ? 'visibility' : 'visibility_off';
+      });
+    }
+    if (this.lockoutResetForm) {
+      this.lockoutResetForm.addEventListener('submit', (e) => this.handleLockoutResetRequest(e));
+    }
+    if (this.lockoutProfileName) {
+      this.lockoutProfileName.addEventListener('input', () => {
+        this.lockoutProfileName.removeAttribute('aria-invalid');
+        if (this.lockoutResetError) this.lockoutResetError.hidden = true;
+      });
+    }
+    if (this.lockoutCheckStatusBtn) {
+      this.lockoutCheckStatusBtn.addEventListener('click', () => this.handleCheckLockoutStatus());
+    }
+    const handleReturnFromLockout = () => {
+      if (this.lockoutFromSwitchProfile && authState.isAuthenticated()) {
+        this.lockoutFromSwitchProfile = false;
+        this.loginModal.classList.remove('open');
+        this.flushDeferredToasts();
+      }
+    };
+    if (this.lockoutCancelSessionBtn) {
+      this.lockoutCancelSessionBtn.addEventListener('click', handleReturnFromLockout);
+    }
+    if (this.lockoutSentReturnBtn) {
+      this.lockoutSentReturnBtn.addEventListener('click', handleReturnFromLockout);
+    }
 
     // Switch Profile (Code-only) Form
     if (this.switchProfileForm) {
       this.switchProfileForm.addEventListener('submit', (e) => this.handleSwitchProfile(e));
     }
+    if (this.switchProfileCode) {
+      this.switchProfileCode.addEventListener('input', () => {
+        this.switchProfileCode.removeAttribute('aria-invalid');
+        if (this.switchProfileError) this.switchProfileError.hidden = true;
+      });
+    }
     if (this.switchProfileCancel) {
       this.switchProfileCancel.addEventListener('click', () => {
         if (this.switchProfileModal) this.switchProfileModal.classList.remove('open');
+        this.flushDeferredToasts();
       });
     }
 
@@ -945,17 +1042,19 @@ class KodimiApp {
           } else {
             modal.classList.remove('open');
           }
+          this.flushDeferredToasts();
         }
       });
     });
 
     this.initProfileEvents();
+    this.initOwnerResetAndCopyEvents();
 
     window.addEventListener('kodimi_auth_required', () => {
       this.closeDownloadStream();
+      this.stopOwnerPingMonitoring();
       this.applyRolePermissionsUI();
-      this.loginModal.classList.add('open');
-      if (this.loginPassword) this.loginPassword.focus();
+      this.openLoginModalWithLockoutCheck();
     });
 
     window.addEventListener('kodimi_player_closed', () => {
@@ -983,7 +1082,8 @@ class KodimiApp {
         this.profileDropdown.style.display = 'none';
         if (this.switchProfileModal) {
           this.switchProfileCode.value = '';
-          this.switchProfileError.style.display = 'none';
+          this.switchProfileCode.removeAttribute('aria-invalid');
+          if (this.switchProfileError) this.switchProfileError.hidden = true;
           this.switchProfileModal.classList.add('open');
           this.switchProfileCode.focus();
         }
@@ -993,6 +1093,7 @@ class KodimiApp {
     if (this.dropdownChangeCodeBtn) {
       this.dropdownChangeCodeBtn.addEventListener('click', () => {
         this.profileDropdown.style.display = 'none';
+        if (!profileState.isOwner()) return;
         if (this.changeCodeModal) {
           this.changeCodeCurrent.value = '';
           this.changeCodeNew.value = '';
@@ -1004,12 +1105,41 @@ class KodimiApp {
       });
     }
 
+    if (this.dropdownResetRequestsBtn) {
+      this.dropdownResetRequestsBtn.addEventListener('click', () => {
+        this.profileDropdown.style.display = 'none';
+        if (!profileState.isOwner()) return;
+        this.openResetRequestsDialog();
+      });
+    }
+
     if (this.dropdownManageProfilesBtn) {
       this.dropdownManageProfilesBtn.addEventListener('click', async () => {
         this.profileDropdown.style.display = 'none';
         if (!profileState.isOwner()) return;
-        await this.loadProfiles();
+        await Promise.all([this.loadProfiles(), this.loadResetRequests({ notifyNew: false })]);
         this.openProfileModal(true);
+      });
+    }
+
+    if (this.profileEditGenerateCodeBtn && this.profileEditPasscode) {
+      this.profileEditGenerateCodeBtn.addEventListener('click', async () => {
+        if (!profileState.isOwner()) return;
+        this.profileEditGenerateCodeBtn.disabled = true;
+        try {
+          const res = await api.generateProfileCode();
+          if (res?.code) {
+            this.profileEditPasscode.type = 'text';
+            this.profileEditPasscode.value = res.code;
+            this.profileEditPasscode.focus();
+            this.profileEditPasscode.select();
+          }
+        } catch (err) {
+          this.profileEditError.textContent = err.message || 'Could not generate a unique login code';
+          this.profileEditError.style.display = 'block';
+        } finally {
+          this.profileEditGenerateCodeBtn.disabled = false;
+        }
       });
     }
 
@@ -1080,7 +1210,7 @@ class KodimiApp {
             await api.createProfile({ name, color, is_kids: isKids, passcode });
           }
           this.closeProfileEditModal();
-          await this.loadProfiles();
+          await Promise.all([this.loadProfiles(), this.loadResetRequests({ notifyNew: false })]);
           this.renderProfileSelector();
 
           const current = profileState.getActiveProfile();
@@ -1109,7 +1239,7 @@ class KodimiApp {
         try {
           await api.deleteProfile(id);
           this.closeProfileEditModal();
-          await this.loadProfiles();
+          await Promise.all([this.loadProfiles(), this.loadResetRequests({ notifyNew: false })]);
           this.renderProfileSelector();
         } catch (err) {
           this.profileEditError.textContent = err.message || 'Cannot delete profile';
@@ -1184,6 +1314,9 @@ class KodimiApp {
     // Strictly hide Owner-only controls from non-owner profiles
     if (this.fabIngest) this.fabIngest.style.display = isOwner ? 'flex' : 'none';
     if (this.syncBtn) this.syncBtn.style.display = isOwner ? 'flex' : 'none';
+    if (this.ownerAlertsBtn) this.ownerAlertsBtn.style.display = isOwner ? 'flex' : 'none';
+    if (this.dropdownChangeCodeBtn) this.dropdownChangeCodeBtn.style.display = isOwner ? 'flex' : 'none';
+    if (this.dropdownResetRequestsBtn) this.dropdownResetRequestsBtn.style.display = isOwner ? 'flex' : 'none';
     if (this.dropdownManageProfilesBtn) this.dropdownManageProfilesBtn.style.display = isOwner ? 'flex' : 'none';
     if (this.dropdownOwnerDivider) this.dropdownOwnerDivider.style.display = isOwner ? 'block' : 'none';
 
@@ -1198,13 +1331,22 @@ class KodimiApp {
       this.activeFilter = 'all';
       this.setActiveNavFilter('all');
     }
+
+    if (!isOwner) {
+      this.stopOwnerPingMonitoring();
+    } else {
+      this.updateOwnerAlertsUI();
+    }
   }
 
   renderProfileSelector() {
     if (!this.profilesGrid || !profileState.isOwner()) return;
     const active = profileState.getActiveProfile();
+    const pendingProfileIds = new Set(
+      (this.resetRequests || []).map((r) => r.matched_profile_id).filter(Boolean)
+    );
     let html = this.profiles
-      .map((p) => renderProfileCard(p, true))
+      .map((p) => renderProfileCard(p, true, pendingProfileIds.has(p.id)))
       .join('');
     html += renderAddProfileCard();
 
@@ -1240,11 +1382,15 @@ class KodimiApp {
   closeProfileModal() {
     if (this.profileModal) this.profileModal.classList.remove('open');
     this.isManagingProfiles = false;
+    this.flushDeferredToasts();
   }
 
   openProfileEditModal(profile = null) {
     if (!this.profileEditModal || !profileState.isOwner()) return;
     this.profileEditError.style.display = 'none';
+    if (this.profileEditPasscode) {
+      this.profileEditPasscode.type = 'password';
+    }
 
     if (profile) {
       this.profileEditTitle.textContent = `Edit Profile: ${profile.name}`;
@@ -1314,8 +1460,7 @@ class KodimiApp {
   async checkSessionAndLoad() {
     if (!authState.isAuthenticated()) {
       this.applyRolePermissionsUI();
-      this.loginModal.classList.add('open');
-      if (this.loginPassword) this.loginPassword.focus();
+      await this.openLoginModalWithLockoutCheck();
       return;
     }
 
@@ -1328,44 +1473,228 @@ class KodimiApp {
       if (profileState.isOwner()) {
         this.loadProfiles();
         this.loadDownloads();
+        this.startOwnerPingMonitoring();
+      } else {
+        this.stopOwnerPingMonitoring();
       }
     } catch {
       this.applyRolePermissionsUI();
-      this.loginModal.classList.add('open');
+      await this.openLoginModalWithLockoutCheck();
+    }
+  }
+
+  async openLoginModalWithLockoutCheck(fromSwitch = false) {
+    this.lockoutFromSwitchProfile = Boolean(fromSwitch);
+    this.loginModal.classList.add('open');
+    try {
+      const status = await api.getLockoutStatus();
+      if (status?.locked) {
+        this.showLoginLockoutView({
+          requestSent: false,
+          fromSwitch: this.lockoutFromSwitchProfile,
+        });
+        return;
+      }
+    } catch (_) {}
+    this.showLoginCodeView();
+  }
+
+  showLoginCodeView(statusNote = '') {
+    this.lockoutFromSwitchProfile = false;
+    if (this.loginModalTitle) this.loginModalTitle.textContent = 'Sign in with your code';
+    if (this.loginModalSubtitle) this.loginModalSubtitle.textContent = 'Enter your personal profile login code';
+    if (this.loginCodeStep) this.loginCodeStep.hidden = false;
+    if (this.loginLockoutStep) this.loginLockoutStep.hidden = true;
+    if (this.loginLockoutSentStep) this.loginLockoutSentStep.hidden = true;
+    if (this.loginError) {
+      this.loginError.textContent = statusNote;
+      this.loginError.hidden = !statusNote;
+    }
+    if (this.loginPassword) {
+      this.loginPassword.removeAttribute('aria-invalid');
+      this.loginPassword.focus();
+    }
+  }
+
+  showLoginLockoutView({ requestSent = false, requestedName = '', whatsappMessage = '', whatsappUrl = '', fromSwitch = false } = {}) {
+    this.lockoutFromSwitchProfile = Boolean(fromSwitch && authState.isAuthenticated());
+    if (this.loginCodeStep) this.loginCodeStep.hidden = true;
+
+    if (requestSent) {
+      if (this.loginModalTitle) this.loginModalTitle.textContent = 'Reset request sent';
+      if (this.loginModalSubtitle) this.loginModalSubtitle.textContent = 'Message the owner on WhatsApp to finish resetting your code';
+      if (this.loginLockoutStep) this.loginLockoutStep.hidden = true;
+      if (this.loginLockoutSentStep) this.loginLockoutSentStep.hidden = false;
+      if (this.lockoutSentSummary) {
+        this.lockoutSentSummary.textContent = `The owner was pinged in Kodimi for "${requestedName}". Message them on WhatsApp to confirm and receive your new login code.`;
+      }
+      if (this.lockoutWaMessagePreview) {
+        this.lockoutWaMessagePreview.textContent = whatsappMessage;
+      }
+      if (this.lockoutWaLink) {
+        this.lockoutWaLink.href = whatsappUrl || `https://wa.me/?text=${encodeURIComponent(whatsappMessage)}`;
+      }
+      if (this.lockoutStatusFeedback) {
+        this.lockoutStatusFeedback.hidden = true;
+        this.lockoutStatusFeedback.textContent = '';
+      }
+      if (this.lockoutSentReturnBtn) {
+        this.lockoutSentReturnBtn.hidden = !this.lockoutFromSwitchProfile;
+      }
+      if (this.loginLockoutSentHeading) this.loginLockoutSentHeading.focus();
+    } else {
+      if (this.loginModalTitle) this.loginModalTitle.textContent = 'Sign-in locked';
+      if (this.loginModalSubtitle) this.loginModalSubtitle.textContent = '5 failed attempts reached';
+      if (this.loginLockoutStep) this.loginLockoutStep.hidden = false;
+      if (this.loginLockoutSentStep) this.loginLockoutSentStep.hidden = true;
+      if (this.lockoutResetError) {
+        this.lockoutResetError.hidden = true;
+        this.lockoutResetError.textContent = '';
+      }
+      if (this.lockoutCancelSessionBtn) {
+        this.lockoutCancelSessionBtn.hidden = !this.lockoutFromSwitchProfile;
+      }
+      if (this.lockoutProfileName) {
+        this.lockoutProfileName.value = '';
+        this.lockoutProfileName.removeAttribute('aria-invalid');
+        this.lockoutProfileName.focus();
+      }
     }
   }
 
   async handleLogin(e) {
     e.preventDefault();
     const code = this.loginPassword.value.trim();
-    if (!code) return;
+    if (!code) {
+      if (this.loginError) {
+        this.loginError.textContent = 'Enter your personal login code';
+        this.loginError.hidden = false;
+      }
+      this.loginPassword.setAttribute('aria-invalid', 'true');
+      this.loginPassword.focus();
+      return;
+    }
 
-    this.loginError.style.display = 'none';
+    if (this.loginError) this.loginError.hidden = true;
+    this.loginPassword.removeAttribute('aria-invalid');
+    if (this.loginSubmitBtn) this.loginSubmitBtn.disabled = true;
+
     try {
       await api.login(code);
       this.loginModal.classList.remove('open');
       this.loginPassword.value = '';
+      this.loginPassword.type = 'password';
+      if (this.loginToggleVisibility) {
+        this.loginToggleVisibility.setAttribute('aria-pressed', 'false');
+        this.loginToggleVisibility.setAttribute('aria-label', 'Show login code');
+        const icon = this.loginToggleVisibility.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'visibility';
+      }
 
       this.applyRolePermissionsUI();
       this.loadData();
       if (profileState.isOwner()) {
         this.loadProfiles();
         this.loadDownloads();
+        this.startOwnerPingMonitoring();
       } else {
         this.closeDownloadStream();
+        this.stopOwnerPingMonitoring();
       }
     } catch (err) {
-      this.loginError.textContent = err.message || 'Invalid login code';
-      this.loginError.style.display = 'block';
+      if (err?.locked || err?.status === 423) {
+        this.loginPassword.value = '';
+        this.showLoginLockoutView({ requestSent: false, fromSwitch: false });
+        return;
+      }
+      if (this.loginError) {
+        this.loginError.textContent = err.message || 'Incorrect login code';
+        this.loginError.hidden = false;
+      }
+      this.loginPassword.setAttribute('aria-invalid', 'true');
+      this.loginPassword.focus();
+    } finally {
+      if (this.loginSubmitBtn) this.loginSubmitBtn.disabled = false;
+    }
+  }
+
+  async handleLockoutResetRequest(e) {
+    e.preventDefault();
+    const profileName = this.lockoutProfileName ? this.lockoutProfileName.value.trim() : '';
+    if (!profileName) {
+      if (this.lockoutResetError) {
+        this.lockoutResetError.textContent = 'Enter your profile name so the owner knows which profile to reset';
+        this.lockoutResetError.hidden = false;
+      }
+      if (this.lockoutProfileName) {
+        this.lockoutProfileName.setAttribute('aria-invalid', 'true');
+        this.lockoutProfileName.focus();
+      }
+      return;
+    }
+
+    if (this.lockoutResetError) this.lockoutResetError.hidden = true;
+    if (this.lockoutResetSubmit) this.lockoutResetSubmit.disabled = true;
+
+    try {
+      const res = await api.requestProfileReset(profileName);
+      this.showLoginLockoutView({
+        requestSent: true,
+        requestedName: res.requestedName || profileName,
+        whatsappMessage: res.whatsappMessage || '',
+        whatsappUrl: res.whatsappUrl || '',
+        fromSwitch: this.lockoutFromSwitchProfile,
+      });
+    } catch (err) {
+      if (this.lockoutResetError) {
+        this.lockoutResetError.textContent = err.message || 'Could not alert the owner';
+        this.lockoutResetError.hidden = false;
+      }
+      if (this.lockoutProfileName) {
+        this.lockoutProfileName.setAttribute('aria-invalid', 'true');
+        this.lockoutProfileName.focus();
+      }
+    } finally {
+      if (this.lockoutResetSubmit) this.lockoutResetSubmit.disabled = false;
+    }
+  }
+
+  async handleCheckLockoutStatus() {
+    if (this.lockoutCheckStatusBtn) this.lockoutCheckStatusBtn.disabled = true;
+    try {
+      const status = await api.getLockoutStatus();
+      if (!status?.locked) {
+        this.showLoginCodeView();
+        this.announceStatus('Sign-in is unlocked. Enter your login code.');
+      } else if (this.lockoutStatusFeedback) {
+        this.lockoutStatusFeedback.textContent = 'Sign-in is still locked. Message the owner on WhatsApp so they can reset your profile.';
+        this.lockoutStatusFeedback.hidden = false;
+      }
+    } catch (_) {
+      if (this.lockoutStatusFeedback) {
+        this.lockoutStatusFeedback.textContent = 'Could not check status right now. Try again in a moment.';
+        this.lockoutStatusFeedback.hidden = false;
+      }
+    } finally {
+      if (this.lockoutCheckStatusBtn) this.lockoutCheckStatusBtn.disabled = false;
     }
   }
 
   async handleSwitchProfile(e) {
     e.preventDefault();
     const code = this.switchProfileCode.value.trim();
-    if (!code) return;
+    if (!code) {
+      if (this.switchProfileError) {
+        this.switchProfileError.textContent = 'Enter the target profile login code';
+        this.switchProfileError.hidden = false;
+      }
+      this.switchProfileCode.setAttribute('aria-invalid', 'true');
+      this.switchProfileCode.focus();
+      return;
+    }
 
-    this.switchProfileError.style.display = 'none';
+    if (this.switchProfileError) this.switchProfileError.hidden = true;
+    this.switchProfileCode.removeAttribute('aria-invalid');
     try {
       this.closeDownloadStream();
       await api.login(code);
@@ -1378,11 +1707,536 @@ class KodimiApp {
       if (profileState.isOwner()) {
         this.loadProfiles();
         this.loadDownloads();
+        this.startOwnerPingMonitoring();
+      } else {
+        this.stopOwnerPingMonitoring();
       }
     } catch (err) {
-      this.switchProfileError.textContent = err.message || 'Invalid login code';
-      this.switchProfileError.style.display = 'block';
+      if (err?.locked || err?.status === 423) {
+        this.switchProfileCode.value = '';
+        if (this.switchProfileModal) this.switchProfileModal.classList.remove('open');
+        this.loginModal.classList.add('open');
+        this.showLoginLockoutView({ requestSent: false, fromSwitch: true });
+        return;
+      }
+      if (this.switchProfileError) {
+        this.switchProfileError.textContent = err.message || 'Incorrect login code';
+        this.switchProfileError.hidden = false;
+      }
+      this.switchProfileCode.setAttribute('aria-invalid', 'true');
+      this.switchProfileCode.focus();
     }
+  }
+
+  initOwnerResetAndCopyEvents() {
+    // 1. Copy button via native Invoker Commands (`command="--copy"`) with click fallback
+    const handleCopyCommand = (button, target) => {
+      if (button && target) this.copyTargetText(button, target);
+    };
+    if (typeof window !== 'undefined' && 'CommandEvent' in window) {
+      document.addEventListener(
+        'command',
+        (event) => {
+          if (event.command === '--copy') {
+            handleCopyCommand(event.source, event.target);
+          }
+        },
+        true
+      );
+    } else {
+      document.addEventListener('click', (event) => {
+        if (event.defaultPrevented) return;
+        const button = event.target.closest('button[command="--copy"]');
+        if (!button) return;
+        const targetId = button.getAttribute('commandfor');
+        const target = targetId ? document.getElementById(targetId) : null;
+        if (target) handleCopyCommand(button, target);
+      });
+    }
+
+    // 2. Progressive-enhancement light-dismiss fallback for Safari lacking `dialog.closedBy`
+    if (typeof HTMLDialogElement !== 'undefined' && !('closedBy' in HTMLDialogElement.prototype)) {
+      const isOutside = (e, dialog) => {
+        const r = dialog.getBoundingClientRect();
+        return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+      };
+      for (const dialog of document.querySelectorAll('dialog[closedby="any"]')) {
+        let pressedOutside = false;
+        dialog.addEventListener('pointerdown', (e) => {
+          pressedOutside = isOutside(e, dialog);
+        });
+        dialog.addEventListener('pointerup', (e) => {
+          if (pressedOutside && isOutside(e, dialog)) {
+            dialog.close();
+          }
+          pressedOutside = false;
+        });
+      }
+    }
+
+    // 3. Owner notification bell & native <dialog> lifecycle
+    if (this.ownerAlertsBtn) {
+      this.ownerAlertsBtn.addEventListener('click', () => {
+        if (!profileState.isOwner()) return;
+        this.openResetRequestsDialog();
+      });
+    }
+
+    if (this.resetRequestsClose && this.resetRequestsDialog) {
+      this.resetRequestsClose.addEventListener('click', () => {
+        this.resetRequestsDialog.close();
+      });
+    }
+
+    if (this.resetRequestsDialog) {
+      this.resetRequestsDialog.addEventListener('close', () => {
+        this.resetRequestsDialog.returnValue = '';
+        if (this.resetSuccessBanner) this.resetSuccessBanner.hidden = true;
+        this.flushDeferredToasts();
+      });
+
+      // Delegated clicks inside Reset Requests dialog (Generate, Unlock only, Dismiss)
+      this.resetRequestsDialog.addEventListener('click', async (e) => {
+        const genBtn = e.target.closest('.reset-generate-btn');
+        if (genBtn) {
+          const inputId = genBtn.dataset.targetInput;
+          const targetInput = inputId ? document.getElementById(inputId) : null;
+          genBtn.disabled = true;
+          try {
+            const res = await api.generateProfileCode();
+            if (res?.code && targetInput) {
+              targetInput.value = res.code;
+              targetInput.focus();
+              targetInput.select();
+            }
+          } catch (_) {
+          } finally {
+            genBtn.disabled = false;
+          }
+          return;
+        }
+
+        const unlockBtn = e.target.closest('.reset-unlock-only-btn');
+        if (unlockBtn) {
+          const reqId = unlockBtn.dataset.requestId;
+          if (!reqId) return;
+          unlockBtn.disabled = true;
+          try {
+            await api.resolveResetRequest(reqId, { action: 'unlock_only' });
+            await this.loadResetRequests({ notifyNew: false });
+            this.renderResetRequestsDialog();
+            this.announceStatus('Sign-in unlocked for this user.');
+          } catch (err) {
+            const card = unlockBtn.closest('.reset-request-card');
+            const errEl = card?.querySelector('.reset-request-error');
+            if (errEl) {
+              errEl.textContent = err.message || 'Could not unlock sign-in';
+              errEl.hidden = false;
+            }
+          } finally {
+            unlockBtn.disabled = false;
+          }
+          return;
+        }
+
+        const dismissBtn = e.target.closest('.reset-dismiss-btn');
+        if (dismissBtn) {
+          const reqId = dismissBtn.dataset.requestId;
+          if (!reqId) return;
+          dismissBtn.disabled = true;
+          try {
+            await api.resolveResetRequest(reqId, { action: 'dismiss' });
+            await this.loadResetRequests({ notifyNew: false });
+            this.renderResetRequestsDialog();
+          } catch (err) {
+            const card = dismissBtn.closest('.reset-request-card');
+            const errEl = card?.querySelector('.reset-request-error');
+            if (errEl) {
+              errEl.textContent = err.message || 'Could not dismiss request';
+              errEl.hidden = false;
+            }
+          } finally {
+            dismissBtn.disabled = false;
+          }
+        }
+      });
+
+      // Delegated submit for Reset Code & Unlock
+      this.resetRequestsDialog.addEventListener('submit', async (e) => {
+        const form = e.target.closest('.reset-request-form');
+        if (!form) return;
+        e.preventDefault();
+
+        const reqId = form.dataset.requestId;
+        const selectEl = form.querySelector('select[name="profileId"]');
+        const codeEl = form.querySelector('input[name="newPasscode"]');
+        const errEl = form.querySelector('.reset-request-error');
+        const submitBtn = form.querySelector('.reset-submit-btn');
+
+        const profileId = selectEl ? selectEl.value : '';
+        const newPasscode = codeEl ? codeEl.value.trim() : '';
+
+        if (errEl) errEl.hidden = true;
+        if (!profileId) {
+          if (errEl) {
+            errEl.textContent = 'Select which profile to reset';
+            errEl.hidden = false;
+          }
+          selectEl?.focus();
+          return;
+        }
+        if (newPasscode && newPasscode.length < 4) {
+          if (errEl) {
+            errEl.textContent = 'Login code must be at least 4 characters';
+            errEl.hidden = false;
+          }
+          codeEl?.focus();
+          return;
+        }
+
+        if (submitBtn) submitBtn.disabled = true;
+        try {
+          const res = await api.resolveResetRequest(reqId, {
+            action: 'reset',
+            profileId,
+            newPasscode: newPasscode || undefined,
+            generateCode: !newPasscode,
+          });
+
+          if (this.resetSuccessBanner && res?.newCode) {
+            if (this.resetSuccessTitle) {
+              this.resetSuccessTitle.textContent = `${res.profile?.name || 'Profile'} reset and unlocked`;
+            }
+            if (this.resetSuccessBody) {
+              this.resetSuccessBody.textContent = 'Share this new unique login code with the user on WhatsApp. Previous sessions for this profile were signed out.';
+            }
+            if (this.resetNewCodeOutput) {
+              this.resetNewCodeOutput.textContent = res.newCode;
+            }
+            if (this.resetShareWaLink) {
+              this.resetShareWaLink.href = res.shareWhatsappUrl || `https://wa.me/?text=${encodeURIComponent(res.shareMessage || res.newCode)}`;
+            }
+            this.resetSuccessBanner.hidden = false;
+          }
+
+          await Promise.all([this.loadProfiles(), this.loadResetRequests({ notifyNew: false })]);
+          this.renderResetRequestsDialog();
+          if (this.isManagingProfiles) {
+            this.renderProfileSelector();
+          }
+        } catch (err) {
+          if (errEl) {
+            errEl.textContent = err.message || 'Could not reset profile';
+            errEl.hidden = false;
+          }
+        } finally {
+          if (submitBtn) submitBtn.disabled = false;
+        }
+      });
+    }
+
+    // 4. Refresh pending owner pings immediately when Owner switches back from WhatsApp
+    const handleOwnerTabReturn = () => {
+      if (!profileState.isOwner() || document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - this.lastOwnerPingCheckAt < 4000) return;
+      this.loadResetRequests({ notifyNew: true });
+    };
+    document.addEventListener('visibilitychange', handleOwnerTabReturn);
+    window.addEventListener('focus', handleOwnerTabReturn);
+  }
+
+  legacyCopyText(text) {
+    const previousFocus = document.activeElement;
+    const field = Object.assign(document.createElement('textarea'), { value: text });
+    field.setAttribute('readonly', '');
+    field.style.cssText = 'position:fixed;inset-block-start:0;opacity:0';
+    document.body.append(field);
+    field.select();
+    try {
+      return document.execCommand('copy');
+    } finally {
+      field.remove();
+      previousFocus?.focus({ preventScroll: true });
+    }
+  }
+
+  async copyTargetText(button, target) {
+    const text = target.matches('input, textarea') ? target.value : target.innerText.trim();
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else if (!this.legacyCopyText(text)) {
+        throw new Error('Copy failed');
+      }
+      this.reportCopyFeedback(button, true);
+    } catch {
+      const ok = this.legacyCopyText(text);
+      this.reportCopyFeedback(button, ok);
+    }
+  }
+
+  reportCopyFeedback(button, ok) {
+    const tip = button.nextElementSibling;
+    const icon = button.querySelector('.copy-icon');
+    clearTimeout(this.copyFeedbackTimers.get(button));
+    button.removeAttribute('data-copied');
+    button.removeAttribute('data-failed');
+
+    let message = ok ? 'Copied' : 'Copy failed';
+    if (message === this.lastCopyAnnouncement) message += '\u00A0';
+    this.lastCopyAnnouncement = message;
+
+    if (tip) tip.textContent = '';
+    if (icon) icon.textContent = ok ? 'check' : 'error';
+    void button.offsetWidth;
+    button.setAttribute(ok ? 'data-copied' : 'data-failed', '');
+    requestAnimationFrame(() => {
+      if (tip) tip.textContent = message;
+    });
+
+    this.copyFeedbackTimers.set(
+      button,
+      setTimeout(() => {
+        button.removeAttribute('data-copied');
+        button.removeAttribute('data-failed');
+        if (icon) icon.textContent = 'content_copy';
+        if (tip) tip.textContent = '';
+      }, 2000)
+    );
+  }
+
+  announceStatus(message) {
+    if (!message) return;
+    if (typeof document.ariaNotify === 'function') {
+      try {
+        document.ariaNotify(message);
+        return;
+      } catch (_) {}
+    }
+    if (this.srAnnouncer) {
+      this.srAnnouncer.textContent = '';
+      requestAnimationFrame(() => {
+        this.srAnnouncer.textContent = message;
+      });
+    }
+  }
+
+  isAnyModalOpen() {
+    if (document.querySelector('.modal-backdrop.open')) return true;
+    if (document.querySelector('dialog[open]')) return true;
+    return false;
+  }
+
+  startOwnerPingMonitoring() {
+    if (!profileState.isOwner()) return;
+    this.loadResetRequests({ notifyNew: true });
+    if (this.ownerPingPollInterval) return;
+    this.ownerPingPollInterval = setInterval(() => {
+      if (!profileState.isOwner()) {
+        this.stopOwnerPingMonitoring();
+        return;
+      }
+      if (document.visibilityState === 'visible') {
+        this.loadResetRequests({ notifyNew: true });
+      }
+    }, 25000);
+  }
+
+  stopOwnerPingMonitoring() {
+    if (this.ownerPingPollInterval) {
+      clearInterval(this.ownerPingPollInterval);
+      this.ownerPingPollInterval = null;
+    }
+    this.resetRequests = [];
+    this.seenResetRequestIds.clear();
+    this.pendingDeferredToastRequests = [];
+    this.updateOwnerAlertsUI();
+    if (this.toastRegion) {
+      this.toastRegion.querySelectorAll('.kodimi-toast').forEach((t) => {
+        try { t.hidePopover?.(); } catch (_) {}
+        t.remove();
+      });
+    }
+  }
+
+  async loadResetRequests({ notifyNew = false } = {}) {
+    if (!profileState.isOwner()) return;
+    this.lastOwnerPingCheckAt = Date.now();
+    try {
+      const res = await api.getResetRequests();
+      const incoming = Array.isArray(res?.requests) ? res.requests : [];
+      const brandNew = incoming.filter((r) => !this.seenResetRequestIds.has(r.id));
+      incoming.forEach((r) => this.seenResetRequestIds.add(r.id));
+
+      this.resetRequests = incoming;
+      this.updateOwnerAlertsUI();
+
+      if (this.resetRequestsDialog?.open) {
+        this.renderResetRequestsDialog();
+      }
+
+      if (notifyNew && brandNew.length > 0) {
+        if (this.isAnyModalOpen()) {
+          this.pendingDeferredToastRequests.push(...brandNew);
+        } else {
+          this.showResetRequestToast(brandNew);
+        }
+      }
+    } catch (_) {
+      // Silent fallback when offline or switching profiles
+    }
+  }
+
+  updateOwnerAlertsUI() {
+    const count = Array.isArray(this.resetRequests) ? this.resetRequests.length : 0;
+    if (this.ownerAlertsBadge) {
+      this.ownerAlertsBadge.textContent = String(count);
+      this.ownerAlertsBadge.hidden = count === 0;
+    }
+    if (this.ownerAlertsBtn) {
+      this.ownerAlertsBtn.classList.toggle('has-pending', count > 0);
+      this.ownerAlertsBtn.setAttribute(
+        'aria-label',
+        count > 0 ? `Profile reset requests (${count} pending)` : 'Profile reset requests'
+      );
+    }
+    if (this.dropdownResetRequestsCount) {
+      this.dropdownResetRequestsCount.textContent = String(count);
+      this.dropdownResetRequestsCount.hidden = count === 0;
+    }
+  }
+
+  flushDeferredToasts() {
+    if (this.isAnyModalOpen() || !profileState.isOwner()) return;
+    if (this.pendingDeferredToastRequests.length === 0) return;
+    const queued = this.pendingDeferredToastRequests.splice(0);
+    const stillPending = queued.filter((q) => this.resetRequests.some((r) => r.id === q.id));
+    if (stillPending.length > 0) {
+      this.showResetRequestToast(stillPending);
+    }
+  }
+
+  showResetRequestToast(newRequests) {
+    if (!this.toastRegion || !Array.isArray(newRequests) || newRequests.length === 0) return;
+    if (this.isAnyModalOpen()) {
+      this.pendingDeferredToastRequests.push(...newRequests);
+      return;
+    }
+
+    // Replace any existing reset-ping toast so the Owner gets a single clean persistent card
+    this.toastRegion.querySelectorAll('.kodimi-toast').forEach((existing) => {
+      try { existing.hidePopover?.(); } catch (_) {}
+      existing.remove();
+    });
+
+    const first = newRequests[0];
+    const toastId = `kodimi-reset-toast-${Date.now()}`;
+    const titleText =
+      newRequests.length === 1
+        ? 'Profile reset requested'
+        : `${newRequests.length} profile reset requests`;
+    const bodyText =
+      newRequests.length === 1
+        ? `${first.requested_name} got locked out after 5 attempts and requested a code reset`
+        : `${first.requested_name} and ${newRequests.length - 1} more requested a code reset`;
+
+    const toastEl = document.createElement('div');
+    toastEl.id = toastId;
+    toastEl.className = 'kodimi-toast';
+    toastEl.setAttribute('popover', 'manual');
+    toastEl.innerHTML = `
+      <div class="kodimi-toast-body">
+        <div class="kodimi-toast-title">${escapeHtml(titleText)}</div>
+        <div class="kodimi-toast-text">${escapeHtml(bodyText)}</div>
+        <div class="kodimi-toast-actions">
+          <button type="button" class="btn-filled kodimi-toast-btn kodimi-toast-review-btn">Review</button>
+        </div>
+      </div>
+      <button
+        type="button"
+        class="icon-btn kodimi-toast-close"
+        popovertarget="${toastId}"
+        popovertargetaction="hide"
+        aria-label="Close notification"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">close</span>
+      </button>
+    `;
+
+    this.toastRegion.appendChild(toastEl);
+
+    const reviewBtn = toastEl.querySelector('.kodimi-toast-review-btn');
+    const closeBtn = toastEl.querySelector('.kodimi-toast-close');
+
+    const closeToast = (returnFocus = false) => {
+      const hadFocus = toastEl.contains(document.activeElement);
+      try {
+        toastEl.hidePopover?.();
+      } catch (_) {
+        toastEl.classList.remove(':popover-open');
+      }
+      toastEl.remove();
+      if (returnFocus && hadFocus) {
+        const nextToastBtn = this.toastRegion.querySelector('.kodimi-toast button');
+        (nextToastBtn || this.ownerAlertsBtn)?.focus();
+      }
+    };
+
+    if (reviewBtn) {
+      reviewBtn.addEventListener('click', () => {
+        closeToast(false);
+        this.openResetRequestsDialog();
+      });
+    }
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => closeToast(true));
+    }
+    toastEl.addEventListener('toggle', (ev) => {
+      if (ev.newState === 'closed' && toastEl.isConnected) {
+        toastEl.remove();
+      }
+    });
+
+    try {
+      if (typeof toastEl.showPopover === 'function') {
+        toastEl.showPopover();
+      } else {
+        toastEl.classList.add(':popover-open');
+      }
+    } catch (_) {
+      toastEl.classList.add(':popover-open');
+    }
+
+    this.announceStatus(`${titleText}. ${bodyText}. Actions available.`);
+  }
+
+  async openResetRequestsDialog() {
+    if (!profileState.isOwner() || !this.resetRequestsDialog) return;
+    if (this.resetSuccessBanner) this.resetSuccessBanner.hidden = true;
+    await Promise.all([this.loadProfiles(), this.loadResetRequests({ notifyNew: false })]);
+    this.renderResetRequestsDialog();
+    if (!this.resetRequestsDialog.open) {
+      this.resetRequestsDialog.showModal();
+    }
+  }
+
+  renderResetRequestsDialog() {
+    if (!this.resetRequestsList) return;
+    if (!this.resetRequests || this.resetRequests.length === 0) {
+      this.resetRequestsList.innerHTML = `
+        <div class="reset-requests-empty">
+          <span class="material-symbols-outlined" aria-hidden="true">verified_user</span>
+          <div>No pending profile reset requests</div>
+        </div>
+      `;
+      return;
+    }
+
+    this.resetRequestsList.innerHTML = this.resetRequests
+      .map((reqItem) => renderResetRequestCard(reqItem, this.profiles))
+      .join('');
   }
 
   async handleChangeCode(e) {

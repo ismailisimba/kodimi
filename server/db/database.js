@@ -6,11 +6,37 @@ try {
 
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import config from '../config/env.js';
 import { heuristicParseFilename, isPlaceholderOrGenericPlot } from '../services/aiTagger.js';
+
+export const MAX_PASSCODE_BYTES = 72;
+export const MAX_LOGIN_ATTEMPTS = 5;
+export const LOCKOUT_DURATION_MS = 24 * 60 * 60 * 1000; // 24-hour automatic fallback
+export const ATTEMPT_WINDOW_MS = 30 * 60 * 1000; // 30-min rolling decay for <5 failed attempts
+export const MAX_RESET_REQUESTS_PER_LOCKOUT = 3;
+
+export function normalizePasscode(plainCode) {
+  return String(plainCode ?? '').trim();
+}
+
+export function computePasscodeFingerprint(plainCode) {
+  const normalized = normalizePasscode(plainCode);
+  if (!normalized) return null;
+  return crypto
+    .createHmac('sha256', String(config.jwtSecret || 'kodimi_default_dev_secret_key_2026'))
+    .update(normalized)
+    .digest('hex');
+}
+
+export function normalizeClientKey(ip) {
+  const raw = String(ip || '').trim().toLowerCase();
+  if (!raw) return 'unknown';
+  return raw.replace(/^::ffff:/, '');
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,8 +94,41 @@ const ProfileSchema = new mongoose.Schema({
   is_kids: { type: Boolean, default: false },
   role: { type: String, enum: ['owner', 'member'], default: 'member' },
   passcode_hash: { type: String, default: null },
+  passcode_fingerprint: { type: String, default: undefined },
+  passcode_version: { type: Number, default: 0 },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
+});
+ProfileSchema.index(
+  { passcode_fingerprint: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { passcode_fingerprint: { $type: 'string' } },
+  }
+);
+
+const AuthLockoutSchema = new mongoose.Schema({
+  client_key: { type: String, required: true, unique: true, index: true },
+  failed_attempts: { type: Number, default: 0 },
+  locked: { type: Boolean, default: false },
+  locked_at: { type: Date, default: null },
+  expires_at: { type: Date, default: null },
+  last_attempt_at: { type: Date, default: Date.now },
+  reset_request_count: { type: Number, default: 0 },
+});
+
+const ResetRequestSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  requested_name: { type: String, required: true },
+  matched_profile_id: { type: String, default: null },
+  matched_profile_name: { type: String, default: null },
+  client_ip: { type: String, required: true, index: true },
+  failed_attempts: { type: Number, default: MAX_LOGIN_ATTEMPTS },
+  status: { type: String, enum: ['pending', 'resolved', 'dismissed'], default: 'pending', index: true },
+  resolution_note: { type: String, default: null },
+  resolved_profile_id: { type: String, default: null },
+  created_at: { type: Date, default: Date.now, index: true },
+  resolved_at: { type: Date, default: null },
 });
 
 const IptvHealthSchema = new mongoose.Schema({
@@ -127,14 +186,17 @@ export const DownloadModel = mongoose.model('Download', DownloadSchema);
 export const ProfileModel = mongoose.model('Profile', ProfileSchema);
 export const WatchlistModel = mongoose.model('Watchlist', WatchlistSchema);
 export const IptvHealthModel = mongoose.model('IptvHealth', IptvHealthSchema);
+export const AuthLockoutModel = mongoose.model('AuthLockout', AuthLockoutSchema);
+export const ResetRequestModel = mongoose.model('ResetRequest', ResetRequestSchema);
 
 export function sanitizeProfile(profile) {
   if (!profile) return null;
-  const { passcode_hash, _id, __v, ...rest } = profile;
+  const { passcode_hash, passcode_fingerprint, _id, __v, ...rest } = profile;
   return {
     ...rest,
     role: rest.role || (rest.id === 'default' ? 'owner' : 'member'),
     has_passcode: Boolean(passcode_hash),
+    passcode_version: Number(rest.passcode_version || 0),
   };
 }
 
@@ -144,7 +206,10 @@ let playbackCache = new Map();
 let downloadCache = new Map();
 let profileCache = new Map();
 let watchlistCache = new Map();
+let lockoutCache = new Map();
+let resetRequestCache = new Map();
 let lastMediaRefreshTime = 0;
+let lastProfilesRefreshTime = 0;
 
 export function normalizeSeriesKey(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -175,6 +240,22 @@ export async function ensureMediaCacheFresh(force = false) {
     return;
   }
   await refreshCache();
+}
+
+export async function ensureProfilesFresh(force = false) {
+  if (mongoose.connection.readyState !== 1) return;
+  const now = Date.now();
+  if (!force && now - lastProfilesRefreshTime < 2000 && profileCache.size > 0) {
+    return;
+  }
+  try {
+    const allProfiles = await ProfileModel.find({}).lean();
+    profileCache.clear();
+    allProfiles.forEach((p) => profileCache.set(p.id, p));
+    lastProfilesRefreshTime = Date.now();
+  } catch (err) {
+    console.warn('[DB] Profile cache refresh warning:', err.message);
+  }
 }
 
 /**
@@ -255,10 +336,15 @@ async function refreshCache() {
       { $set: { profile_id: 'default' } }
     ).catch(() => {});
 
-    // Ensure initial default Owner profile exists and has migrated role + hashed passcode
-    const defaultPasscodeHash = config.adminPassword?.startsWith('$2')
+    // Ensure initial default Owner profile exists and has migrated role + hashed passcode + fingerprint
+    const adminPasswordClean = normalizePasscode(config.adminPassword || 'kodimi123');
+    const isAdminPreHashed = Boolean(config.adminPassword?.startsWith('$2'));
+    const defaultPasscodeHash = isAdminPreHashed
       ? config.adminPassword
-      : bcrypt.hashSync(String(config.adminPassword || 'kodimi123'), 10);
+      : bcrypt.hashSync(adminPasswordClean, 10);
+    const defaultPasscodeFingerprint = isAdminPreHashed
+      ? undefined
+      : computePasscodeFingerprint(adminPasswordClean);
 
     let defaultProfile = await ProfileModel.findOne({ id: 'default' });
     if (!defaultProfile) {
@@ -272,21 +358,45 @@ async function refreshCache() {
           is_kids: false,
           role: 'owner',
           passcode_hash: defaultPasscodeHash,
+          ...(defaultPasscodeFingerprint ? { passcode_fingerprint: defaultPasscodeFingerprint } : {}),
+          passcode_version: 0,
         });
         console.log('[DB] Seeded initial default Owner profile with hashed login code.');
       }
     } else if (!defaultProfile.passcode_hash || defaultProfile.role !== 'owner') {
-      await ProfileModel.updateOne(
-        { id: 'default' },
-        {
-          $set: {
-            role: 'owner',
-            passcode_hash: defaultProfile.passcode_hash || defaultPasscodeHash,
-            updated_at: new Date(),
-          },
+      const patch = {
+        role: 'owner',
+        updated_at: new Date(),
+      };
+      if (!defaultProfile.passcode_hash) {
+        patch.passcode_hash = defaultPasscodeHash;
+        if (defaultPasscodeFingerprint) {
+          const conflicting = await ProfileModel.findOne({
+            id: { $ne: 'default' },
+            passcode_fingerprint: defaultPasscodeFingerprint,
+          }).lean();
+          if (!conflicting) {
+            patch.passcode_fingerprint = defaultPasscodeFingerprint;
+          }
         }
-      );
+      }
+      await ProfileModel.updateOne({ id: 'default' }, { $set: patch });
       console.log('[DB] Migrated Owner profile to per-profile authentication.');
+    } else if (
+      !defaultProfile.passcode_fingerprint &&
+      defaultPasscodeFingerprint &&
+      bcrypt.compareSync(adminPasswordClean, defaultProfile.passcode_hash)
+    ) {
+      const conflicting = await ProfileModel.findOne({
+        id: { $ne: 'default' },
+        passcode_fingerprint: defaultPasscodeFingerprint,
+      }).lean();
+      if (!conflicting) {
+        await ProfileModel.updateOne(
+          { id: 'default' },
+          { $set: { passcode_fingerprint: defaultPasscodeFingerprint } }
+        ).catch(() => {});
+      }
     }
 
     // Backfill member role on any legacy non-owner profiles
@@ -298,6 +408,7 @@ async function refreshCache() {
     const allProfiles = await ProfileModel.find({}).lean();
     profileCache.clear();
     allProfiles.forEach((p) => profileCache.set(p.id, p));
+    lastProfilesRefreshTime = Date.now();
 
     const allWatchlists = await WatchlistModel.find({}).lean();
     watchlistCache.clear();
@@ -1093,6 +1204,30 @@ export const playbackDB = {
 };
 
 // Profiles & Watchlist DB Methods
+const PASSCODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+export function generateUniquePasscode() {
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const bytes = crypto.randomBytes(8);
+    let raw = '';
+    for (let i = 0; i < 8; i++) {
+      raw += PASSCODE_ALPHABET[bytes[i] % PASSCODE_ALPHABET.length];
+    }
+    const candidate = `${raw.slice(0, 4)}-${raw.slice(4)}`;
+    if (!profilesDB.isPasscodeInUse(candidate)) {
+      return candidate;
+    }
+  }
+  const fallback = crypto.randomBytes(6).toString('hex').toUpperCase();
+  return `${fallback.slice(0, 4)}-${fallback.slice(4, 8)}-${fallback.slice(8)}`;
+}
+
+function createDuplicatePasscodeError() {
+  const err = new Error('That login code is already used by another profile. Please choose a unique code.');
+  err.statusCode = 409;
+  return err;
+}
+
 export const profilesDB = {
   getAll: () => {
     const list = Array.from(profileCache.values());
@@ -1114,38 +1249,98 @@ export const profilesDB = {
     return profileCache.get(id) || null;
   },
 
+  findByNameCaseInsensitive: (name) => {
+    const target = String(name || '').trim().toLowerCase();
+    if (!target) return null;
+    for (const p of profileCache.values()) {
+      if (String(p.name || '').trim().toLowerCase() === target) {
+        return p;
+      }
+    }
+    return null;
+  },
+
   isPasscodeInUse: (plainCode, excludeProfileId = null) => {
-    if (!plainCode) return false;
-    const candidate = String(plainCode).trim();
+    const candidate = normalizePasscode(plainCode);
+    if (!candidate) return false;
+    const candidateFp = computePasscodeFingerprint(candidate);
+
     for (const p of profileCache.values()) {
       if (excludeProfileId && p.id === excludeProfileId) continue;
-      if (!p.passcode_hash) continue;
-      try {
-        if (bcrypt.compareSync(candidate, p.passcode_hash)) {
+
+      if (p.passcode_fingerprint && candidateFp) {
+        if (p.passcode_fingerprint === candidateFp) {
           return true;
         }
-      } catch (_) {}
+        continue;
+      }
+
+      if (p.passcode_hash) {
+        try {
+          if (bcrypt.compareSync(candidate, p.passcode_hash)) {
+            return true;
+          }
+        } catch (_) {}
+      } else if (p.id === 'default' || p.role === 'owner') {
+        // Protect unmigrated Owner fallback password from being claimed by another profile
+        const adminRaw = normalizePasscode(config.adminPassword || 'kodimi123');
+        if (adminRaw) {
+          if (candidate === adminRaw) return true;
+          try {
+            if (adminRaw.startsWith('$2') && bcrypt.compareSync(candidate, adminRaw)) {
+              return true;
+            }
+          } catch (_) {}
+        }
+      }
     }
     return false;
   },
 
+  backfillPasscodeFingerprint: async (id, plainCode) => {
+    const existing = profileCache.get(id);
+    if (!existing || existing.passcode_fingerprint) return;
+    const fp = computePasscodeFingerprint(plainCode);
+    if (!fp) return;
+    if (profilesDB.isPasscodeInUse(plainCode, id)) return;
+
+    const updated = { ...existing, passcode_fingerprint: fp };
+    profileCache.set(id, updated);
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await ProfileModel.updateOne(
+          { id, passcode_fingerprint: { $exists: false } },
+          { $set: { passcode_fingerprint: fp } }
+        );
+      } catch (_) {
+        // Ignore duplicate key races on lazy backfill
+      }
+    }
+  },
+
   create: async (data) => {
+    await ensureProfilesFresh(true);
     const id = data.id || `prof_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     let passcodeHash = data.passcode_hash || null;
+    let passcodeFingerprint;
 
     if (data.passcode !== undefined && data.passcode !== null && String(data.passcode).trim() !== '') {
-      const cleanCode = String(data.passcode).trim();
+      const cleanCode = normalizePasscode(data.passcode);
       if (cleanCode.length < 4) {
         const err = new Error('Login code must be at least 4 characters');
         err.statusCode = 400;
         throw err;
       }
-      if (profilesDB.isPasscodeInUse(cleanCode)) {
-        const err = new Error('That login code is already used by another profile. Please choose a unique code.');
-        err.statusCode = 409;
+      if (Buffer.byteLength(cleanCode, 'utf8') > MAX_PASSCODE_BYTES) {
+        const err = new Error(`Login code must be ${MAX_PASSCODE_BYTES} characters or fewer`);
+        err.statusCode = 400;
         throw err;
       }
+      if (profilesDB.isPasscodeInUse(cleanCode)) {
+        throw createDuplicatePasscodeError();
+      }
       passcodeHash = bcrypt.hashSync(cleanCode, 10);
+      passcodeFingerprint = computePasscodeFingerprint(cleanCode);
     }
 
     const role = data.role === 'owner' ? 'owner' : (id === 'default' ? 'owner' : 'member');
@@ -1157,34 +1352,55 @@ export const profilesDB = {
       is_kids: Boolean(data.is_kids),
       role,
       passcode_hash: passcodeHash,
+      ...(passcodeFingerprint ? { passcode_fingerprint: passcodeFingerprint } : {}),
+      passcode_version: Number(data.passcode_version || 0),
       created_at: new Date(),
       updated_at: new Date(),
     };
-    profileCache.set(id, profile);
+
     if (mongoose.connection.readyState === 1) {
-      await ProfileModel.create(profile);
+      try {
+        await ProfileModel.create(profile);
+      } catch (err) {
+        if (err && err.code === 11000) {
+          throw createDuplicatePasscodeError();
+        }
+        throw err;
+      }
     }
+    profileCache.set(id, profile);
     return sanitizeProfile(profile);
   },
 
   update: async (id, data) => {
+    await ensureProfilesFresh(true);
     const existing = profileCache.get(id);
     if (!existing) return null;
 
     let nextPasscodeHash = existing.passcode_hash || null;
+    let nextPasscodeFingerprint = existing.passcode_fingerprint;
+    let nextPasscodeVersion = Number(existing.passcode_version || 0);
+    let passcodeChanged = false;
+
     if (data.passcode !== undefined && data.passcode !== null && String(data.passcode).trim() !== '') {
-      const cleanCode = String(data.passcode).trim();
+      const cleanCode = normalizePasscode(data.passcode);
       if (cleanCode.length < 4) {
         const err = new Error('Login code must be at least 4 characters');
         err.statusCode = 400;
         throw err;
       }
-      if (profilesDB.isPasscodeInUse(cleanCode, id)) {
-        const err = new Error('That login code is already used by another profile. Please choose a unique code.');
-        err.statusCode = 409;
+      if (Buffer.byteLength(cleanCode, 'utf8') > MAX_PASSCODE_BYTES) {
+        const err = new Error(`Login code must be ${MAX_PASSCODE_BYTES} characters or fewer`);
+        err.statusCode = 400;
         throw err;
       }
+      if (profilesDB.isPasscodeInUse(cleanCode, id)) {
+        throw createDuplicatePasscodeError();
+      }
       nextPasscodeHash = bcrypt.hashSync(cleanCode, 10);
+      nextPasscodeFingerprint = computePasscodeFingerprint(cleanCode);
+      nextPasscodeVersion += 1;
+      passcodeChanged = true;
     }
 
     const nextRole =
@@ -1202,16 +1418,33 @@ export const profilesDB = {
       is_kids: data.is_kids !== undefined ? Boolean(data.is_kids) : existing.is_kids,
       role: nextRole,
       passcode_hash: nextPasscodeHash,
+      ...(nextPasscodeFingerprint ? { passcode_fingerprint: nextPasscodeFingerprint } : {}),
+      passcode_version: nextPasscodeVersion,
       updated_at: new Date(),
     };
-    profileCache.set(id, updated);
+
     if (mongoose.connection.readyState === 1) {
-      await ProfileModel.findOneAndUpdate({ id }, { $set: updated });
+      const { _id, __v, ...setFields } = updated;
+      try {
+        await ProfileModel.findOneAndUpdate({ id }, { $set: setFields });
+      } catch (err) {
+        if (err && err.code === 11000) {
+          throw createDuplicatePasscodeError();
+        }
+        throw err;
+      }
     }
+    profileCache.set(id, updated);
+
+    if (passcodeChanged && data.autoResolvePendingRequests !== false) {
+      await resetRequestsDB.resolvePendingForProfile(id, 'Resolved via profile code update').catch(() => {});
+    }
+
     return sanitizeProfile(updated);
   },
 
   delete: async (id) => {
+    await ensureProfilesFresh(true);
     if (id === 'default') {
       const err = new Error('Cannot delete the primary Owner profile');
       err.statusCode = 400;
@@ -1291,6 +1524,312 @@ export const profilesDB = {
   isInWatchlist: (profileId = 'default', mediaId) => {
     const set = watchlistCache.get(profileId);
     return set ? set.has(mediaId) : false;
+  },
+};
+
+function formatLockoutStatus(record, now = Date.now()) {
+  if (!record) {
+    return {
+      locked: false,
+      failedAttempts: 0,
+      maxAttempts: MAX_LOGIN_ATTEMPTS,
+      attemptsRemaining: MAX_LOGIN_ATTEMPTS,
+      lockedAt: null,
+      expiresAt: null,
+      resetRequestCount: 0,
+    };
+  }
+
+  if (record.locked) {
+    const expMs = record.expires_at ? new Date(record.expires_at).getTime() : 0;
+    if (expMs > 0 && expMs <= now) {
+      return {
+        locked: false,
+        expired: true,
+        failedAttempts: 0,
+        maxAttempts: MAX_LOGIN_ATTEMPTS,
+        attemptsRemaining: MAX_LOGIN_ATTEMPTS,
+        lockedAt: null,
+        expiresAt: null,
+        resetRequestCount: 0,
+      };
+    }
+    return {
+      locked: true,
+      failedAttempts: Math.max(MAX_LOGIN_ATTEMPTS, Number(record.failed_attempts || MAX_LOGIN_ATTEMPTS)),
+      maxAttempts: MAX_LOGIN_ATTEMPTS,
+      attemptsRemaining: 0,
+      lockedAt: record.locked_at ? new Date(record.locked_at).toISOString() : null,
+      expiresAt: record.expires_at ? new Date(record.expires_at).toISOString() : null,
+      resetRequestCount: Number(record.reset_request_count || 0),
+    };
+  }
+
+  const lastMs = record.last_attempt_at ? new Date(record.last_attempt_at).getTime() : 0;
+  const isStale = lastMs > 0 && now - lastMs > ATTEMPT_WINDOW_MS;
+  const attempts = isStale ? 0 : Number(record.failed_attempts || 0);
+
+  return {
+    locked: false,
+    failedAttempts: attempts,
+    maxAttempts: MAX_LOGIN_ATTEMPTS,
+    attemptsRemaining: Math.max(0, MAX_LOGIN_ATTEMPTS - attempts),
+    lockedAt: null,
+    expiresAt: null,
+    resetRequestCount: 0,
+  };
+}
+
+// Persistent Multi-Instance Login Lockout DB Methods
+export const lockoutsDB = {
+  getStatus: async (clientIp, now = Date.now()) => {
+    const clientKey = normalizeClientKey(clientIp);
+    let record = lockoutCache.get(clientKey) || null;
+
+    if (mongoose.connection.readyState === 1) {
+      try {
+        record = await AuthLockoutModel.findOne({ client_key: clientKey }).lean();
+        if (record) {
+          lockoutCache.set(clientKey, record);
+        } else {
+          lockoutCache.delete(clientKey);
+        }
+      } catch (err) {
+        console.warn('[DB] Lockout read warning:', err.message);
+      }
+    }
+
+    const status = formatLockoutStatus(record, now);
+    if (status.expired) {
+      await lockoutsDB.clear(clientKey);
+      delete status.expired;
+    }
+    return status;
+  },
+
+  recordFailure: async (clientIp, now = Date.now()) => {
+    const clientKey = normalizeClientKey(clientIp);
+    const current = await lockoutsDB.getStatus(clientKey, now);
+    if (current.locked) {
+      return current;
+    }
+
+    const nextAttempts = current.failedAttempts + 1;
+    const isNowLocked = nextAttempts >= MAX_LOGIN_ATTEMPTS;
+    const nextDoc = {
+      client_key: clientKey,
+      failed_attempts: nextAttempts,
+      locked: isNowLocked,
+      locked_at: isNowLocked ? new Date(now) : null,
+      expires_at: isNowLocked ? new Date(now + LOCKOUT_DURATION_MS) : null,
+      last_attempt_at: new Date(now),
+      reset_request_count: isNowLocked ? 0 : 0,
+    };
+
+    lockoutCache.set(clientKey, nextDoc);
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await AuthLockoutModel.findOneAndUpdate(
+          { client_key: clientKey },
+          { $set: nextDoc },
+          { upsert: true, returnDocument: 'after' }
+        );
+      } catch (err) {
+        console.warn('[DB] Lockout write warning:', err.message);
+      }
+    }
+
+    return formatLockoutStatus(nextDoc, now);
+  },
+
+  incrementResetRequestCount: async (clientIp) => {
+    const clientKey = normalizeClientKey(clientIp);
+    const existing = lockoutCache.get(clientKey);
+    const nextCount = Number(existing?.reset_request_count || 0) + 1;
+    if (existing) {
+      lockoutCache.set(clientKey, { ...existing, reset_request_count: nextCount });
+    }
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const updated = await AuthLockoutModel.findOneAndUpdate(
+          { client_key: clientKey },
+          { $inc: { reset_request_count: 1 } },
+          { returnDocument: 'after' }
+        ).lean();
+        if (updated) {
+          lockoutCache.set(clientKey, updated);
+          return Number(updated.reset_request_count || nextCount);
+        }
+      } catch (err) {
+        console.warn('[DB] Lockout reset_request_count warning:', err.message);
+      }
+    }
+    return nextCount;
+  },
+
+  clear: async (clientIp) => {
+    const clientKey = normalizeClientKey(clientIp);
+    lockoutCache.delete(clientKey);
+    if (mongoose.connection.readyState === 1) {
+      await AuthLockoutModel.deleteOne({ client_key: clientKey }).catch((err) =>
+        console.warn('[DB] Lockout clear warning:', err.message)
+      );
+    }
+  },
+
+  clearAll: async () => {
+    lockoutCache.clear();
+    if (mongoose.connection.readyState === 1) {
+      await AuthLockoutModel.deleteMany({}).catch(() => {});
+    }
+  },
+};
+
+function enrichResetRequest(reqDoc) {
+  if (!reqDoc) return null;
+  const { _id, __v, ...clean } = reqDoc;
+  const liveMatch = clean.matched_profile_id ? profilesDB.getById(clean.matched_profile_id) : null;
+  return {
+    ...clean,
+    matched_profile: liveMatch,
+  };
+}
+
+// Profile Reset Requests (In-App Owner Ping) DB Methods
+export const resetRequestsDB = {
+  create: async ({ requestedName, clientIp, failedAttempts = MAX_LOGIN_ATTEMPTS }) => {
+    await ensureProfilesFresh(true);
+    const cleanName = String(requestedName || '').trim().slice(0, 40);
+    if (!cleanName) {
+      const err = new Error('Profile name is required');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const clientKey = normalizeClientKey(clientIp);
+    const matchedProfile = profilesDB.findByNameCaseInsensitive(cleanName);
+    const now = new Date();
+
+    // Deduplicate identical pending requests from the same locked IP
+    const pendingList = await resetRequestsDB.getPending();
+    const existingPending = pendingList.find(
+      (r) =>
+        r.client_ip === clientKey &&
+        String(r.requested_name || '').trim().toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (existingPending) {
+      const updated = {
+        ...existingPending,
+        matched_profile_id: matchedProfile?.id || existingPending.matched_profile_id || null,
+        matched_profile_name: matchedProfile?.name || existingPending.matched_profile_name || null,
+        failed_attempts: failedAttempts,
+        created_at: now,
+      };
+      delete updated.matched_profile;
+      resetRequestCache.set(updated.id, updated);
+      if (mongoose.connection.readyState === 1) {
+        await ResetRequestModel.findOneAndUpdate({ id: updated.id }, { $set: updated }).catch((err) =>
+          console.warn('[DB] ResetRequest update warning:', err.message)
+        );
+      }
+      return enrichResetRequest(updated);
+    }
+
+    const doc = {
+      id: `rst_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      requested_name: cleanName,
+      matched_profile_id: matchedProfile?.id || null,
+      matched_profile_name: matchedProfile?.name || null,
+      client_ip: clientKey,
+      failed_attempts: failedAttempts,
+      status: 'pending',
+      resolution_note: null,
+      resolved_profile_id: null,
+      created_at: now,
+      resolved_at: null,
+    };
+
+    resetRequestCache.set(doc.id, doc);
+    if (mongoose.connection.readyState === 1) {
+      await ResetRequestModel.create(doc);
+    }
+    return enrichResetRequest(doc);
+  },
+
+  getPending: async () => {
+    await ensureProfilesFresh(false);
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const docs = await ResetRequestModel.find({ status: 'pending' }).sort({ created_at: -1 }).limit(50).lean();
+        docs.forEach((d) => resetRequestCache.set(d.id, d));
+        return docs.map(enrichResetRequest);
+      } catch (err) {
+        console.warn('[DB] ResetRequest list warning:', err.message);
+      }
+    }
+    return Array.from(resetRequestCache.values())
+      .filter((r) => r.status === 'pending')
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .map(enrichResetRequest);
+  },
+
+  getById: async (id) => {
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const doc = await ResetRequestModel.findOne({ id }).lean();
+        if (doc) {
+          resetRequestCache.set(doc.id, doc);
+          return enrichResetRequest(doc);
+        }
+        return null;
+      } catch (err) {
+        console.warn('[DB] ResetRequest getById warning:', err.message);
+      }
+    }
+    return enrichResetRequest(resetRequestCache.get(id) || null);
+  },
+
+  markResolved: async (id, { status = 'resolved', resolvedProfileId = null, resolutionNote = null } = {}) => {
+    const existing = await resetRequestsDB.getById(id);
+    if (!existing) return null;
+    const { matched_profile, ...base } = existing;
+    const updated = {
+      ...base,
+      status,
+      resolved_profile_id: resolvedProfileId,
+      resolution_note: resolutionNote,
+      resolved_at: new Date(),
+    };
+    resetRequestCache.set(id, updated);
+    if (mongoose.connection.readyState === 1) {
+      await ResetRequestModel.findOneAndUpdate({ id }, { $set: updated }).catch((err) =>
+        console.warn('[DB] ResetRequest resolve warning:', err.message)
+      );
+    }
+    return enrichResetRequest(updated);
+  },
+
+  resolvePendingForProfile: async (profileId, resolutionNote = 'Resolved by Owner') => {
+    if (!profileId) return 0;
+    const pending = await resetRequestsDB.getPending();
+    const matching = pending.filter((r) => r.matched_profile_id === profileId);
+    for (const reqDoc of matching) {
+      await lockoutsDB.clear(reqDoc.client_ip);
+      await resetRequestsDB.markResolved(reqDoc.id, {
+        status: 'resolved',
+        resolvedProfileId: profileId,
+        resolutionNote,
+      });
+    }
+    return matching.length;
+  },
+
+  clearAll: async () => {
+    resetRequestCache.clear();
+    if (mongoose.connection.readyState === 1) {
+      await ResetRequestModel.deleteMany({}).catch(() => {});
+    }
   },
 };
 
@@ -1414,9 +1953,13 @@ export const iptvHealthDB = {
 
 export default {
   initDatabase,
+  ensureMediaCacheFresh,
+  ensureProfilesFresh,
   mediaDB,
   playbackDB,
   profilesDB,
+  lockoutsDB,
+  resetRequestsDB,
   downloadsDB,
   iptvHealthDB,
 };

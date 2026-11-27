@@ -89,7 +89,15 @@ export async function request(endpoint, options = {}) {
 }
 
 export const api = {
-  // Auth (Code-only per-profile login)
+  // Auth (Code-only per-profile login + 5-attempt lockout)
+  getLockoutStatus: async () => {
+    const res = await fetch(`${API_BASE}/auth/lockout-status`);
+    if (!res.ok) {
+      return { locked: false, failedAttempts: 0, maxAttempts: 5, attemptsRemaining: 5, requestSent: false };
+    }
+    return res.json();
+  },
+
   login: async (code) => {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
@@ -97,14 +105,38 @@ export const api = {
       body: JSON.stringify({ code }),
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Invalid login code');
+      const errBody = await res.json().catch(() => ({}));
+      const err = new Error(errBody.error || 'Incorrect login code');
+      err.status = res.status;
+      err.locked = Boolean(errBody.locked || res.status === 423);
+      err.failedAttempts = errBody.failedAttempts;
+      err.maxAttempts = errBody.maxAttempts;
+      err.attemptsRemaining = errBody.attemptsRemaining;
+      err.requestSent = Boolean(errBody.requestSent);
+      err.canRequestReset = errBody.canRequestReset;
+      err.expiresAt = errBody.expiresAt || null;
+      throw err;
     }
     const data = await res.json();
     authState.setToken(data.token);
     vaultState.lock();
     if (data.profile) {
       profileState.setActiveProfile(data.profile);
+    }
+    return data;
+  },
+
+  requestProfileReset: async (profileName) => {
+    const res = await fetch(`${API_BASE}/auth/request-reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profileName }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error || 'Could not send reset request');
+      err.status = res.status;
+      throw err;
     }
     return data;
   },
@@ -117,11 +149,16 @@ export const api = {
     return data;
   },
 
-  changeCode: (currentCode, newCode) =>
-    request('/auth/change-code', {
+  changeCode: async (currentCode, newCode) => {
+    const data = await request('/auth/change-code', {
       method: 'POST',
       body: JSON.stringify({ currentCode, newCode }),
-    }),
+    });
+    if (data?.token) {
+      authState.setToken(data.token);
+    }
+    return data;
+  },
 
   verifyPin: (pin) =>
     request('/auth/verify-pin', {
@@ -334,10 +371,28 @@ export const api = {
   // Subtitle Tracks Probe
   getSubtitleTracks: (id) => request(`/stream/${id}/subtitles/tracks`),
 
-  // Profiles (Owner CRUD) & Watchlist (Self-isolated)
+  // Profiles (Owner CRUD), Reset Requests (Owner Inbox) & Watchlist (Self-isolated)
   getProfiles: () => request('/profiles'),
+  generateProfileCode: () => request('/profiles/generate-code', { method: 'POST' }),
+  getResetRequests: () => request('/profiles/reset-requests'),
+  resolveResetRequest: async (requestId, payload = {}) => {
+    const data = await request(`/profiles/reset-requests/${encodeURIComponent(requestId)}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (data?.token) {
+      authState.setToken(data.token);
+    }
+    return data;
+  },
   createProfile: (data) => request('/profiles', { method: 'POST', body: JSON.stringify(data) }),
-  updateProfile: (id, data) => request(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateProfile: async (id, data) => {
+    const res = await request(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+    if (res?.token) {
+      authState.setToken(res.token);
+    }
+    return res;
+  },
   deleteProfile: (id) => request(`/profiles/${id}`, { method: 'DELETE' }),
   getWatchlist: (profileId) => request(`/profiles/${profileId || profileState.getActiveProfileId()}/watchlist`),
   toggleWatchlist: (mediaId, profileId) =>

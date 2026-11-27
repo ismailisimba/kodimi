@@ -21,7 +21,7 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 
   <!-- Custom Material Design Stylesheet -->
-  <link rel="stylesheet" href="/css/style.css?v=32" />
+  <link rel="stylesheet" href="/css/style.css?v=33" />
 </head>
 <body>
 
@@ -99,6 +99,12 @@
         <span class="material-symbols-outlined" id="sync-icon" aria-hidden="true">sync</span>
       </button>
 
+      <!-- Profile Reset Requests Bell (Owner-only in-app ping inbox) -->
+      <button type="button" class="icon-btn owner-alerts-btn" id="owner-alerts-btn" aria-label="Profile reset requests" style="display: none;">
+        <span class="material-symbols-outlined" aria-hidden="true">notifications</span>
+        <span class="badge tabular-nums" id="owner-alerts-badge" hidden>0</span>
+      </button>
+
       <!-- Profile Button & Dropdown Menu -->
       <div class="profile-menu-container" style="position: relative;">
         <button type="button" class="profile-nav-btn" id="profile-switcher-btn" title="Profile and account" aria-label="Profile and account">
@@ -115,11 +121,16 @@
             <span class="material-symbols-outlined" aria-hidden="true">switch_account</span>
             <span>Switch profile</span>
           </button>
-          <button type="button" class="profile-dropdown-item" id="dropdown-change-code-btn">
+          <button type="button" class="profile-dropdown-item" id="dropdown-change-code-btn" style="display: none;">
             <span class="material-symbols-outlined" aria-hidden="true">key</span>
             <span>Change login code</span>
           </button>
           <div class="profile-dropdown-divider" id="dropdown-owner-divider" style="display: none;"></div>
+          <button type="button" class="profile-dropdown-item" id="dropdown-reset-requests-btn" style="display: none;">
+            <span class="material-symbols-outlined" aria-hidden="true">lock_reset</span>
+            <span>Reset requests</span>
+            <span class="dropdown-count-pill tabular-nums" id="dropdown-reset-requests-count" hidden>0</span>
+          </button>
           <button type="button" class="profile-dropdown-item" id="dropdown-manage-profiles-btn" style="display: none;">
             <span class="material-symbols-outlined" aria-hidden="true">manage_accounts</span>
             <span>Manage profiles</span>
@@ -491,65 +502,184 @@
     </div>
   </div>
 
-  <!-- Login Modal Dialog (Code-Only — Profile Names Hidden Pre-Auth) -->
+  <!-- Login Modal Dialog (Code-Only — Profile Names Hidden Pre-Auth + 5-Attempt Lockout) -->
   <div class="modal-backdrop" id="login-modal">
-    <div class="modal-card" style="max-width: 420px; text-align: center;">
-      <div style="padding: 32px 24px 16px 24px;">
-        <h1 style="font-size: 32px; font-weight: 900; letter-spacing: 2px; color: var(--md-sys-color-primary); margin-bottom: 6px;">
-          KODIMI
-        </h1>
-        <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant);">
-          Enter your personal profile login code to sign in
+    <div class="modal-card auth-modal-card">
+      <div class="auth-modal-header">
+        <div class="auth-brand-mark">KODIMI</div>
+        <h2 id="login-modal-title" class="auth-modal-heading">Sign in with your code</h2>
+        <p id="login-modal-subtitle" class="auth-modal-subtitle">
+          Enter your personal profile login code
         </p>
       </div>
 
-      <div style="padding: 0 24px 32px 24px;">
-        <form id="login-form" style="display: flex; flex-direction: column; gap: 16px;">
-          <div style="position: relative; display: flex; align-items: center;">
-            <span class="material-symbols-outlined" style="position: absolute; left: 12px; color: var(--md-sys-color-outline);">key</span>
-            <input
-              type="password"
-              id="login-password"
-              required
-              autocomplete="current-password"
-              placeholder="Personal Login Code"
-              style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 12px 14px 12px 42px; color: white; font-size: 14px;"
-            />
+      <div class="auth-modal-body">
+        <!-- Step 1: Normal code-only sign-in -->
+        <div id="login-code-step">
+          <form id="login-form" class="auth-form" aria-labelledby="login-modal-title" novalidate>
+            <div class="auth-field-group">
+              <label for="login-password" class="auth-field-label">Personal login code</label>
+              <div class="auth-input-wrap">
+                <span class="material-symbols-outlined auth-input-icon" aria-hidden="true">key</span>
+                <input
+                  type="password"
+                  id="login-password"
+                  name="code"
+                  required
+                  autocomplete="current-password"
+                  autocorrect="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  enterkeyhint="done"
+                  placeholder="Enter your code"
+                  aria-describedby="login-error"
+                  class="auth-input auth-input-with-toggle"
+                />
+                <button
+                  type="button"
+                  id="login-toggle-visibility"
+                  class="auth-visibility-btn"
+                  aria-pressed="false"
+                  aria-label="Show login code"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true">visibility</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="login-error" class="auth-error-banner" role="alert" hidden></div>
+
+            <button type="submit" id="login-submit-btn" class="btn-filled auth-primary-btn">
+              <span>Sign in</span>
+              <span class="material-symbols-outlined" aria-hidden="true">arrow_forward</span>
+            </button>
+          </form>
+        </div>
+
+        <!-- Step 2: Locked out after 5 failed attempts -->
+        <div id="login-lockout-step" hidden>
+          <div class="lockout-icon-circle" aria-hidden="true">
+            <span class="material-symbols-outlined">lock_clock</span>
+          </div>
+          <h3 id="login-lockout-heading" class="lockout-heading" tabindex="-1">Sign-in locked</h3>
+          <p class="lockout-copy">
+            You reached 5 failed attempts. Enter your profile name to alert the owner in Kodimi, then message them on WhatsApp to reset your code.
+          </p>
+
+          <form id="lockout-reset-form" class="auth-form" aria-labelledby="login-lockout-heading" novalidate>
+            <div class="auth-field-group">
+              <label for="lockout-profile-name" class="auth-field-label">Your profile name</label>
+              <input
+                type="text"
+                id="lockout-profile-name"
+                name="profileName"
+                required
+                maxlength="40"
+                autocomplete="name"
+                enterkeyhint="send"
+                placeholder="For example, Alex"
+                aria-describedby="lockout-reset-error"
+                class="auth-input"
+              />
+            </div>
+
+            <div id="lockout-reset-error" class="auth-error-banner" role="alert" hidden></div>
+
+            <button type="submit" id="lockout-reset-submit" class="btn-filled auth-primary-btn">
+              <span class="material-symbols-outlined" aria-hidden="true">notifications_active</span>
+              <span>Alert owner &amp; continue to WhatsApp</span>
+            </button>
+            <button type="button" id="lockout-cancel-session-btn" class="btn-tonal auth-secondary-btn" hidden>
+              Return to current profile
+            </button>
+          </form>
+        </div>
+
+        <!-- Step 3: Reset ping sent -> WhatsApp handoff -->
+        <div id="login-lockout-sent-step" hidden>
+          <div class="lockout-icon-circle success" aria-hidden="true">
+            <span class="material-symbols-outlined">mark_chat_read</span>
+          </div>
+          <h3 id="login-lockout-sent-heading" class="lockout-heading" tabindex="-1">Owner notified</h3>
+          <p id="lockout-sent-summary" class="lockout-copy" role="status"></p>
+
+          <div class="lockout-message-card">
+            <div class="lockout-message-label">Ready-to-send WhatsApp message</div>
+            <p id="lockout-wa-message-preview" class="lockout-message-preview"></p>
           </div>
 
-          <div id="login-error" style="display: none; font-size: 12px; color: #ffb4ab; background: rgba(255, 180, 171, 0.1); padding: 8px; border-radius: var(--md-shape-corner-s);"></div>
+          <div class="lockout-action-stack">
+            <a
+              id="lockout-wa-link"
+              href="https://wa.me/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="btn-filled whatsapp-btn"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">chat</span>
+              <span>Open WhatsApp</span>
+            </a>
 
-          <button type="submit" class="btn-filled" style="justify-content: center; background-color: var(--md-sys-color-primary); color: white;">
-            <span>Sign In</span>
-            <span class="material-symbols-outlined">arrow_forward</span>
-          </button>
-        </form>
+            <span class="copy-control copy-control-full">
+              <button
+                type="button"
+                class="btn-tonal auth-secondary-btn copy-action-btn"
+                command="--copy"
+                commandfor="lockout-wa-message-preview"
+                aria-label="Copy WhatsApp message"
+              >
+                <span class="material-symbols-outlined copy-icon" aria-hidden="true">content_copy</span>
+                <span>Copy message</span>
+              </button>
+              <span class="copy-tip" role="status"></span>
+            </span>
+
+            <button type="button" id="lockout-check-status-btn" class="btn-tonal auth-secondary-btn">
+              <span class="material-symbols-outlined" aria-hidden="true">refresh</span>
+              <span>Check if unlocked</span>
+            </button>
+            <button type="button" id="lockout-sent-return-btn" class="btn-tonal auth-secondary-btn" hidden>
+              Return to current profile
+            </button>
+          </div>
+          <div id="lockout-status-feedback" class="auth-status-note" role="status" hidden></div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- Switch Profile Modal Dialog (Code-Only) -->
   <div class="modal-backdrop" id="switch-profile-modal">
-    <div class="modal-card" style="max-width: 400px; text-align: center;">
-      <div style="padding: 28px 24px 16px 24px;">
-        <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Switch Profile</h2>
-        <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant);">
+    <div class="modal-card auth-modal-card">
+      <div class="auth-modal-header">
+        <h2 id="switch-profile-title" class="auth-modal-heading">Switch profile</h2>
+        <p class="auth-modal-subtitle">
           Enter the login code for the profile you want to switch to
         </p>
       </div>
-      <div style="padding: 0 24px 28px 24px;">
-        <form id="switch-profile-form" style="display: flex; flex-direction: column; gap: 14px;">
-          <input
-            type="password"
-            id="switch-profile-code"
-            required
-            placeholder="Target Profile Login Code"
-            style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 12px 14px; color: white; font-size: 14px; text-align: center;"
-          />
-          <div id="switch-profile-error" style="display: none; font-size: 12px; color: #ffb4ab; background: rgba(255, 180, 171, 0.1); padding: 8px; border-radius: var(--md-shape-corner-s);"></div>
-          <div style="display: flex; gap: 8px;">
-            <button type="button" id="switch-profile-cancel" class="btn-tonal" style="flex: 1; justify-content: center;">Cancel</button>
-            <button type="submit" class="btn-filled" style="flex: 1; justify-content: center; background-color: var(--md-sys-color-primary); color: white;">Switch</button>
+      <div class="auth-modal-body">
+        <form id="switch-profile-form" class="auth-form" aria-labelledby="switch-profile-title" novalidate>
+          <div class="auth-field-group">
+            <label for="switch-profile-code" class="auth-field-label">Target profile login code</label>
+            <input
+              type="password"
+              id="switch-profile-code"
+              name="code"
+              required
+              autocomplete="current-password"
+              autocorrect="off"
+              autocapitalize="none"
+              spellcheck="false"
+              enterkeyhint="done"
+              placeholder="Enter login code"
+              aria-describedby="switch-profile-error"
+              class="auth-input"
+            />
+          </div>
+          <div id="switch-profile-error" class="auth-error-banner" role="alert" hidden></div>
+          <div class="auth-button-row">
+            <button type="button" id="switch-profile-cancel" class="btn-tonal auth-row-btn">Cancel</button>
+            <button type="submit" class="btn-filled auth-row-btn auth-primary-btn">Switch</button>
           </div>
         </form>
       </div>
@@ -723,16 +853,33 @@
           <!-- Unique Profile Login Code -->
           <div>
             <label for="profile-edit-passcode-input" style="display: block; font-size: 12px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 6px;">
-              Unique Login Code <span id="profile-edit-passcode-hint" style="opacity: 0.7;">(min 4 chars)</span>
+              Unique login code <span id="profile-edit-passcode-hint" style="opacity: 0.7;">(min 4 chars)</span>
             </label>
-            <input
-              type="password"
-              id="profile-edit-passcode-input"
-              minlength="4"
-              autocomplete="new-password"
-              placeholder="Enter unique login code for this profile"
-              style="width: 100%; background-color: var(--md-sys-color-surface-container-high); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-shape-corner-m); padding: 10px 14px; color: white; font-size: 14px;"
-            />
+            <div class="reset-code-input-row">
+              <input
+                type="password"
+                id="profile-edit-passcode-input"
+                name="passcode"
+                minlength="4"
+                maxlength="72"
+                autocomplete="new-password"
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck="false"
+                placeholder="Enter unique login code for this profile"
+                class="auth-input"
+              />
+              <button
+                type="button"
+                id="profile-edit-generate-code-btn"
+                class="btn-tonal"
+                style="min-height: 48px; padding: 0 14px; font-size: 13px; white-space: nowrap;"
+                aria-label="Generate unique login code"
+              >
+                <span class="material-symbols-outlined" aria-hidden="true" style="font-size: 18px;">casino</span>
+                <span>Generate</span>
+              </button>
+            </div>
           </div>
 
           <!-- Kids Profile Toggle -->
@@ -999,7 +1146,69 @@
     </button>
   </nav>
 
+  <!-- Owner Profile Reset Requests Native Modal Dialog -->
+  <dialog id="reset-requests-dialog" class="native-modal-dialog" closedby="any" aria-labelledby="reset-requests-title">
+    <div class="native-dialog-header">
+      <div class="native-dialog-title-group">
+        <span class="material-symbols-outlined" aria-hidden="true" style="color: var(--md-sys-color-primary);">lock_reset</span>
+        <div>
+          <h1 id="reset-requests-title" class="native-dialog-title">Profile reset requests</h1>
+          <p class="native-dialog-subtitle">Review locked-out users and issue a new unique login code</p>
+        </div>
+      </div>
+      <button type="button" id="reset-requests-close" class="icon-btn dialog-close-btn" aria-label="Close">
+        <span class="material-symbols-outlined" aria-hidden="true">close</span>
+      </button>
+    </div>
+
+    <div class="native-dialog-body">
+      <!-- Post-reset success handoff with Copy + WhatsApp share -->
+      <section id="reset-success-banner" class="reset-success-banner" aria-live="polite" hidden>
+        <div class="reset-success-header">
+          <span class="material-symbols-outlined" aria-hidden="true">check_circle</span>
+          <strong id="reset-success-title">Profile code reset</strong>
+        </div>
+        <p id="reset-success-body" class="reset-success-body"></p>
+        <div class="reset-new-code-box">
+          <code id="reset-new-code-output" class="reset-new-code-output"></code>
+          <span class="copy-control">
+            <button
+              type="button"
+              class="btn-tonal copy-action-btn"
+              command="--copy"
+              commandfor="reset-new-code-output"
+              aria-label="Copy new login code"
+            >
+              <span class="material-symbols-outlined copy-icon" aria-hidden="true">content_copy</span>
+              <span>Copy code</span>
+            </button>
+            <span class="copy-tip" role="status"></span>
+          </span>
+        </div>
+        <div class="reset-success-actions">
+          <a
+            id="reset-share-wa-link"
+            href="https://wa.me/"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn-filled whatsapp-btn"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">chat</span>
+            <span>Send new code on WhatsApp</span>
+          </a>
+        </div>
+      </section>
+
+      <div id="reset-requests-list" class="reset-requests-list"></div>
+    </div>
+  </dialog>
+
+  <!-- Centralized Screen Reader Announcer & Persistent Toast Region -->
+  <p class="visually-hidden">Screen reader announcements</p>
+  <div id="sr-announcer" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+  <div id="toast-region" class="toast-region" role="region" aria-label="Notifications"></div>
+
   <!-- Application Entrypoint Module -->
-  <script type="module" src="/js/app.js?v=32"></script>
+  <script type="module" src="/js/app.js?v=33"></script>
 </body>
 </html>
